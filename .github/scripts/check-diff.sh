@@ -33,7 +33,8 @@ pull_request)
 	;;
 push)
 	if [[ "$before_sha" == "$zero_sha" ]]; then
-		git show --check --format= "$head_sha" --
+		empty_tree=$(git hash-object -t tree /dev/null)
+		git diff --check "$empty_tree" "$head_sha" --
 		exit 0
 	fi
 	if ! is_sha "$before_sha"; then

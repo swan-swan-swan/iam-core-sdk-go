@@ -27,6 +27,15 @@ func TestCallbackMissingFlowCookieClearsFlowAndCreatesNoSession(t *testing.T) {
 	assertFlowCleared(t, response)
 }
 
+func TestCompleteCallbackNilRequestDoesNotPanic(t *testing.T) {
+	service, _ := newTestService(t)
+	response := httptest.NewRecorder()
+	if _, err := service.CompleteCallback(response, nil); err == nil {
+		t.Fatal("CompleteCallback(nil request) returned nil error")
+	}
+	assertFlowCleared(t, response)
+}
+
 func TestCallbackStateMismatchConsumesFlowBeforeProviderError(t *testing.T) {
 	harness, flowCookie := callbackHarness(t, "expected-state", "expected-nonce", "/assets")
 	request := httptest.NewRequest(

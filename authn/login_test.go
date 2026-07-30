@@ -58,9 +58,15 @@ func TestLoginRejectsUnsafeReturnTo(t *testing.T) {
 		`/safe\evil`,
 		"/%5cevil",
 		"/%255cevil",
+		"/%25255cevil",
 		"/%0d%0aX-Evil:true",
 		"/%250aX-Evil:true",
+		"/%25250aX-Evil:true",
 		"/%2f%2fevil.example",
+		"/%252F%252Fevil.example",
+		"/%25252F%25252Fevil.example",
+		"/%2525252F%2525252Fevil.example",
+		"///evil.example",
 		"javascript:alert(1)",
 		"assets",
 		"/\x00bad",
@@ -100,6 +106,31 @@ func TestLoginAllowsSafeRelativeReturnToWithQueryAndFragment(t *testing.T) {
 	}
 	if flow := backend.LastFlow(); flow == nil || flow.ReturnTo != returnTo {
 		t.Fatalf("flow = %#v", flow)
+	}
+}
+
+func TestLoginAllowsSafeEncodedRelativePaths(t *testing.T) {
+	for _, returnTo := range []string{
+		"/files/a%2Fb",
+		"/files/%E4%BD%A0%E5%A5%BD?q=next%2Fpage#part%201",
+		"/search?q=https%3A%2F%2Fdocs.example%2Fguide",
+	} {
+		t.Run(returnTo, func(t *testing.T) {
+			service, backend := newTestService(t)
+			request := httptest.NewRequest(
+				http.MethodGet,
+				"/auth/login?return_to="+url.QueryEscape(returnTo),
+				nil,
+			)
+			response := httptest.NewRecorder()
+			service.LoginHandler().ServeHTTP(response, request)
+			if response.Code != http.StatusFound {
+				t.Fatalf("status = %d body=%q", response.Code, response.Body.String())
+			}
+			if flow := backend.LastFlow(); flow == nil || flow.ReturnTo != returnTo {
+				t.Fatalf("flow = %#v", flow)
+			}
+		})
 	}
 }
 
@@ -216,6 +247,7 @@ func TestNewRejectsUnsafeCookieConfigurations(t *testing.T) {
 		{Name: "__Host-custom", Path: "/", Secure: true, SameSite: http.SameSiteLaxMode},
 		{Name: "__Host-custom", Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteNoneMode},
 		{Name: "custom", Path: "/", HttpOnly: true, SameSite: http.SameSiteLaxMode},
+		{Name: "custom", Path: "/", Secure: true, HttpOnly: true, SameSite: http.SameSiteLaxMode},
 	}
 	for _, cookie := range tests {
 		t.Run(cookie.Name+cookie.Path+cookie.Domain, func(t *testing.T) {
@@ -253,13 +285,43 @@ func TestNewRejectsInsecureNonLocalRedirectURL(t *testing.T) {
 	}
 }
 
-func TestInsecureLocalCookieRequiresLocalRedirectAndRequestHosts(t *testing.T) {
-	harness := newTestHarness(t, func(config *Config, _ *testHarness) {
-		config.RedirectURL = "http://localhost:8080/auth/callback"
-		config.AllowInsecureLocalCookie = true
-		config.SessionCookie = safeInsecureCookie("iam_core_session")
-		config.FlowCookie = safeInsecureCookie("iam_core_flow")
+func TestNewRejectsOIDCRedirectMismatch(t *testing.T) {
+	fake := newFakeBrowserOIDC(t)
+	client, err := oidcClientWithRedirectForTest(t, fake, "https://app.example/auth/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(Config{
+		OIDC:        client,
+		Backend:     memoryBackendForTest(),
+		RedirectURL: "https://app.example/auth/different-callback",
 	})
+	if err == nil {
+		t.Fatal("New accepted a redirect URL different from the OIDC client")
+	}
+}
+
+func TestNewRejectsInsecureLocalCookieWithMismatchedOIDCRedirect(t *testing.T) {
+	fake := newFakeBrowserOIDC(t)
+	client, err := oidcClientWithRedirectForTest(t, fake, "https://app.example/auth/callback")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = New(Config{
+		OIDC:                     client,
+		Backend:                  memoryBackendForTest(),
+		RedirectURL:              "http://localhost:8080/auth/callback",
+		AllowInsecureLocalCookie: true,
+		SessionCookie:            safeInsecureCookie("iam_core_session"),
+		FlowCookie:               safeInsecureCookie("iam_core_flow"),
+	})
+	if err == nil {
+		t.Fatal("New accepted local-cookie mode with a mismatched OIDC redirect")
+	}
+}
+
+func TestInsecureLocalCookieRequiresLocalRedirectAndRequestHosts(t *testing.T) {
+	harness := newLocalInsecureHarness(t)
 	for _, host := range []string{"evil.example", "localhost.evil.example"} {
 		request := httptest.NewRequest(http.MethodGet, "http://"+host+"/auth/login", nil)
 		response := httptest.NewRecorder()
@@ -279,6 +341,17 @@ func TestInsecureLocalCookieRequiresLocalRedirectAndRequestHosts(t *testing.T) {
 	}
 }
 
+func TestBeginLoginNilRequestDoesNotPanic(t *testing.T) {
+	service, _ := newTestService(t)
+	response := httptest.NewRecorder()
+	if err := service.BeginLogin(response, nil, "/"); err == nil {
+		t.Fatal("BeginLogin(nil request) returned nil error")
+	}
+	if response.Header().Get("Set-Cookie") != "" || response.Header().Get("Location") != "" {
+		t.Fatalf("nil request wrote headers %#v", response.Header())
+	}
+}
+
 func safeInsecureCookie(name string) http.Cookie {
 	return http.Cookie{
 		Name:     name,
@@ -290,14 +363,50 @@ func safeInsecureCookie(name string) http.Cookie {
 
 func oidcClientForTest(t *testing.T, fake *fakeBrowserOIDC) (*oidc.Client, error) {
 	t.Helper()
+	return oidcClientWithRedirectForTest(t, fake, "https://app.example/auth/callback")
+}
+
+func oidcClientWithRedirectForTest(
+	t *testing.T,
+	fake *fakeBrowserOIDC,
+	redirectURL string,
+) (*oidc.Client, error) {
+	t.Helper()
 	return oidc.New(t.Context(), oidc.Config{
 		IssuerURL:      fake.server.URL,
 		ClientID:       "client-1",
 		SecretProvider: oidc.StaticSecret("secret"),
-		RedirectURL:    "https://app.example/auth/callback",
+		RedirectURL:    redirectURL,
 		Scopes:         []string{"openid"},
 		HTTPClient:     fake.server.Client(),
 	})
+}
+
+func newLocalInsecureHarness(t *testing.T) *testHarness {
+	t.Helper()
+	fake := newFakeBrowserOIDC(t)
+	redirectURL := "http://localhost:8080/auth/callback"
+	client, err := oidcClientWithRedirectForTest(t, fake, redirectURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reader := &sequenceReader{}
+	mem := memory.New(memory.Options{Clock: fixedClock{fixedNow}, Random: reader})
+	backend := &inspectableBackend{Backend: mem}
+	service, err := New(Config{
+		OIDC:                     client,
+		Backend:                  backend,
+		RedirectURL:              redirectURL,
+		AllowInsecureLocalCookie: true,
+		SessionCookie:            safeInsecureCookie("iam_core_session"),
+		FlowCookie:               safeInsecureCookie("iam_core_flow"),
+		Clock:                    fixedClock{fixedNow},
+		Random:                   reader,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return &testHarness{service: service, backend: backend, oidc: fake, random: reader}
 }
 
 func memoryBackendForTest() session.Backend {

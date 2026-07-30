@@ -82,6 +82,9 @@ func New(config Config) (*Service, error) {
 	if err != nil {
 		return nil, authError(sdkerr.KindInvalidConfig, "authn.configure")
 	}
+	if !oidcRedirectMatches(config.OIDC, config.RedirectURL) {
+		return nil, authError(sdkerr.KindInvalidConfig, "authn.configure")
+	}
 	if redirectURL.Scheme == "http" && !isLocalURL(redirectURL) {
 		return nil, authError(sdkerr.KindInvalidConfig, "authn.configure")
 	}
@@ -167,6 +170,22 @@ func New(config Config) (*Service, error) {
 		logger:                       config.Logger,
 		hooks:                        config.Hooks,
 	}, nil
+}
+
+func oidcRedirectMatches(client *oidc.Client, expected string) bool {
+	const validationState = "redirect-validation-state"
+	const validationNonce = "redirect-validation-nonce"
+	authorizationURL := client.AuthCodeURL(validationState, validationNonce)
+	parsed, err := url.Parse(authorizationURL)
+	if err != nil || parsed.Opaque != "" || parsed.Hostname() == "" {
+		return false
+	}
+	values, err := url.ParseQuery(parsed.RawQuery)
+	if err != nil {
+		return false
+	}
+	redirectValues := values["redirect_uri"]
+	return len(redirectValues) == 1 && redirectValues[0] == expected
 }
 
 func durationOrDefault(value, fallback time.Duration) (time.Duration, error) {

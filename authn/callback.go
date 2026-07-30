@@ -17,6 +17,12 @@ func (s *Service) CompleteCallback(
 	request *http.Request,
 ) (created *session.Session, resultErr error) {
 	const operation = "authn.callback"
+	if request == nil {
+		if w != nil {
+			s.clearCookie(w, s.flowCookie)
+		}
+		return nil, authError(sdkerr.KindProtocol, operation)
+	}
 	started := time.Now()
 	if w != nil {
 		s.clearCookie(w, s.flowCookie)
@@ -28,7 +34,7 @@ func (s *Service) CompleteCallback(
 		}
 		s.observe(request, operation, outcome, started)
 	}()
-	if w == nil || request == nil {
+	if w == nil {
 		return nil, authError(sdkerr.KindProtocol, operation)
 	}
 	if err := s.ensureRequestCookieSecurity(request); err != nil {

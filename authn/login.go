@@ -15,6 +15,9 @@ import (
 
 func (s *Service) BeginLogin(w http.ResponseWriter, request *http.Request, returnTo string) (resultErr error) {
 	const operation = "authn.login"
+	if request == nil {
+		return authError(sdkerr.KindProtocol, operation)
+	}
 	started := time.Now()
 	defer func() {
 		outcome := "success"
@@ -23,7 +26,7 @@ func (s *Service) BeginLogin(w http.ResponseWriter, request *http.Request, retur
 		}
 		s.observe(request, operation, outcome, started)
 	}()
-	if w == nil || request == nil || !s.validReturnTo(returnTo) {
+	if w == nil || !s.validReturnTo(returnTo) {
 		return authError(sdkerr.KindProtocol, operation)
 	}
 	if err := s.ensureRequestCookieSecurity(request); err != nil {
@@ -96,42 +99,43 @@ func (s *Service) validReturnTo(value string) bool {
 }
 
 func validateRelativeReturnTo(value string) error {
-	if value == "" || value != strings.TrimSpace(value) || containsUnsafeURLCharacter(value) {
+	if err := validateRelativeReturnToLayer(value, true); err != nil {
 		return errors.New("invalid return URL")
 	}
-	parsed, err := url.Parse(value)
-	if err != nil || parsed.IsAbs() || parsed.Opaque != "" || parsed.User != nil ||
-		parsed.Host != "" || parsed.Scheme != "" || parsed.Path == "" ||
-		!strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") ||
-		parsed.String() != value {
-		return errors.New("invalid return URL")
-	}
-	if err := rejectAmbiguousEncoding(value); err != nil {
+	if err := rejectAmbiguousRelativeEncoding(value); err != nil {
 		return err
 	}
 	return nil
 }
 
 func validateAllowedAbsoluteReturnTo(value string) error {
+	if err := validateAllowedAbsoluteReturnToLayer(value, true); err != nil {
+		return err
+	}
+	return rejectAmbiguousAbsoluteEncoding(value)
+}
+
+func validateAllowedAbsoluteReturnToLayer(value string, requireCanonical bool) error {
 	if value == "" || value != strings.TrimSpace(value) || containsUnsafeURLCharacter(value) {
 		return errors.New("invalid allowed return URL")
 	}
 	parsed, err := url.Parse(value)
 	if err != nil || parsed.Opaque != "" || parsed.User != nil || parsed.Hostname() == "" ||
-		(parsed.Scheme != "https" && parsed.Scheme != "http") || parsed.String() != value {
+		(parsed.Scheme != "https" && parsed.Scheme != "http") ||
+		(requireCanonical && parsed.String() != value) {
 		return errors.New("invalid allowed return URL")
 	}
 	if parsed.Scheme == "http" && !isLocalHostname(parsed.Hostname()) {
 		return errors.New("invalid allowed return URL")
 	}
-	return rejectAmbiguousEncoding(value)
+	return nil
 }
 
-func rejectAmbiguousEncoding(value string) error {
+func rejectAmbiguousRelativeEncoding(value string) error {
 	current := value
-	for range 6 {
-		if containsUnsafeURLCharacter(current) {
-			return errors.New("unsafe encoded URL")
+	for range 8 {
+		if err := validateRelativeReturnToLayer(current, false); err != nil {
+			return err
 		}
 		decoded, err := url.PathUnescape(current)
 		if err != nil {
@@ -141,12 +145,40 @@ func rejectAmbiguousEncoding(value string) error {
 			return nil
 		}
 		current = decoded
-		parsed, err := url.Parse(current)
-		if err != nil || (parsed.Host != "" && strings.HasPrefix(current, "//")) {
-			return errors.New("ambiguous encoded URL")
-		}
 	}
 	return errors.New("excessively encoded URL")
+}
+
+func rejectAmbiguousAbsoluteEncoding(value string) error {
+	current := value
+	for range 8 {
+		if err := validateAllowedAbsoluteReturnToLayer(current, false); err != nil {
+			return err
+		}
+		decoded, err := url.PathUnescape(current)
+		if err != nil {
+			return errors.New("malformed encoded URL")
+		}
+		if decoded == current {
+			return nil
+		}
+		current = decoded
+	}
+	return errors.New("excessively encoded URL")
+}
+
+func validateRelativeReturnToLayer(value string, requireCanonical bool) error {
+	if value == "" || value != strings.TrimSpace(value) || containsUnsafeURLCharacter(value) {
+		return errors.New("invalid return URL layer")
+	}
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.IsAbs() || parsed.Opaque != "" || parsed.User != nil ||
+		parsed.Host != "" || parsed.Scheme != "" || parsed.Path == "" ||
+		!strings.HasPrefix(parsed.Path, "/") || strings.HasPrefix(parsed.Path, "//") ||
+		(requireCanonical && parsed.String() != value) {
+		return errors.New("invalid return URL layer")
+	}
+	return nil
 }
 
 func containsUnsafeURLCharacter(value string) bool {

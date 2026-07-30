@@ -38,6 +38,9 @@ func normalizeCookie(configured http.Cookie, defaultName string) (http.Cookie, e
 		(!configured.Secure || configured.Path != "/" || configured.Domain != "") {
 		return http.Cookie{}, errors.New("invalid __Host cookie")
 	}
+	if configured.Secure && !strings.HasPrefix(configured.Name, "__Host-") {
+		return http.Cookie{}, errors.New("production cookie must use __Host prefix")
+	}
 	return configured, nil
 }
 

@@ -81,7 +81,7 @@ func (c *Client) requestToken(
 	form.Set("client_id", c.oauthConfig.ClientID)
 	form.Set("client_secret", secret)
 
-	requestContext, cancel := c.withTimeout(ctx)
+	requestContext, cancel := withTimeout(ctx, c.tokenUserInfoTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(
 		requestContext,

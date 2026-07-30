@@ -36,7 +36,7 @@ func (c *Client) Logout(
 	query.Set("id_token_hint", idTokenHint)
 	endpoint.RawQuery = query.Encode()
 
-	requestContext, cancel := c.withTimeout(ctx)
+	requestContext, cancel := withTimeout(ctx, c.tokenUserInfoTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, endpoint.String(), nil)
 	if err != nil {

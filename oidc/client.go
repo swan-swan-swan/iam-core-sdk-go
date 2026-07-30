@@ -19,7 +19,10 @@ import (
 	"golang.org/x/oauth2"
 )
 
-const defaultTimeout = 5 * time.Second
+const (
+	defaultDiscoveryJWKSTimeout = 5 * time.Second
+	defaultTokenUserInfoTimeout = 10 * time.Second
+)
 
 type Metadata struct {
 	Issuer                string   `json:"issuer"`
@@ -51,27 +54,30 @@ func StaticSecret(value string) SecretProvider {
 }
 
 type Config struct {
-	IssuerURL      string
-	ClientID       string
-	SecretProvider SecretProvider
-	RedirectURL    string
-	Scopes         []string
-	HTTPClient     *http.Client
-	Timeout        time.Duration
-	Hooks          observability.Hooks
-	Logger         *slog.Logger
+	IssuerURL            string
+	ClientID             string
+	SecretProvider       SecretProvider
+	RedirectURL          string
+	Scopes               []string
+	HTTPClient           *http.Client
+	Timeout              time.Duration
+	DiscoveryJWKSTimeout time.Duration
+	TokenUserInfoTimeout time.Duration
+	Hooks                observability.Hooks
+	Logger               *slog.Logger
 }
 
 type Client struct {
-	metadata       Metadata
-	secretProvider SecretProvider
-	oauthConfig    oauth2.Config
-	transport      transport.Client
-	timeout        time.Duration
-	hooks          observability.Hooks
-	logger         *slog.Logger
-	keySet         *coreosoidc.RemoteKeySet
-	verifier       *coreosoidc.IDTokenVerifier
+	metadata             Metadata
+	secretProvider       SecretProvider
+	oauthConfig          oauth2.Config
+	transport            transport.Client
+	discoveryJWKSTimeout time.Duration
+	tokenUserInfoTimeout time.Duration
+	hooks                observability.Hooks
+	logger               *slog.Logger
+	keySet               *coreosoidc.RemoteKeySet
+	verifier             *coreosoidc.IDTokenVerifier
 }
 
 func New(ctx context.Context, config Config) (result *Client, resultErr error) {
@@ -79,10 +85,16 @@ func New(ctx context.Context, config Config) (result *Client, resultErr error) {
 		return nil, err
 	}
 
-	timeout := config.Timeout
-	if timeout == 0 {
-		timeout = defaultTimeout
-	}
+	discoveryJWKSTimeout := resolveTimeout(
+		config.DiscoveryJWKSTimeout,
+		config.Timeout,
+		defaultDiscoveryJWKSTimeout,
+	)
+	tokenUserInfoTimeout := resolveTimeout(
+		config.TokenUserInfoTimeout,
+		config.Timeout,
+		defaultTokenUserInfoTimeout,
+	)
 	hooks := config.Hooks
 	if hooks == nil {
 		hooks = observability.Nop{}
@@ -92,11 +104,12 @@ func New(ctx context.Context, config Config) (result *Client, resultErr error) {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	client := &Client{
-		secretProvider: config.SecretProvider,
-		transport:      transport.Client{HTTP: config.HTTPClient},
-		timeout:        timeout,
-		hooks:          hooks,
-		logger:         logger,
+		secretProvider:       config.SecretProvider,
+		transport:            transport.Client{HTTP: config.HTTPClient},
+		discoveryJWKSTimeout: discoveryJWKSTimeout,
+		tokenUserInfoTimeout: tokenUserInfoTimeout,
+		hooks:                hooks,
+		logger:               logger,
 	}
 
 	started := time.Now()
@@ -131,7 +144,7 @@ func New(ctx context.Context, config Config) (result *Client, resultErr error) {
 	}
 	jwksHTTPClient := &http.Client{
 		Transport: boundedRoundTripper{client: client.transport},
-		Timeout:   timeout,
+		Timeout:   discoveryJWKSTimeout,
 		CheckRedirect: func(*http.Request, []*http.Request) error {
 			return http.ErrUseLastResponse
 		},
@@ -151,7 +164,7 @@ func (c *Client) Metadata() Metadata {
 }
 
 func (c *Client) discover(ctx context.Context, issuer string) (Metadata, transport.Correlation, error) {
-	requestContext, cancel := c.withTimeout(ctx)
+	requestContext, cancel := withTimeout(ctx, c.discoveryJWKSTimeout)
 	defer cancel()
 	discoveryURL := normalizeIssuer(issuer) + "/.well-known/openid-configuration"
 	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, discoveryURL, nil)
@@ -190,7 +203,7 @@ func validateConfig(config Config) error {
 		strings.TrimSpace(config.RedirectURL) == "" {
 		return sdkerr.New(sdkerr.KindInvalidConfig, "oidc.configure", 0, false, nil)
 	}
-	if config.Timeout < 0 {
+	if config.Timeout < 0 || config.DiscoveryJWKSTimeout < 0 || config.TokenUserInfoTimeout < 0 {
 		return sdkerr.New(sdkerr.KindInvalidConfig, "oidc.configure", 0, false, nil)
 	}
 	parsed, err := url.Parse(issuer)
@@ -257,11 +270,21 @@ func normalizeIssuer(value string) string {
 	return strings.TrimSuffix(value, "/")
 }
 
-func (c *Client) withTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
-	if c.timeout <= 0 {
+func resolveTimeout(dedicated, legacy, fallback time.Duration) time.Duration {
+	if dedicated > 0 {
+		return dedicated
+	}
+	if legacy > 0 {
+		return legacy
+	}
+	return fallback
+}
+
+func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if timeout <= 0 {
 		return context.WithCancel(ctx)
 	}
-	return context.WithTimeout(ctx, c.timeout)
+	return context.WithTimeout(ctx, timeout)
 }
 
 func (c *Client) observe(ctx context.Context, operation, result string, duration time.Duration) {

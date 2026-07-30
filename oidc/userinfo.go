@@ -28,7 +28,7 @@ func (c *Client) UserInfo(
 	if strings.TrimSpace(accessToken) == "" {
 		return Identity{}, sdkerr.New(sdkerr.KindInvalidConfig, operation, 0, false, nil)
 	}
-	requestContext, cancel := c.withTimeout(ctx)
+	requestContext, cancel := withTimeout(ctx, c.tokenUserInfoTimeout)
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, c.metadata.UserInfoEndpoint, nil)
 	if err != nil {

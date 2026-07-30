@@ -25,3 +25,28 @@ func TestApplyHeadersForwardsOnlyAllowlistedHeaders(t *testing.T) {
 		t.Fatalf("sensitive headers propagated: %#v", req.Header)
 	}
 }
+
+func TestWithHeadersClonesAllowlistedSourceValues(t *testing.T) {
+	source := http.Header{
+		"Traceparent":  {"trace-original"},
+		"Tracestate":   {"state-original"},
+		"X-Request-Id": {"request-original"},
+	}
+	ctx := WithHeaders(context.Background(), source)
+	source.Set("Traceparent", "trace-mutated")
+	source.Set("Tracestate", "state-mutated")
+	source.Set("X-Request-ID", "request-mutated")
+
+	destination := make(http.Header)
+	ApplyHeaders(ctx, destination)
+
+	if got := destination.Get("Traceparent"); got != "trace-original" {
+		t.Fatalf("Traceparent = %q", got)
+	}
+	if got := destination.Get("Tracestate"); got != "state-original" {
+		t.Fatalf("Tracestate = %q", got)
+	}
+	if got := destination.Get("X-Request-ID"); got != "request-original" {
+		t.Fatalf("X-Request-ID = %q", got)
+	}
+}

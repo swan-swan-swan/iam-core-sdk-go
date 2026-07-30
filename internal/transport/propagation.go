@@ -8,7 +8,7 @@ import (
 
 type propagationKey struct{}
 
-var forwardedHeaders = []string{"Traceparent", "Tracestate", "X-Request-ID"}
+var forwardedHeaders = [...]string{"Traceparent", "Tracestate", "X-Request-ID"}
 
 func WithHeaders(ctx context.Context, source http.Header) context.Context {
 	values := make(http.Header, len(forwardedHeaders))

@@ -2,13 +2,18 @@ package transport
 
 import (
 	"bytes"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
+	"math"
 	"mime"
+	"net"
 	"net/http"
 	"strings"
+	"time"
+
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
 )
 
 const DefaultMaxBodyBytes int64 = 1 << 20
@@ -26,6 +31,8 @@ type Response struct {
 }
 
 type Client struct {
+	// HTTP is optional. An injected client retains its caller-defined transport
+	// and redirect behavior; Client.Do invokes it once without an SDK retry loop.
 	HTTP         *http.Client
 	MaxBodyBytes int64
 }
@@ -33,28 +40,31 @@ type Client struct {
 func (c Client) Do(request *http.Request) (Response, error) {
 	httpClient := c.HTTP
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = newDefaultHTTPClient()
 	}
 	limit := c.MaxBodyBytes
-	if limit <= 0 {
+	if limit == 0 {
 		limit = DefaultMaxBodyBytes
+	}
+	if limit < 0 || limit == math.MaxInt64 {
+		return Response{}, sdkerr.New(sdkerr.KindInvalidConfig, "transport.configure", 0, false, nil)
 	}
 	ApplyHeaders(request.Context(), request.Header)
 	raw, err := httpClient.Do(request)
 	if err != nil {
-		return Response{}, fmt.Errorf("execute HTTP request: %w", err)
+		return Response{}, sdkerr.New(sdkerr.KindIAMUnavailable, "transport.request", 0, false, nil)
 	}
 	defer raw.Body.Close()
 	mediaType, _, err := mime.ParseMediaType(raw.Header.Get("Content-Type"))
 	if err != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
-		return Response{}, fmt.Errorf("unexpected content type %q", raw.Header.Get("Content-Type"))
+		return Response{}, sdkerr.New(sdkerr.KindProtocol, "transport.response", 0, false, nil)
 	}
 	body, err := io.ReadAll(io.LimitReader(raw.Body, limit+1))
 	if err != nil {
-		return Response{}, fmt.Errorf("read HTTP response: %w", err)
+		return Response{}, sdkerr.New(sdkerr.KindIAMUnavailable, "transport.response", 0, false, nil)
 	}
 	if int64(len(body)) > limit {
-		return Response{}, fmt.Errorf("HTTP response exceeds %d bytes", limit)
+		return Response{}, sdkerr.New(sdkerr.KindProtocol, "transport.response", 0, false, nil)
 	}
 	correlation := Correlation{RequestID: strings.TrimSpace(raw.Header.Get("X-Request-ID"))}
 	var envelope struct {
@@ -69,14 +79,39 @@ func (c Client) Do(request *http.Request) (Response, error) {
 	return Response{StatusCode: raw.StatusCode, Header: raw.Header.Clone(), Body: body, Correlation: correlation}, nil
 }
 
+func newDefaultHTTPClient() *http.Client {
+	// Disabling connection reuse keeps net/http out of its automatic
+	// reused-connection replay path. HTTP/2 is disabled because it has its own
+	// stream retry behavior.
+	transport := &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		DisableKeepAlives:     true,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+		TLSNextProto:          make(map[string]func(string, *tls.Conn) http.RoundTripper),
+	}
+	return &http.Client{
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+}
+
 func DecodeJSON(body []byte, target any) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
 	if err := decoder.Decode(target); err != nil {
-		return fmt.Errorf("decode JSON response: %w", err)
+		return sdkerr.New(sdkerr.KindProtocol, "transport.decode_json", 0, false, nil)
 	}
 	var trailing any
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return fmt.Errorf("decode JSON response: trailing JSON value")
+		return sdkerr.New(sdkerr.KindProtocol, "transport.decode_json", 0, false, nil)
 	}
 	return nil
 }

@@ -2,11 +2,35 @@ package transport
 
 import (
 	"context"
+	"errors"
+	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
+
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
 )
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
+type failingBody struct {
+	secret string
+}
+
+func (body failingBody) Read([]byte) (int, error) {
+	return 0, errors.New(body.secret)
+}
+
+func (failingBody) Close() error {
+	return nil
+}
 
 func TestClientRejectsOversizedBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -20,6 +44,250 @@ func TestClientRejectsOversizedBody(t *testing.T) {
 	_, err := client.Do(req)
 	if err == nil {
 		t.Fatal("expected oversized response error")
+	}
+}
+
+func TestClientAcceptsBodyAtExactLimit(t *testing.T) {
+	body := []byte(`{"ok":true}`)
+	client := Client{
+		HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     http.Header{"Content-Type": {"application/json"}},
+				Body:       io.NopCloser(strings.NewReader(string(body))),
+			}, nil
+		})},
+		MaxBodyBytes: int64(len(body)),
+	}
+	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
+
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(response.Body) != string(body) {
+		t.Fatalf("body = %q", response.Body)
+	}
+}
+
+func TestClientRejectsUnrepresentableBodyLimit(t *testing.T) {
+	for _, limit := range []int64{-1, math.MaxInt64} {
+		t.Run("limit "+strconv.FormatInt(limit, 10), func(t *testing.T) {
+			calls := 0
+			client := Client{
+				HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					return nil, errors.New("must not execute")
+				})},
+				MaxBodyBytes: limit,
+			}
+			request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
+
+			_, err := client.Do(request)
+
+			assertSDKError(t, err, sdkerr.KindInvalidConfig, "transport.configure")
+			if calls != 0 {
+				t.Fatalf("transport calls = %d, want 0", calls)
+			}
+		})
+	}
+}
+
+func TestClientContentTypeHandling(t *testing.T) {
+	tests := []struct {
+		name        string
+		contentType string
+		wantError   bool
+	}{
+		{name: "missing", wantError: true},
+		{name: "malformed", contentType: `application/json; hostile="token-secret`, wantError: true},
+		{name: "non JSON", contentType: "text/plain; hostile=token-secret", wantError: true},
+		{name: "JSON suffix", contentType: "application/problem+json; charset=utf-8"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := Client{HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {test.contentType}},
+					Body:       io.NopCloser(strings.NewReader(`{}`)),
+				}, nil
+			})}}
+			request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
+
+			_, err := client.Do(request)
+			if !test.wantError {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			assertSDKError(t, err, sdkerr.KindProtocol, "transport.response")
+			if strings.Contains(err.Error(), "token-secret") ||
+				(test.contentType != "" && strings.Contains(err.Error(), test.contentType)) {
+				t.Fatalf("error reflects Content-Type: %q", err)
+			}
+		})
+	}
+}
+
+func TestClientSanitizesNetworkAndBodyReadErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		transport roundTripperFunc
+		operation string
+	}{
+		{
+			name: "network",
+			transport: func(*http.Request) (*http.Response, error) {
+				return nil, errors.New("GET https://example.test?token=network-secret Authorization: Bearer credential")
+			},
+			operation: "transport.request",
+		},
+		{
+			name: "body read",
+			transport: func(*http.Request) (*http.Response, error) {
+				return &http.Response{
+					StatusCode: http.StatusOK,
+					Header:     http.Header{"Content-Type": {"application/json"}},
+					Body:       failingBody{secret: "body-secret session_id=session-value"},
+				}, nil
+			},
+			operation: "transport.response",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := Client{HTTP: &http.Client{Transport: test.transport}}
+			request, _ := http.NewRequestWithContext(
+				context.Background(),
+				http.MethodGet,
+				"https://example.test?authorization_code=request-secret",
+				nil,
+			)
+
+			_, err := client.Do(request)
+
+			assertSDKError(t, err, sdkerr.KindIAMUnavailable, test.operation)
+			for _, secret := range []string{"network-secret", "credential", "body-secret", "session-value", "request-secret", "example.test"} {
+				if strings.Contains(err.Error(), secret) {
+					t.Fatalf("error leaked %q: %q", secret, err)
+				}
+			}
+		})
+	}
+}
+
+func TestClientInvokesInjectedTransportOnce(t *testing.T) {
+	calls := 0
+	client := Client{HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("injected transport failure")
+	})}}
+	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
+
+	_, _ = client.Do(request)
+
+	if calls != 1 {
+		t.Fatalf("transport calls = %d, want 1", calls)
+	}
+}
+
+func TestClientClonesResponseHeaders(t *testing.T) {
+	rawHeader := make(http.Header)
+	rawHeader.Set("Content-Type", "application/json")
+	rawHeader.Set("X-Request-ID", "request-original")
+	client := Client{HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     rawHeader,
+			Body:       io.NopCloser(strings.NewReader(`{}`)),
+		}, nil
+	})}}
+	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
+
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response.Header.Set("X-Request-ID", "request-mutated")
+	if got := rawHeader.Get("X-Request-ID"); got != "request-original" {
+		t.Fatalf("raw header mutated to %q", got)
+	}
+}
+
+func TestDefaultHTTPClientDisablesConnectionReuseAndHTTP2(t *testing.T) {
+	client := newDefaultHTTPClient()
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport type = %T", client.Transport)
+	}
+	if !transport.DisableKeepAlives {
+		t.Fatal("default transport permits connection reuse")
+	}
+	if transport.TLSNextProto == nil || len(transport.TLSNextProto) != 0 {
+		t.Fatalf("TLSNextProto = %#v, want explicit HTTP/2 disablement", transport.TLSNextProto)
+	}
+}
+
+func TestDefaultHTTPClientDoesNotFollowRedirects(t *testing.T) {
+	targetCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/target" {
+			targetCalls++
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"target":true}`))
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		http.Redirect(w, request, "/target?authorization_code=redirect-secret", http.StatusFound)
+	}))
+	defer server.Close()
+
+	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL+"/start", nil)
+	response, err := (Client{}).Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusFound)
+	}
+	if targetCalls != 0 {
+		t.Fatalf("redirect target calls = %d, want 0", targetCalls)
+	}
+}
+
+func TestDecodeJSONRejectsMalformedAndTrailingValues(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		body string
+	}{
+		{name: "malformed", body: `{"value":`},
+		{name: "trailing value", body: `{"value":"ok"} {"secret":"trailing-secret"}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var target struct {
+				Value string `json:"value"`
+			}
+			err := DecodeJSON([]byte(test.body), &target)
+			assertSDKError(t, err, sdkerr.KindProtocol, "transport.decode_json")
+			if strings.Contains(err.Error(), "trailing-secret") {
+				t.Fatalf("error leaked response content: %q", err)
+			}
+		})
+	}
+}
+
+func TestDecodeJSONAllowsUnknownFields(t *testing.T) {
+	var target struct {
+		Value string `json:"value"`
+	}
+	err := DecodeJSON([]byte(`{"value":"known","future_field":{"nested":true}}`), &target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Value != "known" {
+		t.Fatalf("value = %q", target.Value)
 	}
 }
 
@@ -39,5 +307,29 @@ func TestClientCapturesCorrelation(t *testing.T) {
 	}
 	if response.Correlation.RequestID != "req-header" || response.Correlation.TraceID != "trace-body" {
 		t.Fatalf("correlation = %#v", response.Correlation)
+	}
+}
+
+func assertSDKError(t *testing.T, err error, kind sdkerr.Kind, operation string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var typed *sdkerr.Error
+	if !errors.As(err, &typed) {
+		t.Fatalf("error type = %T, want *sdkerr.Error", err)
+	}
+	if typed.Kind != kind || typed.Operation != operation {
+		t.Fatalf("error metadata = (%q, %q), want (%q, %q)", typed.Kind, typed.Operation, kind, operation)
+	}
+	if typed.Cause != nil || errors.Unwrap(typed) != nil {
+		t.Fatalf("error retained unsafe cause: %#v", typed.Cause)
+	}
+	if typed.HTTPStatus != 0 || typed.RequestID != "" || typed.TraceID != "" ||
+		typed.DecisionID != "" || typed.Retryable {
+		t.Fatalf("error retained unexpected metadata: %#v", typed)
+	}
+	if got, want := err.Error(), operation+": "+string(kind); got != want {
+		t.Fatalf("error text = %q, want %q", got, want)
 	}
 }

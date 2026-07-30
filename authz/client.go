@@ -72,9 +72,8 @@ func New(config Config) (*Client, error) {
 	}
 	endpoint := config.Endpoint
 	if endpoint == "" {
-		issuer.Path = appendDecisionPath(issuer.Path)
-		if issuer.RawPath != "" {
-			issuer.RawPath = appendDecisionPath(issuer.RawPath)
+		if !appendDecisionPath(&issuer) {
+			return nil, decisionError(sdkerr.KindInvalidConfig, "authz.configure", 0, false, transport.Correlation{}, nil)
 		}
 		endpoint = issuer.String()
 	}
@@ -386,8 +385,18 @@ func validMethod(method string) bool {
 	}
 }
 
-func appendDecisionPath(path string) string {
-	return strings.TrimSuffix(path, "/") + decisionPath
+func appendDecisionPath(issuer *url.URL) bool {
+	escapedPath := issuer.EscapedPath()
+	if strings.HasSuffix(escapedPath, "/") {
+		escapedPath = strings.TrimSuffix(escapedPath, "/")
+	}
+	decodedPath, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		return false
+	}
+	issuer.Path = decodedPath + decisionPath
+	issuer.RawPath = escapedPath + decisionPath
+	return true
 }
 
 func safeCorrelationID(value string) string {

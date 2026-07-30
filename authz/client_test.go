@@ -211,6 +211,39 @@ func TestNewPreservesEscapedIssuerPathWhenDerivingEndpoint(t *testing.T) {
 	}
 }
 
+func TestDecidePreservesEscapedTerminalPathSemantics(t *testing.T) {
+	var gotEscapedPath, gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotEscapedPath, gotPath = r.URL.EscapedPath(), r.URL.Path
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"decision_id":"dec-1","allowed":true,"reason_code":"allowed"}`)
+	}))
+	defer server.Close()
+	for _, test := range []struct {
+		issuerPath  string
+		wantEscaped string
+		wantPath    string
+	}{
+		{"/tenant%2F", "/tenant%2F/authorization/v1/decisions", "/tenant//authorization/v1/decisions"},
+		{"/tenant%2f", "/tenant%2f/authorization/v1/decisions", "/tenant//authorization/v1/decisions"},
+		{"/tenant%252F", "/tenant%252F/authorization/v1/decisions", "/tenant%2F/authorization/v1/decisions"},
+		{"/tenant%2F/", "/tenant%2F/authorization/v1/decisions", "/tenant//authorization/v1/decisions"},
+	} {
+		t.Run(test.issuerPath, func(t *testing.T) {
+			client, err := New(Config{IssuerURL: server.URL + test.issuerPath, HTTPClient: server.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, err := client.Decide(context.Background(), "access-token", validPermission()); err != nil {
+				t.Fatal(err)
+			}
+			if gotEscapedPath != test.wantEscaped || gotPath != test.wantPath {
+				t.Fatalf("path = escaped %q decoded %q, want escaped %q decoded %q", gotEscapedPath, gotPath, test.wantEscaped, test.wantPath)
+			}
+		})
+	}
+}
+
 func TestDecidePreservesConfiguredEndpointQuery(t *testing.T) {
 	var gotPath, gotQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

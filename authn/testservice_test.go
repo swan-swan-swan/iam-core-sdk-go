@@ -133,6 +133,7 @@ type fakeBrowserOIDC struct {
 
 	tokenCalls    atomic.Int32
 	userInfoCalls atomic.Int32
+	logoutCalls   atomic.Int32
 
 	mu              sync.Mutex
 	nonce           string
@@ -141,6 +142,21 @@ type fakeBrowserOIDC struct {
 	idSubject       string
 	userInfoSubject string
 	includeIDToken  bool
+
+	refreshStatus         int
+	refreshError          string
+	refreshAccessToken    string
+	refreshToken          string
+	refreshIDSubject      string
+	refreshRawIDToken     string
+	includeRefreshToken   bool
+	includeRefreshIDToken bool
+	refreshStarted        chan<- struct{}
+	refreshBlock          <-chan struct{}
+	logoutStatus          int
+	lastLogoutAccessToken string
+	lastLogoutIDTokenHint string
+	logoutCheck           func()
 }
 
 func newFakeBrowserOIDC(t *testing.T) *fakeBrowserOIDC {
@@ -156,12 +172,21 @@ func newFakeBrowserOIDC(t *testing.T) *fakeBrowserOIDC {
 		idSubject:       "user-1",
 		userInfoSubject: "user-1",
 		includeIDToken:  true,
+
+		refreshStatus:         http.StatusOK,
+		refreshAccessToken:    "access-refreshed",
+		refreshToken:          "refresh-rotated",
+		refreshIDSubject:      "user-1",
+		includeRefreshToken:   true,
+		includeRefreshIDToken: true,
+		logoutStatus:          http.StatusNoContent,
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", fake.discovery)
 	mux.HandleFunc("/token", fake.token)
 	mux.HandleFunc("/userinfo", fake.userInfo)
 	mux.HandleFunc("/jwks", fake.jwks)
+	mux.HandleFunc("/logout", fake.logout)
 	fake.server = httptest.NewServer(mux)
 	t.Cleanup(fake.server.Close)
 	return fake
@@ -182,7 +207,22 @@ func (f *fakeBrowserOIDC) discovery(w http.ResponseWriter, _ *http.Request) {
 
 func (f *fakeBrowserOIDC) token(w http.ResponseWriter, request *http.Request) {
 	f.tokenCalls.Add(1)
-	if err := request.ParseForm(); err != nil || request.PostForm.Get("code") == "" {
+	if err := request.ParseForm(); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	switch request.PostForm.Get("grant_type") {
+	case "authorization_code":
+		f.exchangeToken(w, request)
+	case "refresh_token":
+		f.refresh(w, request)
+	default:
+		http.Error(w, "bad request", http.StatusBadRequest)
+	}
+}
+
+func (f *fakeBrowserOIDC) exchangeToken(w http.ResponseWriter, request *http.Request) {
+	if request.PostForm.Get("code") == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
@@ -205,6 +245,59 @@ func (f *fakeBrowserOIDC) token(w http.ResponseWriter, request *http.Request) {
 	}
 	if includeIDToken {
 		body["id_token"] = f.signIDToken(subject, nonce)
+	}
+	_ = json.NewEncoder(w).Encode(body)
+}
+
+func (f *fakeBrowserOIDC) refresh(w http.ResponseWriter, request *http.Request) {
+	if request.PostForm.Get("refresh_token") == "" {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	f.mu.Lock()
+	status := f.refreshStatus
+	errorCode := f.refreshError
+	accessToken := f.refreshAccessToken
+	refreshToken := f.refreshToken
+	idSubject := f.refreshIDSubject
+	rawIDToken := f.refreshRawIDToken
+	includeRefreshToken := f.includeRefreshToken
+	includeIDToken := f.includeRefreshIDToken
+	started := f.refreshStarted
+	block := f.refreshBlock
+	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if block != nil {
+		select {
+		case <-block:
+		case <-request.Context().Done():
+			return
+		}
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if status != http.StatusOK {
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": errorCode})
+		return
+	}
+	body := map[string]any{
+		"access_token": accessToken,
+		"token_type":   "Bearer",
+		"expires_in":   86400,
+	}
+	if includeRefreshToken {
+		body["refresh_token"] = refreshToken
+	}
+	if includeIDToken {
+		if rawIDToken == "" {
+			rawIDToken = f.signIDToken(idSubject, "")
+		}
+		body["id_token"] = rawIDToken
 	}
 	_ = json.NewEncoder(w).Encode(body)
 }
@@ -239,6 +332,20 @@ func (f *fakeBrowserOIDC) jwks(w http.ResponseWriter, _ *http.Request) {
 		"n":   base64.RawURLEncoding.EncodeToString(f.key.PublicKey.N.Bytes()),
 		"e":   base64.RawURLEncoding.EncodeToString(exponent),
 	}}})
+}
+
+func (f *fakeBrowserOIDC) logout(w http.ResponseWriter, request *http.Request) {
+	f.logoutCalls.Add(1)
+	f.mu.Lock()
+	f.lastLogoutAccessToken = request.Header.Get("Authorization")
+	f.lastLogoutIDTokenHint = request.URL.Query().Get("id_token_hint")
+	status := f.logoutStatus
+	check := f.logoutCheck
+	f.mu.Unlock()
+	if check != nil {
+		check()
+	}
+	w.WriteHeader(status)
 }
 
 func (f *fakeBrowserOIDC) signIDToken(subject, nonce string) string {

@@ -185,6 +185,58 @@ func TestVerifyIDTokenRejectsMissingSubject(t *testing.T) {
 	assertProtocolErrorIsRedacted(t, err, raw)
 }
 
+func TestVerifyRefreshedIDTokenAcceptsValidTokenWithoutNonce(t *testing.T) {
+	client, signer := newVerificationClient(t)
+	claims := signer.validClaims()
+	delete(claims, "nonce")
+	claims["username"] = "alice"
+
+	got, err := client.VerifyRefreshedIDToken(t.Context(), signer.IDToken(t, claims))
+	if err != nil {
+		t.Fatalf("VerifyRefreshedIDToken() error = %v", err)
+	}
+	if got.Subject != task4Subject || got.Username != "alice" || got.Nonce != "" {
+		t.Fatalf("claims = %#v", got)
+	}
+}
+
+func TestVerifyRefreshedIDTokenRejectsInvalidRegisteredClaims(t *testing.T) {
+	tests := map[string]func(*testTokenSigner, map[string]any){
+		"wrong issuer": func(_ *testTokenSigner, claims map[string]any) {
+			claims["iss"] = "https://wrong.example/token-secret"
+		},
+		"wrong audience": func(_ *testTokenSigner, claims map[string]any) {
+			claims["aud"] = []string{"wrong-client-secret"}
+		},
+		"expired": func(_ *testTokenSigner, claims map[string]any) {
+			claims["exp"] = time.Now().Add(-time.Hour).Unix()
+		},
+		"missing subject": func(_ *testTokenSigner, claims map[string]any) {
+			delete(claims, "sub")
+		},
+		"blank subject": func(_ *testTokenSigner, claims map[string]any) {
+			claims["sub"] = " \t"
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			client, signer := newVerificationClient(t)
+			claims := signer.validClaims()
+			mutate(signer, claims)
+			raw := signer.IDToken(t, claims)
+			_, err := client.VerifyRefreshedIDToken(t.Context(), raw)
+			assertProtocolErrorIsRedacted(t, err, raw, "token-secret", "client-secret")
+		})
+	}
+}
+
+func TestVerifyRefreshedIDTokenRejectsWrongAlgorithm(t *testing.T) {
+	client, signer := newVerificationClient(t)
+	raw := signer.token(t, jwt.SigningMethodRS384, signer.validClaims())
+	_, err := client.VerifyRefreshedIDToken(t.Context(), raw)
+	assertProtocolErrorIsRedacted(t, err, raw)
+}
+
 func TestVerifyAccessTokenJWTAcceptsStringAndArrayAudience(t *testing.T) {
 	for _, audience := range []any{"client-1", []string{"other", "client-1"}} {
 		t.Run("", func(t *testing.T) {

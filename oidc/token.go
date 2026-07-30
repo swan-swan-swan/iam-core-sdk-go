@@ -152,7 +152,10 @@ func tokenEndpointError(
 ) *sdkerr.Error {
 	var err *sdkerr.Error
 	switch body.Error {
-	case "invalid_client", "invalid_grant":
+	case "invalid_grant":
+		err = sdkerr.New(sdkerr.KindUnauthenticated, operation, status, false, nil)
+		err.Reason = sdkerr.ReasonInvalidGrant
+	case "invalid_client":
 		err = sdkerr.New(sdkerr.KindUnauthenticated, operation, status, false, nil)
 	case "access_denied":
 		err = sdkerr.New(sdkerr.KindForbidden, operation, status, false, nil)

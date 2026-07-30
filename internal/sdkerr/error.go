@@ -7,6 +7,8 @@ import (
 
 type Kind string
 
+type Reason string
+
 const (
 	KindInvalidConfig      Kind = "invalid_config"
 	KindUnauthenticated    Kind = "unauthenticated"
@@ -15,16 +17,20 @@ const (
 	KindProtocol           Kind = "protocol_error"
 	KindSessionUnavailable Kind = "session_unavailable"
 	KindIAMUnavailable     Kind = "iam_unavailable"
+
+	ReasonInvalidGrant Reason = "invalid_grant"
 )
 
 var (
 	ErrUnauthenticated = errors.New("iamcore: unauthenticated")
 	ErrForbidden       = errors.New("iamcore: forbidden")
 	ErrUnavailable     = errors.New("iamcore: unavailable")
+	ErrInvalidGrant    = errors.New("iamcore: invalid grant")
 )
 
 type Error struct {
 	Kind       Kind
+	Reason     Reason
 	Operation  string
 	HTTPStatus int
 	RequestID  string
@@ -63,6 +69,8 @@ func (e *Error) Is(target error) bool {
 		return e != nil && e.Kind == KindForbidden
 	case ErrUnavailable:
 		return e != nil && (e.Kind == KindIAMUnavailable || e.Kind == KindSessionUnavailable)
+	case ErrInvalidGrant:
+		return e != nil && e.Reason == ReasonInvalidGrant
 	default:
 		return false
 	}

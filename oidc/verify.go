@@ -60,15 +60,49 @@ func (c *Client) VerifyIDToken(
 	if strings.TrimSpace(expectedNonce) == "" {
 		return IDTokenClaims{}, verificationError(operation)
 	}
+	claims, err := c.verifyIDToken(ctx, rawIDToken, operation)
+	if err != nil {
+		return IDTokenClaims{}, err
+	}
+	if strings.TrimSpace(claims.Nonce) == "" ||
+		subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(expectedNonce)) != 1 {
+		return IDTokenClaims{}, verificationError(operation)
+	}
+	return claims, nil
+}
+
+// VerifyRefreshedIDToken verifies an ID Token returned by a refresh response.
+// It validates the same registered claims as VerifyIDToken but intentionally
+// does not apply a login nonce check.
+func (c *Client) VerifyRefreshedIDToken(
+	ctx context.Context,
+	rawIDToken string,
+) (claims IDTokenClaims, resultErr error) {
+	const operation = "oidc.verify_refreshed_id_token"
+	started := time.Now()
+	defer func() {
+		duration := time.Since(started)
+		c.observe(ctx, operation, outcome(resultErr), duration)
+		c.log(operation, outcome(resultErr), duration)
+	}()
+
+	return c.verifyIDToken(ctx, rawIDToken, operation)
+}
+
+func (c *Client) verifyIDToken(
+	ctx context.Context,
+	rawIDToken string,
+	operation string,
+) (IDTokenClaims, error) {
 	token, err := c.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		return IDTokenClaims{}, verificationError(operation)
 	}
+	var claims IDTokenClaims
 	if err := token.Claims(&claims); err != nil {
 		return IDTokenClaims{}, verificationError(operation)
 	}
-	if strings.TrimSpace(claims.Subject) == "" || strings.TrimSpace(claims.Nonce) == "" ||
-		subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(expectedNonce)) != 1 {
+	if strings.TrimSpace(claims.Subject) == "" {
 		return IDTokenClaims{}, verificationError(operation)
 	}
 	claims.Roles = append([]string(nil), claims.Roles...)

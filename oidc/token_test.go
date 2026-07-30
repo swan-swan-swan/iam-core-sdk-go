@@ -170,6 +170,9 @@ func TestTokenErrorIsRedactedAndCarriesCorrelation(t *testing.T) {
 	if typed.Kind != sdkerr.KindUnauthenticated || typed.RequestID != "request-header" || typed.TraceID != "trace-safe" {
 		t.Fatalf("error = %#v", typed)
 	}
+	if typed.Reason != sdkerr.ReasonInvalidGrant || !errors.Is(err, sdkerr.ErrInvalidGrant) {
+		t.Fatalf("invalid_grant classification = %#v", typed)
+	}
 	if typed.Cause != nil {
 		t.Fatalf("error cause = %v", typed.Cause)
 	}
@@ -177,6 +180,56 @@ func TestTokenErrorIsRedactedAndCarriesCorrelation(t *testing.T) {
 		if strings.Contains(err.Error(), secret) {
 			t.Fatalf("error exposed %q: %v", secret, err)
 		}
+	}
+}
+
+func TestTokenEndpointClassifiesOnlyExactInvalidGrant(t *testing.T) {
+	for name, code := range map[string]string{
+		"invalid client":  "invalid_client",
+		"near match":      "invalid-grant",
+		"hostile unknown": "invalid_grant token=secret",
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, fake := newTestClientAndServer(t)
+			fake.setTokenResponse(http.StatusBadRequest, map[string]any{
+				"error":             code,
+				"error_description": "hostile refresh-original secret-1",
+			}, "")
+			_, err := client.Refresh(t.Context(), "refresh-original")
+			if err == nil {
+				t.Fatal("expected token error")
+			}
+			typed, ok := err.(*sdkerr.Error)
+			if !ok || typed.Reason != "" || errors.Is(err, sdkerr.ErrInvalidGrant) {
+				t.Fatalf("error = %#v", err)
+			}
+			for _, forbidden := range []string{code, "hostile", "refresh-original", "secret-1"} {
+				if strings.Contains(err.Error(), forbidden) {
+					t.Fatalf("error exposed %q: %v", forbidden, err)
+				}
+			}
+		})
+	}
+}
+
+func TestSanitizeErrorPreservesOnlyAllowlistedReason(t *testing.T) {
+	valid := &sdkerr.Error{
+		Kind:      sdkerr.KindUnauthenticated,
+		Operation: "transport.response",
+		Reason:    sdkerr.ReasonInvalidGrant,
+	}
+	if got := sanitizeError("oidc.refresh", valid); got.Reason != sdkerr.ReasonInvalidGrant {
+		t.Fatalf("allowlisted reason = %q", got.Reason)
+	}
+
+	hostile := &sdkerr.Error{
+		Kind:      sdkerr.KindUnauthenticated,
+		Operation: "transport.response",
+		Reason:    "invalid_grant token=secret",
+	}
+	got := sanitizeError("oidc.refresh", hostile)
+	if got.Reason != "" || strings.Contains(got.Error(), "secret") {
+		t.Fatalf("unsafe sanitized error = %#v", got)
 	}
 }
 

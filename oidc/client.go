@@ -304,6 +304,7 @@ func sanitizeError(operation string, err error) *sdkerr.Error {
 	if typed, ok := err.(*sdkerr.Error); ok {
 		return &sdkerr.Error{
 			Kind:       typed.Kind,
+			Reason:     safeReason(typed.Reason),
 			Operation:  operation,
 			HTTPStatus: typed.HTTPStatus,
 			RequestID:  safeCorrelationID(typed.RequestID),
@@ -313,6 +314,13 @@ func sanitizeError(operation string, err error) *sdkerr.Error {
 		}
 	}
 	return sdkerr.New(sdkerr.KindIAMUnavailable, operation, 0, true, nil)
+}
+
+func safeReason(reason sdkerr.Reason) sdkerr.Reason {
+	if reason == sdkerr.ReasonInvalidGrant {
+		return reason
+	}
+	return ""
 }
 
 func withCorrelation(err *sdkerr.Error, correlation transport.Correlation) *sdkerr.Error {

@@ -52,19 +52,31 @@ func (c Client) Do(request *http.Request) (Response, error) {
 	ApplyHeaders(request.Context(), request.Header)
 	raw, err := httpClient.Do(request)
 	if err != nil {
-		return Response{}, sdkerr.New(sdkerr.KindIAMUnavailable, "transport.request", 0, false, nil)
+		return Response{}, sdkerr.New(
+			sdkerr.KindIAMUnavailable,
+			"transport.request",
+			http.StatusServiceUnavailable,
+			true,
+			nil,
+		)
 	}
 	defer raw.Body.Close()
 	mediaType, _, err := mime.ParseMediaType(raw.Header.Get("Content-Type"))
 	if err != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
-		return Response{}, sdkerr.New(sdkerr.KindProtocol, "transport.response", 0, false, nil)
+		return Response{}, sdkerr.New(sdkerr.KindProtocol, "transport.response", raw.StatusCode, false, nil)
 	}
 	body, err := io.ReadAll(io.LimitReader(raw.Body, limit+1))
 	if err != nil {
-		return Response{}, sdkerr.New(sdkerr.KindIAMUnavailable, "transport.response", 0, false, nil)
+		return Response{}, sdkerr.New(
+			sdkerr.KindIAMUnavailable,
+			"transport.response",
+			http.StatusServiceUnavailable,
+			true,
+			nil,
+		)
 	}
 	if int64(len(body)) > limit {
-		return Response{}, sdkerr.New(sdkerr.KindProtocol, "transport.response", 0, false, nil)
+		return Response{}, sdkerr.New(sdkerr.KindProtocol, "transport.response", raw.StatusCode, false, nil)
 	}
 	correlation := Correlation{RequestID: strings.TrimSpace(raw.Header.Get("X-Request-ID"))}
 	var envelope struct {

@@ -35,6 +35,7 @@ func (failingBody) Close() error {
 func TestClientRejectsOversizedBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadGateway)
 		_, _ = w.Write([]byte(`{"value":"` + strings.Repeat("x", 128) + `"}`))
 	}))
 	defer server.Close()
@@ -42,9 +43,7 @@ func TestClientRejectsOversizedBody(t *testing.T) {
 	client := Client{HTTP: server.Client(), MaxBodyBytes: 32}
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
 	_, err := client.Do(req)
-	if err == nil {
-		t.Fatal("expected oversized response error")
-	}
+	assertSDKError(t, err, sdkerr.KindProtocol, "transport.response", http.StatusBadGateway, false)
 }
 
 func TestClientAcceptsBodyAtExactLimit(t *testing.T) {
@@ -85,7 +84,7 @@ func TestClientRejectsUnrepresentableBodyLimit(t *testing.T) {
 
 			_, err := client.Do(request)
 
-			assertSDKError(t, err, sdkerr.KindInvalidConfig, "transport.configure")
+			assertSDKError(t, err, sdkerr.KindInvalidConfig, "transport.configure", 0, false)
 			if calls != 0 {
 				t.Fatalf("transport calls = %d, want 0", calls)
 			}
@@ -108,7 +107,7 @@ func TestClientContentTypeHandling(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			client := Client{HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 				return &http.Response{
-					StatusCode: http.StatusOK,
+					StatusCode: http.StatusBadGateway,
 					Header:     http.Header{"Content-Type": {test.contentType}},
 					Body:       io.NopCloser(strings.NewReader(`{}`)),
 				}, nil
@@ -122,7 +121,7 @@ func TestClientContentTypeHandling(t *testing.T) {
 				}
 				return
 			}
-			assertSDKError(t, err, sdkerr.KindProtocol, "transport.response")
+			assertSDKError(t, err, sdkerr.KindProtocol, "transport.response", http.StatusBadGateway, false)
 			if strings.Contains(err.Error(), "token-secret") ||
 				(test.contentType != "" && strings.Contains(err.Error(), test.contentType)) {
 				t.Fatalf("error reflects Content-Type: %q", err)
@@ -168,7 +167,7 @@ func TestClientSanitizesNetworkAndBodyReadErrors(t *testing.T) {
 
 			_, err := client.Do(request)
 
-			assertSDKError(t, err, sdkerr.KindIAMUnavailable, test.operation)
+			assertSDKError(t, err, sdkerr.KindIAMUnavailable, test.operation, http.StatusServiceUnavailable, true)
 			for _, secret := range []string{"network-secret", "credential", "body-secret", "session-value", "request-secret", "example.test"} {
 				if strings.Contains(err.Error(), secret) {
 					t.Fatalf("error leaked %q: %q", secret, err)
@@ -257,6 +256,30 @@ func TestDefaultHTTPClientDoesNotFollowRedirects(t *testing.T) {
 	}
 }
 
+func TestDefaultClientReturns503WithoutReplay(t *testing.T) {
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests++
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":"temporarily unavailable"}`))
+	}))
+	defer server.Close()
+
+	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
+	response, err := (Client{}).Do(request)
+
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusServiceUnavailable)
+	}
+	if requests != 1 {
+		t.Fatalf("server requests = %d, want 1", requests)
+	}
+}
+
 func TestDecodeJSONRejectsMalformedAndTrailingValues(t *testing.T) {
 	for _, test := range []struct {
 		name string
@@ -270,7 +293,7 @@ func TestDecodeJSONRejectsMalformedAndTrailingValues(t *testing.T) {
 				Value string `json:"value"`
 			}
 			err := DecodeJSON([]byte(test.body), &target)
-			assertSDKError(t, err, sdkerr.KindProtocol, "transport.decode_json")
+			assertSDKError(t, err, sdkerr.KindProtocol, "transport.decode_json", 0, false)
 			if strings.Contains(err.Error(), "trailing-secret") {
 				t.Fatalf("error leaked response content: %q", err)
 			}
@@ -310,7 +333,14 @@ func TestClientCapturesCorrelation(t *testing.T) {
 	}
 }
 
-func assertSDKError(t *testing.T, err error, kind sdkerr.Kind, operation string) {
+func assertSDKError(
+	t *testing.T,
+	err error,
+	kind sdkerr.Kind,
+	operation string,
+	status int,
+	retryable bool,
+) {
 	t.Helper()
 	if err == nil {
 		t.Fatal("expected error")
@@ -325,8 +355,16 @@ func assertSDKError(t *testing.T, err error, kind sdkerr.Kind, operation string)
 	if typed.Cause != nil || errors.Unwrap(typed) != nil {
 		t.Fatalf("error retained unsafe cause: %#v", typed.Cause)
 	}
-	if typed.HTTPStatus != 0 || typed.RequestID != "" || typed.TraceID != "" ||
-		typed.DecisionID != "" || typed.Retryable {
+	if typed.HTTPStatus != status || typed.Retryable != retryable {
+		t.Fatalf(
+			"error availability metadata = (%d, %t), want (%d, %t)",
+			typed.HTTPStatus,
+			typed.Retryable,
+			status,
+			retryable,
+		)
+	}
+	if typed.RequestID != "" || typed.TraceID != "" || typed.DecisionID != "" {
 		t.Fatalf("error retained unexpected metadata: %#v", typed)
 	}
 	if got, want := err.Error(), operation+": "+string(kind); got != want {

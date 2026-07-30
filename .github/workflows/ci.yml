@@ -1,0 +1,77 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  GOTOOLCHAIN: local
+
+jobs:
+  verify:
+    name: Unit, race, vet, diff, and fuzz
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go 1.24
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Unit tests
+        run: go test ./... -short -count=1
+
+      - name: Race tests
+        run: go test -race ./... -short
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Diff whitespace check
+        run: git diff --check
+
+      - name: Fuzz transport decoder
+        run: go test ./internal/transport -run '^$' -fuzz=FuzzDecodeJSON -fuzztime=10s
+
+      - name: Fuzz return_to validation
+        run: go test ./authn -run '^$' -fuzz=FuzzReturnTo -fuzztime=10s
+
+  redis:
+    name: Redis ${{ matrix.redis-image }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        redis-image:
+          - redis:6.2-alpine
+          - redis:7.4-alpine
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Go 1.24
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+          cache: true
+          cache-dependency-path: go.sum
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Redis conformance
+        env:
+          IAMCORE_TEST_REDIS_IMAGE: ${{ matrix.redis-image }}
+        run: go test ./session/redis -run TestBackendConformance -count=1 -timeout=5m

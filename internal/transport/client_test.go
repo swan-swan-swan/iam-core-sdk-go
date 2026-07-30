@@ -374,7 +374,7 @@ func TestClientClonesResponseHeaders(t *testing.T) {
 }
 
 func TestDefaultHTTPClientDisablesConnectionReuseAndHTTP2(t *testing.T) {
-	client := newDefaultHTTPClient()
+	client := NewDefaultHTTPClient()
 	transport, ok := client.Transport.(*http.Transport)
 	if !ok {
 		t.Fatalf("transport type = %T", client.Transport)

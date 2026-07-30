@@ -3,9 +3,13 @@ package iamcore
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/rsa"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -15,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/authn"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/authz"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
@@ -34,14 +39,20 @@ type rootTestIAM struct {
 	decisionAllowed bool
 
 	discoveryCalls atomic.Int32
+	tokenCalls     atomic.Int32
 	userInfoCalls  atomic.Int32
 	decisionCalls  atomic.Int32
+	logoutCalls    atomic.Int32
 
 	mu                    sync.Mutex
+	signingKey            *rsa.PrivateKey
+	callbackIDToken       string
+	lastTokenHeaders      http.Header
 	lastUserInfoHeaders   http.Header
 	lastDecisionHeaders   http.Header
 	lastDecisionBody      map[string]string
 	lastDecisionAuth      string
+	lastLogoutHeaders     http.Header
 	requireInjectedClient bool
 }
 
@@ -77,6 +88,44 @@ func (f *rootTestIAM) serveHTTP(w http.ResponseWriter, request *http.Request) {
 			"jwks_uri":               issuer + "/oidc/jwks",
 			"end_session_endpoint":   issuer + "/oidc/logout",
 			"scopes_supported":       []string{"openid", "profile", "email", "roles"},
+		})
+	case "/oidc/token":
+		f.tokenCalls.Add(1)
+		f.mu.Lock()
+		f.lastTokenHeaders = request.Header.Clone()
+		idToken := f.callbackIDToken
+		f.mu.Unlock()
+		if idToken == "" {
+			http.Error(w, "test signing is not configured", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "callback-access-token",
+			"token_type":    "Bearer",
+			"refresh_token": "callback-refresh-token",
+			"id_token":      idToken,
+			"expires_in":    3600,
+		})
+	case "/oidc/jwks":
+		f.mu.Lock()
+		key := f.signingKey
+		f.mu.Unlock()
+		if key == nil {
+			http.Error(w, "test signing is not configured", http.StatusInternalServerError)
+			return
+		}
+		exponent := big.NewInt(int64(key.PublicKey.E)).Bytes()
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"keys": []map[string]string{{
+				"kty": "RSA",
+				"kid": "root-test-key",
+				"use": "sig",
+				"alg": "RS256",
+				"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
+				"e":   base64.RawURLEncoding.EncodeToString(exponent),
+			}},
 		})
 	case "/oidc/userinfo":
 		f.userInfoCalls.Add(1)
@@ -120,9 +169,40 @@ func (f *rootTestIAM) serveHTTP(w http.ResponseWriter, request *http.Request) {
 		} else {
 			_, _ = io.WriteString(w, `{"message":"hostile-decision-secret"}`)
 		}
+	case "/oidc/logout":
+		f.logoutCalls.Add(1)
+		f.mu.Lock()
+		f.lastLogoutHeaders = request.Header.Clone()
+		f.mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.NotFound(w, request)
 	}
+}
+
+func (f *rootTestIAM) enableBrowserFlow(t *testing.T, nonce string) {
+	t.Helper()
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("generate RSA key: %v", err)
+	}
+	token := jwt.NewWithClaims(jwt.SigningMethodRS256, jwt.MapClaims{
+		"iss":   f.discoveryIssuer,
+		"sub":   "op_usr_0123456789abcdefgjk",
+		"aud":   "client-1",
+		"exp":   time.Now().Add(time.Hour).Unix(),
+		"iat":   time.Now().Unix(),
+		"nonce": nonce,
+	})
+	token.Header["kid"] = "root-test-key"
+	signed, err := token.SignedString(key)
+	if err != nil {
+		t.Fatalf("sign ID token: %v", err)
+	}
+	f.mu.Lock()
+	f.signingKey = key
+	f.callbackIDToken = signed
+	f.mu.Unlock()
 }
 
 func (f *rootTestIAM) httpClient() *http.Client {
@@ -143,6 +223,12 @@ func (f *rootTestIAM) decisionSnapshot() (http.Header, map[string]string, string
 		body[key] = value
 	}
 	return f.lastDecisionHeaders.Clone(), body, f.lastDecisionAuth
+}
+
+func (f *rootTestIAM) browserHeaderSnapshot() (http.Header, http.Header, http.Header) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastTokenHeaders.Clone(), f.lastUserInfoHeaders.Clone(), f.lastLogoutHeaders.Clone()
 }
 
 type roundTripperFunc func(*http.Request) (*http.Response, error)
@@ -420,6 +506,185 @@ func TestClientComposesAccessorsHandlersAndMiddlewareWithSharedHTTPClient(t *tes
 			fake.userInfoCalls.Load(),
 			fake.decisionCalls.Load(),
 		)
+	}
+}
+
+func TestClientBrowserHandlersPropagateOnlyCorrelationHeaders(t *testing.T) {
+	const (
+		flowID       = "flow-browser-1"
+		state        = "state-browser-1"
+		nonce        = "nonce-browser-1"
+		logoutID     = "session-browser-1"
+		incomingAuth = "Bearer untrusted-incoming-authorization"
+	)
+	fake := newRootTestIAM(t)
+	fake.enableBrowserFlow(t, nonce)
+	backend := memory.New(memory.Options{})
+	config := validRootConfig(fake)
+	config.Session.Backend = backend
+	client, err := New(t.Context(), config)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	now := time.Now()
+	if err := backend.PutFlow(t.Context(), &session.Flow{
+		ID:        flowID,
+		State:     state,
+		Nonce:     nonce,
+		ReturnTo:  "/after-callback",
+		CreatedAt: now,
+		ExpiresAt: now.Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("PutFlow() error = %v", err)
+	}
+
+	callbackRequest := httptest.NewRequest(
+		http.MethodGet,
+		"/callback?state="+state+"&code=callback-code",
+		nil,
+	)
+	callbackRequest.AddCookie(&http.Cookie{Name: "__Host-iam_core_flow", Value: flowID})
+	setIncomingPropagationTestHeaders(callbackRequest, incomingAuth, "callback-request")
+	callbackResponse := httptest.NewRecorder()
+	client.CallbackHandler().ServeHTTP(callbackResponse, callbackRequest)
+	if callbackResponse.Code != http.StatusFound ||
+		callbackResponse.Header().Get("Location") != "/after-callback" {
+		t.Fatalf("callback status=%d location=%q body=%s", callbackResponse.Code, callbackResponse.Header().Get("Location"), callbackResponse.Body.String())
+	}
+
+	if err := backend.Create(t.Context(), &session.Session{
+		ID:      logoutID,
+		Version: 1,
+		TokenSet: oidc.TokenSet{
+			AccessToken:       "logout-access-token",
+			IDToken:           "logout-id-token",
+			AccessTokenExpiry: now.Add(time.Hour),
+		},
+		Identity:            oidc.Identity{Subject: "op_usr_0123456789abcdefgjk"},
+		CreatedAt:           now,
+		UpdatedAt:           now,
+		LastSeenAt:          now,
+		ExpiresAt:           now.Add(time.Hour),
+		IdleExpiresAt:       now.Add(time.Hour),
+		IdentityValidatedAt: now,
+	}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	logoutRequest := httptest.NewRequest(http.MethodPost, "/logout", nil)
+	logoutRequest.AddCookie(&http.Cookie{Name: "__Host-iam_core_session", Value: logoutID})
+	setIncomingPropagationTestHeaders(logoutRequest, incomingAuth, "logout-request")
+	logoutResponse := httptest.NewRecorder()
+	client.LogoutHandler().ServeHTTP(logoutResponse, logoutRequest)
+	if logoutResponse.Code != http.StatusNoContent {
+		t.Fatalf("logout status=%d body=%s", logoutResponse.Code, logoutResponse.Body.String())
+	}
+
+	tokenHeaders, userInfoHeaders, logoutHeaders := fake.browserHeaderSnapshot()
+	assertBrowserPropagationHeaders(t, tokenHeaders, "", "callback-request")
+	assertBrowserPropagationHeaders(t, userInfoHeaders, "Bearer callback-access-token", "callback-request")
+	assertBrowserPropagationHeaders(t, logoutHeaders, "Bearer logout-access-token", "logout-request")
+	if fake.tokenCalls.Load() != 1 || fake.userInfoCalls.Load() != 1 || fake.logoutCalls.Load() != 1 {
+		t.Fatalf(
+			"calls token=%d userinfo=%d logout=%d",
+			fake.tokenCalls.Load(),
+			fake.userInfoCalls.Load(),
+			fake.logoutCalls.Load(),
+		)
+	}
+}
+
+func setIncomingPropagationTestHeaders(request *http.Request, authorization, requestID string) {
+	request.Header.Set("Traceparent", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
+	request.Header.Set("Tracestate", "vendor=value")
+	request.Header.Set("X-Request-ID", requestID)
+	request.Header.Set("Authorization", authorization)
+	request.Header.Set("X-Arbitrary", "must-not-propagate")
+}
+
+func assertBrowserPropagationHeaders(
+	t *testing.T,
+	headers http.Header,
+	wantAuthorization string,
+	wantRequestID string,
+) {
+	t.Helper()
+	if headers.Get("Traceparent") != "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01" ||
+		headers.Get("Tracestate") != "vendor=value" ||
+		headers.Get("X-Request-ID") != wantRequestID {
+		t.Fatalf("correlation headers = %#v", headers)
+	}
+	if headers.Get("Authorization") != wantAuthorization {
+		t.Fatalf("Authorization = %q, want %q", headers.Get("Authorization"), wantAuthorization)
+	}
+	if headers.Get("Cookie") != "" || headers.Get("X-Arbitrary") != "" {
+		t.Fatalf("unsafe propagated headers = %#v", headers)
+	}
+}
+
+func TestClientBrowserHandlersRejectNilRequestWithoutPanic(t *testing.T) {
+	fake := newRootTestIAM(t)
+	client, err := New(t.Context(), validRootConfig(fake))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	for _, handler := range []http.Handler{
+		client.LoginHandler(),
+		client.CallbackHandler(),
+		client.LogoutHandler(),
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, nil)
+		if response.Code != http.StatusBadRequest {
+			t.Fatalf("status = %d body=%s", response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestNewMaterializesOneHardenedDefaultHTTPClientSharedByOIDCAndPDP(t *testing.T) {
+	fake := newRootTestIAM(t)
+	fake.requireInjectedClient = false
+	config := validRootConfig(fake)
+	config.HTTPClient = nil
+	client, err := New(t.Context(), config)
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if client.httpClient == nil || client.httpClient.CheckRedirect == nil {
+		t.Fatalf("resolved HTTP client = %#v", client.httpClient)
+	}
+	if redirectErr := client.httpClient.CheckRedirect(nil, nil); redirectErr != http.ErrUseLastResponse {
+		t.Fatalf("redirect policy error = %v", redirectErr)
+	}
+	transport, ok := client.httpClient.Transport.(*http.Transport)
+	if !ok || !transport.DisableKeepAlives || transport.TLSNextProto == nil {
+		t.Fatalf("default transport = %#v", client.httpClient.Transport)
+	}
+
+	base := client.httpClient.Transport
+	var mu sync.Mutex
+	var paths []string
+	client.httpClient.Transport = roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		mu.Lock()
+		paths = append(paths, request.URL.Path)
+		mu.Unlock()
+		return base.RoundTrip(request)
+	})
+	if _, err := client.OIDC().UserInfo(t.Context(), "shared-default-token"); err != nil {
+		t.Fatalf("UserInfo() error = %v", err)
+	}
+	if _, err := client.Authorization().Decide(
+		t.Context(),
+		"shared-default-token",
+		Permission{ResourceServer: "asset-api", Resource: "assets", HTTPMethod: http.MethodGet},
+	); err != nil {
+		t.Fatalf("Decide() error = %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(paths) != 2 ||
+		paths[0] != "/oidc/userinfo" ||
+		paths[1] != "/authorization/v1/decisions" {
+		t.Fatalf("instrumented paths = %#v", paths)
 	}
 }
 

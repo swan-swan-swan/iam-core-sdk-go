@@ -8,6 +8,7 @@ import (
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/authn"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/authz"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/transport"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/middleware"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/observability"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/oidc"
@@ -21,6 +22,7 @@ type Client struct {
 	authorization     *authz.Client
 	middlewareOptions []middleware.Option
 	timeouts          TimeoutConfig
+	httpClient        *http.Client
 }
 
 // New validates configuration, performs OIDC Discovery, and composes the
@@ -39,6 +41,10 @@ func New(ctx context.Context, config Config) (*Client, error) {
 	if nilInterface(hooks) {
 		hooks = observability.Nop{}
 	}
+	httpClient := config.HTTPClient
+	if httpClient == nil {
+		httpClient = transport.NewDefaultHTTPClient()
+	}
 
 	oidcClient, err := oidc.New(ctx, oidc.Config{
 		IssuerURL:            config.IssuerURL,
@@ -46,7 +52,7 @@ func New(ctx context.Context, config Config) (*Client, error) {
 		SecretProvider:       config.ClientSecretProvider,
 		RedirectURL:          config.RedirectURL,
 		Scopes:               scopes,
-		HTTPClient:           config.HTTPClient,
+		HTTPClient:           httpClient,
 		DiscoveryJWKSTimeout: timeouts.DiscoveryJWKS,
 		TokenUserInfoTimeout: timeouts.TokenUserInfo,
 		Hooks:                hooks,
@@ -78,7 +84,7 @@ func New(ctx context.Context, config Config) (*Client, error) {
 	}
 	authorization, err := authz.New(authz.Config{
 		IssuerURL:  config.IssuerURL,
-		HTTPClient: config.HTTPClient,
+		HTTPClient: httpClient,
 		Timeout:    timeouts.PDP,
 		Hooks:      hooks,
 		Logger:     logger,
@@ -100,6 +106,7 @@ func New(ctx context.Context, config Config) (*Client, error) {
 		authorization:     authorization,
 		middlewareOptions: options,
 		timeouts:          timeouts,
+		httpClient:        httpClient,
 	}, nil
 }
 
@@ -119,23 +126,23 @@ func (c *Client) Authorization() *authz.Client {
 
 func (c *Client) LoginHandler() http.Handler {
 	if c == nil || c.authentication == nil {
-		return invalidClientHandler()
+		return browserHandler(invalidClientHandler())
 	}
-	return c.authentication.LoginHandler()
+	return browserHandler(c.authentication.LoginHandler())
 }
 
 func (c *Client) CallbackHandler() http.Handler {
 	if c == nil || c.authentication == nil {
-		return invalidClientHandler()
+		return browserHandler(invalidClientHandler())
 	}
-	return c.authentication.CallbackHandler()
+	return browserHandler(c.authentication.CallbackHandler())
 }
 
 func (c *Client) LogoutHandler() http.Handler {
 	if c == nil || c.authentication == nil {
-		return invalidClientHandler()
+		return browserHandler(invalidClientHandler())
 	}
-	return c.authentication.LogoutHandler()
+	return browserHandler(c.authentication.LogoutHandler())
 }
 
 func (c *Client) Authenticate(next http.Handler) http.Handler {
@@ -159,4 +166,15 @@ func (c *Client) RequirePermission(permission Permission) func(http.Handler) htt
 
 func invalidClientHandler() http.Handler {
 	return middleware.Authenticate(nil)(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+}
+
+func browserHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if request == nil {
+			http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+			return
+		}
+		ctx := transport.WithHeaders(request.Context(), request.Header)
+		next.ServeHTTP(w, request.WithContext(ctx))
+	})
 }

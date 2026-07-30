@@ -40,7 +40,7 @@ type Client struct {
 func (c Client) Do(request *http.Request) (Response, error) {
 	httpClient := c.HTTP
 	if httpClient == nil {
-		httpClient = newDefaultHTTPClient()
+		httpClient = NewDefaultHTTPClient()
 	}
 	limit := c.MaxBodyBytes
 	if limit == 0 {
@@ -108,7 +108,9 @@ func responseCorrelation(header http.Header, body []byte) Correlation {
 	return correlation
 }
 
-func newDefaultHTTPClient() *http.Client {
+// NewDefaultHTTPClient returns the SDK-owned hardened client used when a
+// caller does not inject one.
+func NewDefaultHTTPClient() *http.Client {
 	// Disabling connection reuse keeps net/http out of its automatic
 	// reused-connection replay path. HTTP/2 is disabled because it has its own
 	// stream retry behavior.

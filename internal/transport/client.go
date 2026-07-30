@@ -61,13 +61,16 @@ func (c Client) Do(request *http.Request) (Response, error) {
 		)
 	}
 	defer raw.Body.Close()
-	mediaType, _, err := mime.ParseMediaType(raw.Header.Get("Content-Type"))
-	if err != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
-		return Response{}, sdkerr.New(sdkerr.KindProtocol, "transport.response", raw.StatusCode, false, nil)
-	}
+	response := Response{StatusCode: raw.StatusCode, Header: raw.Header.Clone()}
 	body, err := io.ReadAll(io.LimitReader(raw.Body, limit+1))
+	oversized := int64(len(body)) > limit
+	if oversized {
+		body = body[:int(limit)]
+	}
+	response.Body = body
+	response.Correlation = responseCorrelation(response.Header, body)
 	if err != nil {
-		return Response{}, sdkerr.New(
+		return response, sdkerr.New(
 			sdkerr.KindIAMUnavailable,
 			"transport.response",
 			http.StatusServiceUnavailable,
@@ -75,10 +78,21 @@ func (c Client) Do(request *http.Request) (Response, error) {
 			nil,
 		)
 	}
-	if int64(len(body)) > limit {
-		return Response{}, sdkerr.New(sdkerr.KindProtocol, "transport.response", raw.StatusCode, false, nil)
+	if oversized {
+		return response, sdkerr.New(sdkerr.KindProtocol, "transport.response", raw.StatusCode, false, nil)
 	}
-	correlation := Correlation{RequestID: strings.TrimSpace(raw.Header.Get("X-Request-ID"))}
+	if len(body) == 0 {
+		return response, nil
+	}
+	mediaType, _, err := mime.ParseMediaType(raw.Header.Get("Content-Type"))
+	if err != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
+		return response, sdkerr.New(sdkerr.KindProtocol, "transport.response", raw.StatusCode, false, nil)
+	}
+	return response, nil
+}
+
+func responseCorrelation(header http.Header, body []byte) Correlation {
+	correlation := Correlation{RequestID: strings.TrimSpace(header.Get("X-Request-ID"))}
 	var envelope struct {
 		RequestID string `json:"request_id"`
 		TraceID   string `json:"trace_id"`
@@ -88,7 +102,7 @@ func (c Client) Do(request *http.Request) (Response, error) {
 		correlation.RequestID = strings.TrimSpace(envelope.RequestID)
 	}
 	correlation.TraceID = strings.TrimSpace(envelope.TraceID)
-	return Response{StatusCode: raw.StatusCode, Header: raw.Header.Clone(), Body: body, Correlation: correlation}, nil
+	return correlation
 }
 
 func newDefaultHTTPClient() *http.Client {

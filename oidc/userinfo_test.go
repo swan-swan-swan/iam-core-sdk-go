@@ -211,6 +211,80 @@ func TestUserInfo5xxMappingPrecedesBodyDecoding(t *testing.T) {
 	}
 }
 
+func TestUserInfoStatusMappingPrecedesTransportResponseErrors(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+		wantKind    sdkerr.Kind
+		wantRetry   bool
+	}{
+		{
+			name:     "401 missing content type",
+			status:   http.StatusUnauthorized,
+			body:     "hostile-access-token-secret",
+			wantKind: sdkerr.KindUnauthenticated,
+		},
+		{
+			name:        "503 non JSON",
+			status:      http.StatusServiceUnavailable,
+			contentType: "text/plain",
+			body:        "hostile-access-token-secret",
+			wantKind:    sdkerr.KindIAMUnavailable,
+			wantRetry:   true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, calls := newTask4EndpointClient(t, "userinfo_endpoint", func(writer http.ResponseWriter, _ *http.Request) {
+				if test.contentType != "" {
+					writer.Header().Set("Content-Type", test.contentType)
+				}
+				writer.WriteHeader(test.status)
+				_, _ = writer.Write([]byte(test.body))
+			})
+			_, err := client.UserInfo(t.Context(), "access-token-secret")
+			typed, ok := err.(*sdkerr.Error)
+			if !ok || typed.Kind != test.wantKind || typed.Retryable != test.wantRetry ||
+				typed.Cause != nil || calls.Load() != 1 {
+				t.Fatalf("error=%#v calls=%d", err, calls.Load())
+			}
+			if strings.Contains(err.Error(), "hostile") || strings.Contains(err.Error(), "access-token-secret") {
+				t.Fatalf("unsafe error = %v", err)
+			}
+		})
+	}
+}
+
+func TestUserInfoEmptyOrNonJSON2xxIsProtocolError(t *testing.T) {
+	tests := map[string]struct {
+		contentType string
+		body        string
+	}{
+		"empty without content type": {},
+		"non JSON": {
+			contentType: "text/plain",
+			body:        "hostile-access-token-secret",
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			client, calls := newTask4EndpointClient(t, "userinfo_endpoint", func(writer http.ResponseWriter, _ *http.Request) {
+				if test.contentType != "" {
+					writer.Header().Set("Content-Type", test.contentType)
+				}
+				_, _ = writer.Write([]byte(test.body))
+			})
+			_, err := client.UserInfo(t.Context(), "access-token-secret")
+			assertProtocolErrorIsRedacted(t, err, test.body, "access-token-secret")
+			if calls.Load() != 1 {
+				t.Fatalf("calls = %d", calls.Load())
+			}
+		})
+	}
+}
+
 func TestUserInfoMalformed2xxAndMissingSubjectAreProtocolErrors(t *testing.T) {
 	for name, body := range map[string]string{
 		"malformed":        `{"sub":`,

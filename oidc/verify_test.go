@@ -2,7 +2,12 @@ package oidc
 
 import (
 	"context"
+	"crypto"
+	"crypto/rand"
 	"crypto/rsa"
+	"crypto/sha256"
+	"encoding/base64"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -45,6 +50,20 @@ func (s *testTokenSigner) token(t *testing.T, method jwt.SigningMethod, claims m
 		t.Fatalf("sign token: %v", err)
 	}
 	return signed
+}
+
+func (s *testTokenSigner) rawToken(t *testing.T, payload string) string {
+	t.Helper()
+	header := base64.RawURLEncoding.EncodeToString(
+		[]byte(`{"alg":"RS256","kid":"` + s.KeyID + `","typ":"JWT"}`),
+	)
+	signingInput := header + "." + base64.RawURLEncoding.EncodeToString([]byte(payload))
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, s.PrivateKey, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("sign raw token: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
 }
 
 func (s *testTokenSigner) validClaims() map[string]any {
@@ -91,6 +110,36 @@ func TestVerifyIDTokenRejectsNonceMismatch(t *testing.T) {
 	})
 	_, err := client.VerifyIDToken(context.Background(), raw, "different-nonce")
 	assertProtocolErrorIsRedacted(t, err, raw, "nonce-from-token", "different-nonce")
+}
+
+func TestVerifyIDTokenRejectsEmptyOrWhitespaceExpectedNonce(t *testing.T) {
+	for name, nonce := range map[string]string{"empty": "", "whitespace": " \t"} {
+		t.Run(name, func(t *testing.T) {
+			client, signer := newVerificationClient(t)
+			claims := signer.validClaims()
+			claims["nonce"] = nonce
+			raw := signer.IDToken(t, claims)
+			_, err := client.VerifyIDToken(t.Context(), raw, nonce)
+			assertProtocolErrorIsRedacted(t, err, raw, nonce)
+		})
+	}
+}
+
+func TestVerifyIDTokenRejectsAbsentOrEmptyTokenNonce(t *testing.T) {
+	for name, nonce := range map[string]any{"absent": nil, "empty": ""} {
+		t.Run(name, func(t *testing.T) {
+			client, signer := newVerificationClient(t)
+			claims := signer.validClaims()
+			if nonce == nil {
+				delete(claims, "nonce")
+			} else {
+				claims["nonce"] = nonce
+			}
+			raw := signer.IDToken(t, claims)
+			_, err := client.VerifyIDToken(t.Context(), raw, "nonce-1")
+			assertProtocolErrorIsRedacted(t, err, raw)
+		})
+	}
 }
 
 func TestVerifyIDTokenRejectsWrongIssuer(t *testing.T) {
@@ -218,6 +267,118 @@ func TestVerifyAccessTokenJWTRejectsMalformedAudience(t *testing.T) {
 	})
 	_, err := client.VerifyAccessTokenJWT(t.Context(), raw)
 	assertProtocolErrorIsRedacted(t, err, raw)
+}
+
+func TestVerifyAccessTokenJWTAcceptsFractionalNumericDates(t *testing.T) {
+	client, signer := newVerificationClient(t)
+	expiry := fmt.Sprintf("%d.25", time.Now().Add(time.Hour).Unix())
+	notBefore := fmt.Sprintf("%d.5", time.Now().Add(-time.Hour).Unix())
+	raw := signer.rawToken(t, fmt.Sprintf(`{
+		"iss":%q,
+		"aud":%q,
+		"sub":%q,
+		"exp":%s,
+		"nbf":%s
+	}`, signer.Issuer, signer.ClientID, task4Subject, expiry, notBefore))
+
+	got, err := client.VerifyAccessTokenJWT(t.Context(), raw)
+
+	if err != nil {
+		t.Fatalf("VerifyAccessTokenJWT() error = %v", err)
+	}
+	if got.Expiry == 0 {
+		t.Fatalf("expiry = %d", got.Expiry)
+	}
+}
+
+func TestVerifyAccessTokenJWTRejectsExpiryAtExactBoundary(t *testing.T) {
+	client, signer := newVerificationClient(t)
+	fixedNow := time.Unix(1_700_000_000, 500_000_000)
+	raw := signer.rawToken(t, fmt.Sprintf(`{
+		"iss":%q,
+		"aud":%q,
+		"sub":%q,
+		"exp":1700000000.5
+	}`, signer.Issuer, signer.ClientID, task4Subject))
+
+	_, err := client.verifyAccessTokenJWTAt(t.Context(), raw, fixedNow)
+
+	assertProtocolErrorIsRedacted(t, err, raw)
+}
+
+func TestVerifyAccessTokenJWTAcceptsNBFAtExactBoundary(t *testing.T) {
+	client, signer := newVerificationClient(t)
+	fixedNow := time.Unix(1_700_000_000, 500_000_000)
+	raw := signer.rawToken(t, fmt.Sprintf(`{
+		"iss":%q,
+		"aud":%q,
+		"sub":%q,
+		"exp":1700000001,
+		"nbf":1700000000.5
+	}`, signer.Issuer, signer.ClientID, task4Subject))
+
+	if _, err := client.verifyAccessTokenJWTAt(t.Context(), raw, fixedNow); err != nil {
+		t.Fatalf("verifyAccessTokenJWTAt() error = %v", err)
+	}
+}
+
+func TestVerifyAccessTokenJWTRejectsNBFStrictlyAfterBoundary(t *testing.T) {
+	client, signer := newVerificationClient(t)
+	fixedNow := time.Unix(1_700_000_000, 500_000_000)
+	raw := signer.rawToken(t, fmt.Sprintf(`{
+		"iss":%q,
+		"aud":%q,
+		"sub":%q,
+		"exp":1700000001,
+		"nbf":1700000000.500000001
+	}`, signer.Issuer, signer.ClientID, task4Subject))
+
+	_, err := client.verifyAccessTokenJWTAt(t.Context(), raw, fixedNow)
+
+	assertProtocolErrorIsRedacted(t, err, raw)
+}
+
+func TestVerifyAccessTokenJWTRejectsMissingOrNullNumericDates(t *testing.T) {
+	client, signer := newVerificationClient(t)
+	future := time.Now().Add(time.Hour).Unix()
+	payloads := map[string]string{
+		"missing expiry": fmt.Sprintf(`{
+			"iss":%q,"aud":%q,"sub":%q
+		}`, signer.Issuer, signer.ClientID, task4Subject),
+		"null expiry": fmt.Sprintf(`{
+			"iss":%q,"aud":%q,"sub":%q,"exp":null
+		}`, signer.Issuer, signer.ClientID, task4Subject),
+		"null not before": fmt.Sprintf(`{
+			"iss":%q,"aud":%q,"sub":%q,"exp":%d,"nbf":null
+		}`, signer.Issuer, signer.ClientID, task4Subject, future),
+	}
+	for name, payload := range payloads {
+		t.Run(name, func(t *testing.T) {
+			raw := signer.rawToken(t, payload)
+			_, err := client.VerifyAccessTokenJWT(t.Context(), raw)
+			assertProtocolErrorIsRedacted(t, err, raw)
+		})
+	}
+}
+
+func TestVerifyAccessTokenJWTRejectsInvalidOrUnrepresentableNumericDates(t *testing.T) {
+	client, signer := newVerificationClient(t)
+	future := time.Now().Add(time.Hour).Unix()
+	for name, expiry := range map[string]string{
+		"string":            fmt.Sprintf("%q", fmt.Sprintf("%d", future)),
+		"NaN":               `NaN`,
+		"positive infinity": `Infinity`,
+		"unrepresentable":   `1e1000`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			payload := fmt.Sprintf(`{
+				"iss":%q,"aud":%q,"sub":%q,"exp":%s
+			}`, signer.Issuer, signer.ClientID, task4Subject, expiry)
+			raw := signer.rawToken(t, payload)
+			_, err := client.VerifyAccessTokenJWT(t.Context(), raw)
+			assertProtocolErrorIsRedacted(t, err, raw, expiry)
+		})
+	}
 }
 
 func assertProtocolErrorIsRedacted(t *testing.T, err error, forbidden ...string) {

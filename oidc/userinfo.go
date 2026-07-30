@@ -38,13 +38,15 @@ func (c *Client) UserInfo(
 	request.Header.Set("Authorization", "Bearer "+accessToken)
 
 	response, err := c.transport.Do(request)
-	if err != nil {
-		return Identity{}, sanitizeError(operation, err)
-	}
 	sensitiveValues := append([]string{accessToken}, endpointQueryValues(c.metadata.UserInfoEndpoint)...)
-	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+	if response.StatusCode != 0 &&
+		(response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices) {
 		statusErr := statusError(operation, response.StatusCode)
 		return Identity{}, withSubmittedSafeCorrelation(statusErr, response.Correlation, sensitiveValues...)
+	}
+	if err != nil {
+		transportErr := sanitizeError(operation, err)
+		return Identity{}, withSubmittedSafeCorrelation(transportErr, response.Correlation, sensitiveValues...)
 	}
 	var raw map[string]json.RawMessage
 	if err := transport.DecodeJSON(response.Body, &raw); err != nil {

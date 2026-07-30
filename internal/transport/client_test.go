@@ -32,6 +32,24 @@ func (failingBody) Close() error {
 	return nil
 }
 
+type partialFailingBody struct {
+	body   string
+	secret string
+	read   bool
+}
+
+func (body *partialFailingBody) Read(buffer []byte) (int, error) {
+	if body.read {
+		return 0, io.EOF
+	}
+	body.read = true
+	return copy(buffer, body.body), errors.New(body.secret)
+}
+
+func (*partialFailingBody) Close() error {
+	return nil
+}
+
 func TestClientRejectsOversizedBody(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -44,6 +62,115 @@ func TestClientRejectsOversizedBody(t *testing.T) {
 	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, server.URL, nil)
 	_, err := client.Do(req)
 	assertSDKError(t, err, sdkerr.KindProtocol, "transport.response", http.StatusBadGateway, false)
+}
+
+func TestClientReturnsBoundedMetadataWithOversizedBodyError(t *testing.T) {
+	rawHeader := http.Header{
+		"Content-Type": {"application/json"},
+		"X-Request-Id": {"request-safe"},
+	}
+	client := Client{
+		HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusUnauthorized,
+				Header:     rawHeader,
+				Body:       io.NopCloser(strings.NewReader(`{"hostile":"response-secret"}`)),
+			}, nil
+		})},
+		MaxBodyBytes: 8,
+	}
+	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
+
+	response, err := client.Do(request)
+
+	assertSDKError(t, err, sdkerr.KindProtocol, "transport.response", http.StatusUnauthorized, false)
+	if response.StatusCode != http.StatusUnauthorized || len(response.Body) != 8 ||
+		response.Header.Get("X-Request-ID") != "request-safe" ||
+		response.Correlation.RequestID != "request-safe" {
+		t.Fatalf("response = %#v", response)
+	}
+	response.Header.Set("X-Request-ID", "mutated")
+	if rawHeader.Get("X-Request-ID") != "request-safe" {
+		t.Fatalf("raw header was mutated: %#v", rawHeader)
+	}
+}
+
+func TestClientReturnsMetadataWithContentTypeError(t *testing.T) {
+	client := Client{HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusServiceUnavailable,
+			Header: http.Header{
+				"Content-Type": {"text/plain; hostile=response-secret"},
+				"X-Request-Id": {"request-safe"},
+			},
+			Body: io.NopCloser(strings.NewReader("hostile-response-secret")),
+		}, nil
+	})}}
+	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
+
+	response, err := client.Do(request)
+
+	assertSDKError(t, err, sdkerr.KindProtocol, "transport.response", http.StatusServiceUnavailable, false)
+	if response.StatusCode != http.StatusServiceUnavailable ||
+		response.Header.Get("X-Request-ID") != "request-safe" ||
+		response.Correlation.RequestID != "request-safe" ||
+		string(response.Body) != "hostile-response-secret" {
+		t.Fatalf("response = %#v", response)
+	}
+	if strings.Contains(err.Error(), "hostile") || strings.Contains(err.Error(), "response-secret") {
+		t.Fatalf("unsafe error = %v", err)
+	}
+}
+
+func TestClientReturnsMetadataWithBodyReadError(t *testing.T) {
+	client := Client{HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusUnauthorized,
+			Header: http.Header{
+				"Content-Type": {"application/json"},
+				"X-Request-Id": {"request-safe"},
+			},
+			Body: &partialFailingBody{
+				body:   "partial-response-secret",
+				secret: "hostile-read-secret",
+			},
+		}, nil
+	})}}
+	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
+
+	response, err := client.Do(request)
+
+	assertSDKError(t, err, sdkerr.KindIAMUnavailable, "transport.response", http.StatusServiceUnavailable, true)
+	if response.StatusCode != http.StatusUnauthorized ||
+		response.Header.Get("X-Request-ID") != "request-safe" ||
+		response.Correlation.RequestID != "request-safe" ||
+		string(response.Body) != "partial-response-secret" {
+		t.Fatalf("response = %#v", response)
+	}
+	if strings.Contains(err.Error(), "hostile") || strings.Contains(err.Error(), "read-secret") {
+		t.Fatalf("unsafe error = %v", err)
+	}
+}
+
+func TestClientAcceptsEmptyBodyWithoutContentType(t *testing.T) {
+	client := Client{HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusNoContent,
+			Header:     http.Header{"X-Request-Id": {"request-safe"}},
+			Body:       http.NoBody,
+		}, nil
+	})}}
+	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
+
+	response, err := client.Do(request)
+
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if response.StatusCode != http.StatusNoContent || len(response.Body) != 0 ||
+		response.Correlation.RequestID != "request-safe" {
+		t.Fatalf("response = %#v", response)
+	}
 }
 
 func TestClientAcceptsBodyAtExactLimit(t *testing.T) {

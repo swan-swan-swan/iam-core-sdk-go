@@ -1,10 +1,13 @@
 package oidc
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"io"
+	"math/big"
 	"strings"
 	"time"
 
@@ -54,6 +57,9 @@ func (c *Client) VerifyIDToken(
 		c.log(operation, outcome(resultErr), duration)
 	}()
 
+	if strings.TrimSpace(expectedNonce) == "" {
+		return IDTokenClaims{}, verificationError(operation)
+	}
 	token, err := c.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		return IDTokenClaims{}, verificationError(operation)
@@ -61,7 +67,7 @@ func (c *Client) VerifyIDToken(
 	if err := token.Claims(&claims); err != nil {
 		return IDTokenClaims{}, verificationError(operation)
 	}
-	if strings.TrimSpace(claims.Subject) == "" ||
+	if strings.TrimSpace(claims.Subject) == "" || strings.TrimSpace(claims.Nonce) == "" ||
 		subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(expectedNonce)) != 1 {
 		return IDTokenClaims{}, verificationError(operation)
 	}
@@ -84,6 +90,15 @@ func (c *Client) VerifyAccessTokenJWT(
 		c.log(operation, outcome(resultErr), duration)
 	}()
 
+	return c.verifyAccessTokenJWTAt(ctx, rawAccessToken, time.Now())
+}
+
+func (c *Client) verifyAccessTokenJWTAt(
+	ctx context.Context,
+	rawAccessToken string,
+	now time.Time,
+) (AccessTokenClaims, error) {
+	const operation = "oidc.verify_access_token"
 	if !usesRS256(rawAccessToken) {
 		return AccessTokenClaims{}, verificationError(operation)
 	}
@@ -99,10 +114,18 @@ func (c *Client) VerifyAccessTokenJWT(
 	if err != nil {
 		return AccessTokenClaims{}, verificationError(operation)
 	}
-	now := time.Now()
+	expiry, err := decodeNumericDate(wire.Expiry, true)
+	if err != nil {
+		return AccessTokenClaims{}, verificationError(operation)
+	}
+	notBefore, err := decodeNumericDate(wire.NotBefore, false)
+	if err != nil {
+		return AccessTokenClaims{}, verificationError(operation)
+	}
+	nowValue := numericDateFromTime(now)
 	if wire.Issuer != c.metadata.Issuer || !containsAudience(audience, c.oauthConfig.ClientID) ||
-		wire.Expiry == 0 || !now.Before(time.Unix(wire.Expiry, 0)) ||
-		(wire.NotBefore != nil && now.Before(time.Unix(*wire.NotBefore, 0))) {
+		expiry.value.Cmp(nowValue) <= 0 ||
+		(notBefore != nil && notBefore.value.Cmp(nowValue) > 0) {
 		return AccessTokenClaims{}, verificationError(operation)
 	}
 	return AccessTokenClaims{
@@ -111,7 +134,7 @@ func (c *Client) VerifyAccessTokenJWT(
 		Audience: append([]string(nil), audience...),
 		TokenID:  wire.TokenID,
 		Scope:    wire.Scope,
-		Expiry:   wire.Expiry,
+		Expiry:   expiry.unixSeconds,
 	}, nil
 }
 
@@ -121,8 +144,56 @@ type accessTokenClaims struct {
 	Audience  json.RawMessage `json:"aud"`
 	TokenID   string          `json:"jti"`
 	Scope     string          `json:"scope"`
-	Expiry    int64           `json:"exp"`
-	NotBefore *int64          `json:"nbf"`
+	Expiry    json.RawMessage `json:"exp"`
+	NotBefore json.RawMessage `json:"nbf"`
+}
+
+type numericDate struct {
+	value       *big.Rat
+	unixSeconds int64
+}
+
+func decodeNumericDate(raw json.RawMessage, required bool) (*numericDate, error) {
+	if len(raw) == 0 {
+		if required {
+			return nil, errInvalidNumericDate
+		}
+		return nil, nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return nil, errInvalidNumericDate
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var decoded any
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, errInvalidNumericDate
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return nil, errInvalidNumericDate
+	}
+	number, ok := decoded.(json.Number)
+	if !ok {
+		return nil, errInvalidNumericDate
+	}
+	value, ok := new(big.Rat).SetString(number.String())
+	if !ok ||
+		value.Cmp(new(big.Rat).SetInt64(-1<<63)) < 0 ||
+		value.Cmp(new(big.Rat).SetInt64(1<<63-1)) > 0 {
+		return nil, errInvalidNumericDate
+	}
+	whole := new(big.Int).Quo(value.Num(), value.Denom())
+	if !whole.IsInt64() {
+		return nil, errInvalidNumericDate
+	}
+	return &numericDate{value: value, unixSeconds: whole.Int64()}, nil
+}
+
+func numericDateFromTime(value time.Time) *big.Rat {
+	seconds := new(big.Rat).SetInt64(value.Unix())
+	fraction := new(big.Rat).SetFrac64(int64(value.Nanosecond()), int64(time.Second))
+	return seconds.Add(seconds, fraction)
 }
 
 func usesRS256(rawToken string) bool {
@@ -170,11 +241,18 @@ func containsAudience(audiences []string, expected string) bool {
 }
 
 var errInvalidAudience = &audienceError{}
+var errInvalidNumericDate = &numericDateError{}
 
 type audienceError struct{}
 
 func (*audienceError) Error() string {
 	return "invalid audience"
+}
+
+type numericDateError struct{}
+
+func (*numericDateError) Error() string {
+	return "invalid numeric date"
 }
 
 func verificationError(operation string) *sdkerr.Error {

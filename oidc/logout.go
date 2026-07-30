@@ -47,22 +47,32 @@ func (c *Client) Logout(
 		request.Header.Set("Authorization", "Bearer "+accessToken)
 	}
 	response, err := c.transport.Do(request)
+	sensitiveValues := append([]string{accessToken}, endpointQueryValues(endpoint.String())...)
+	if response.StatusCode != 0 &&
+		(response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices) {
+		if err == nil {
+			var envelope iamErrorEnvelope
+			_ = transport.DecodeJSON(response.Body, &envelope)
+		}
+		statusErr := statusError(operation, response.StatusCode)
+		return withSubmittedSafeCorrelation(statusErr, response.Correlation, sensitiveValues...)
+	}
 	if err != nil {
-		return sanitizeError(operation, err)
+		transportErr := sanitizeError(operation, err)
+		return withSubmittedSafeCorrelation(transportErr, response.Correlation, sensitiveValues...)
 	}
 	if response.StatusCode >= http.StatusOK && response.StatusCode < http.StatusMultipleChoices {
+		if len(response.Body) != 0 {
+			var successBody any
+			if err := transport.DecodeJSON(response.Body, &successBody); err != nil {
+				protocolErr := sdkerr.New(sdkerr.KindProtocol, operation, response.StatusCode, false, nil)
+				return withSubmittedSafeCorrelation(protocolErr, response.Correlation, sensitiveValues...)
+			}
+		}
 		return nil
 	}
-
-	var envelope iamErrorEnvelope
-	if err := transport.DecodeJSON(response.Body, &envelope); err != nil {
-		protocolErr := sdkerr.New(sdkerr.KindProtocol, operation, response.StatusCode, false, nil)
-		sensitiveValues := append([]string{accessToken}, endpointQueryValues(endpoint.String())...)
-		return withSubmittedSafeCorrelation(protocolErr, response.Correlation, sensitiveValues...)
-	}
-	statusErr := statusError(operation, response.StatusCode)
-	sensitiveValues := append([]string{accessToken}, endpointQueryValues(endpoint.String())...)
-	return withSubmittedSafeCorrelation(statusErr, response.Correlation, sensitiveValues...)
+	protocolErr := sdkerr.New(sdkerr.KindProtocol, operation, response.StatusCode, false, nil)
+	return withSubmittedSafeCorrelation(protocolErr, response.Correlation, sensitiveValues...)
 }
 
 type iamErrorEnvelope struct {

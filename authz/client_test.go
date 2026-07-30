@@ -1,9 +1,11 @@
 package authz
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"time"
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/observability"
 )
 
 func TestDecideSendsOnlyThreeAllowedFields(t *testing.T) {
@@ -74,6 +77,8 @@ func TestDecideFailsClosedForStatus(t *testing.T) {
 		{"bad request", http.StatusBadRequest, sdkerr.KindProtocol, false},
 		{"unauthenticated", http.StatusUnauthorized, sdkerr.KindUnauthenticated, false},
 		{"unavailable", http.StatusServiceUnavailable, sdkerr.KindIAMUnavailable, true},
+		{"invalid six hundred", 600, sdkerr.KindProtocol, false},
+		{"invalid six ninety-nine", 699, sdkerr.KindProtocol, false},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			server, _ := newDecisionServer(t, test.status, `{"message":"hostile-secret"}`)
@@ -95,7 +100,6 @@ func TestDecideFailsClosedForInvalidSuccessResponses(t *testing.T) {
 		`{"decision_id":"dec-1","allowed":"true","reason_code":"ok"}`,
 		`{"allowed":false,"reason_code":"denied"}`,
 		`{"decision_id":"dec-1","allowed":false}`,
-		`{"code":0,"data":{"decision_id":"dec-1","allowed":false,"reason_code":"denied"},"status":400}`,
 		`{"code":99,"data":{"decision_id":"dec-1","allowed":true,"reason_code":"ok"}}`,
 	} {
 		t.Run(body, func(t *testing.T) {
@@ -161,6 +165,7 @@ func TestDecideOnlyMakesOneFreshRequestPerCall(t *testing.T) {
 func TestNewValidatesIssuerAndEndpoint(t *testing.T) {
 	for _, config := range []Config{
 		{}, {IssuerURL: "http://example.com"}, {IssuerURL: "https://example.com/?secret=value"},
+		{IssuerURL: "https://issuer.example?"}, {IssuerURL: "https://issuer.example#fragment"}, {IssuerURL: "https://user@issuer.example"},
 		{IssuerURL: "https://example.com", Endpoint: "http://example.com/authorization/v1/decisions"},
 		{IssuerURL: "https://example.com", Endpoint: "https://example.com/authorization/v1/decisions#fragment"},
 	} {
@@ -171,6 +176,16 @@ func TestNewValidatesIssuerAndEndpoint(t *testing.T) {
 	client, err := New(Config{IssuerURL: "https://issuer.example/", Endpoint: "https://pdp.example/authorization/v1/decisions?tenant=safe"})
 	if err != nil || client == nil {
 		t.Fatalf("New valid endpoint: %v", err)
+	}
+}
+
+func TestNewDerivesExactDecisionPathFromIssuer(t *testing.T) {
+	client, err := New(Config{IssuerURL: "https://issuer.example/base/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := client.endpoint, "https://issuer.example/base/authorization/v1/decisions"; got != want {
+		t.Fatalf("endpoint = %q, want %q", got, want)
 	}
 }
 
@@ -191,6 +206,66 @@ func TestDecidePreservesConfiguredEndpointQuery(t *testing.T) {
 	}
 	if gotPath != "/custom" || gotQuery != "tenant=one%2Ftwo" {
 		t.Fatalf("endpoint = %s?%s", gotPath, gotQuery)
+	}
+}
+
+func TestDecideAllowsFutureEnvelopeStatusExtension(t *testing.T) {
+	server, _ := newDecisionServer(t, http.StatusOK, `{"code":0,"status":400,"data":{"decision_id":"dec-1","allowed":true,"reason_code":"allowed"}}`)
+	defer server.Close()
+	decision, err := newDecisionClient(t, server).Decide(context.Background(), "access-token", validPermission())
+	if err != nil || !decision.Allowed {
+		t.Fatalf("decision %#v, err %v", decision, err)
+	}
+}
+
+func TestDecideRejectsWrongTypedKnownCorrelation(t *testing.T) {
+	for _, body := range []string{
+		`{"decision_id":"dec-1","allowed":true,"reason_code":"allowed","request_id":null}`,
+		`{"decision_id":"dec-1","allowed":true,"reason_code":"allowed","trace_id":1}`,
+		`{"code":0,"data":{"decision_id":"dec-1","allowed":true,"reason_code":"allowed"},"request_id":false}`,
+		`{"code":0,"data":{"decision_id":"dec-1","allowed":true,"reason_code":"allowed"},"trace_id":null}`,
+	} {
+		t.Run(body, func(t *testing.T) {
+			server, _ := newDecisionServer(t, http.StatusOK, body)
+			defer server.Close()
+			_, err := newDecisionClient(t, server).Decide(context.Background(), "access-token", validPermission())
+			assertDecisionError(t, err, sdkerr.KindProtocol, http.StatusOK, false)
+		})
+	}
+}
+
+func TestDecideAcceptsOpaqueDecisionIDsWithoutLoggingThem(t *testing.T) {
+	const opaqueID = "opaque+id=with@valid/json:characters"
+	for _, test := range []struct {
+		name     string
+		response string
+		allowed  bool
+	}{
+		{"direct allow", `{"decision_id":"opaque+id=with@valid/json:characters","allowed":true,"reason_code":"allowed"}`, true},
+		{"envelope deny", `{"code":0,"data":{"decision_id":"opaque+id=with@valid/json:characters","allowed":false,"reason_code":"denied"}}`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server, _ := newDecisionServer(t, http.StatusOK, test.response)
+			defer server.Close()
+			var logs bytes.Buffer
+			hook := &recordingHook{}
+			client, err := New(Config{
+				IssuerURL:  server.URL,
+				HTTPClient: server.Client(),
+				Hooks:      hook,
+				Logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision, err := client.Decide(context.Background(), "access-token", validPermission())
+			if err != nil || decision.ID != opaqueID || decision.Allowed != test.allowed {
+				t.Fatalf("decision %#v, err %v", decision, err)
+			}
+			if strings.Contains(logs.String(), opaqueID) || hook.event.Operation != operation || hook.event.Outcome == "" {
+				t.Fatalf("logs or hook reflected decision ID: logs=%q event=%#v", logs.String(), hook.event)
+			}
+		})
 	}
 }
 
@@ -267,3 +342,7 @@ func assertDecisionError(t *testing.T, err error, kind sdkerr.Kind, status int, 
 		}
 	}
 }
+
+type recordingHook struct{ event observability.Event }
+
+func (h *recordingHook) Observe(_ context.Context, event observability.Event) { h.event = event }

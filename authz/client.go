@@ -65,12 +65,15 @@ type Client struct {
 // New validates the configured issuer and endpoint and constructs a decision
 // client. HTTP is permitted only for explicit localhost or loopback endpoints.
 func New(config Config) (*Client, error) {
-	if config.Timeout < 0 || !validIssuer(config.IssuerURL) {
+	issuer, validIssuer := parseIssuer(config.IssuerURL)
+	if config.Timeout < 0 || !validIssuer {
 		return nil, decisionError(sdkerr.KindInvalidConfig, "authz.configure", 0, false, transport.Correlation{}, nil)
 	}
 	endpoint := config.Endpoint
 	if endpoint == "" {
-		endpoint = strings.TrimSuffix(config.IssuerURL, "/") + decisionPath
+		issuer.Path = strings.TrimSuffix(issuer.Path, "/") + decisionPath
+		issuer.RawPath = ""
+		endpoint = issuer.String()
 	}
 	if !validEndpoint(endpoint) {
 		return nil, decisionError(sdkerr.KindInvalidConfig, "authz.configure", 0, false, transport.Correlation{}, nil)
@@ -142,7 +145,7 @@ func (c *Client) Decide(ctx context.Context, accessToken string, permission Perm
 		return Decision{}, decisionError(sdkerr.KindProtocol, operation, response.StatusCode, false, correlation, nil)
 	}
 	correlation = mergeCorrelation(correlation, parsed.correlation, accessToken, permission, c.endpoint)
-	if !safeID(parsed.id) || strings.TrimSpace(parsed.reasonCode) == "" {
+	if strings.TrimSpace(parsed.id) == "" || strings.TrimSpace(parsed.reasonCode) == "" {
 		return Decision{}, decisionError(sdkerr.KindProtocol, operation, response.StatusCode, false, correlation, nil)
 	}
 	decision = Decision{
@@ -181,9 +184,6 @@ func decodeDecision(body []byte) (decodedDecision, error) {
 		if err := json.Unmarshal(rawCode, &code); err != nil || code != 0 {
 			return decodedDecision{}, errors.New("invalid envelope")
 		}
-		if rawStatus, present := root["status"]; present && !validEnvelopeStatus(rawStatus) {
-			return decodedDecision{}, errors.New("invalid envelope status")
-		}
 		data, present := root["data"]
 		if !present {
 			return decodedDecision{}, errors.New("missing envelope data")
@@ -196,7 +196,11 @@ func decodeDecision(body []byte) (decodedDecision, error) {
 		if err != nil {
 			return decodedDecision{}, err
 		}
-		result.correlation = correlationFromMap(root)
+		correlation, err := correlationFromMap(root)
+		if err != nil {
+			return decodedDecision{}, err
+		}
+		result.correlation = correlation
 		return result, nil
 	}
 	return decodeDecisionFields(root)
@@ -209,7 +213,11 @@ func decodeDecisionFields(values map[string]json.RawMessage) (decodedDecision, e
 		requiredString(values, "reason_code", &result.reasonCode) != nil {
 		return decodedDecision{}, errors.New("invalid decision")
 	}
-	result.correlation = correlationFromMap(values)
+	correlation, err := correlationFromMap(values)
+	if err != nil {
+		return decodedDecision{}, err
+	}
+	result.correlation = correlation
 	return result, nil
 }
 
@@ -229,22 +237,24 @@ func requiredBoolean(values map[string]json.RawMessage, name string, target *boo
 	return nil
 }
 
-func validEnvelopeStatus(raw json.RawMessage) bool {
-	var status int
-	return json.Unmarshal(raw, &status) == nil && status == http.StatusOK
-}
-
-func correlationFromMap(values map[string]json.RawMessage) transport.Correlation {
+func correlationFromMap(values map[string]json.RawMessage) (transport.Correlation, error) {
 	var correlation transport.Correlation
-	_ = optionalString(values, "request_id", &correlation.RequestID)
-	_ = optionalString(values, "trace_id", &correlation.TraceID)
-	return correlation
+	if err := optionalString(values, "request_id", &correlation.RequestID); err != nil {
+		return transport.Correlation{}, err
+	}
+	if err := optionalString(values, "trace_id", &correlation.TraceID); err != nil {
+		return transport.Correlation{}, err
+	}
+	return correlation, nil
 }
 
 func optionalString(values map[string]json.RawMessage, name string, target *string) error {
 	raw, present := values[name]
 	if !present {
 		return nil
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("invalid optional string")
 	}
 	return json.Unmarshal(raw, target)
 }
@@ -253,7 +263,7 @@ func statusError(status int, correlation transport.Correlation) *sdkerr.Error {
 	if status == http.StatusUnauthorized {
 		return decisionError(sdkerr.KindUnauthenticated, operation, status, false, correlation, nil)
 	}
-	if status >= http.StatusInternalServerError {
+	if status >= http.StatusInternalServerError && status <= 599 {
 		return decisionError(sdkerr.KindIAMUnavailable, operation, status, true, correlation, nil)
 	}
 	return decisionError(sdkerr.KindProtocol, operation, status, false, correlation, nil)
@@ -315,12 +325,15 @@ func validEndpoint(value string) bool {
 	return parsed.Scheme == "https" || isLocalHTTP(parsed)
 }
 
-func validIssuer(value string) bool {
+func parseIssuer(value string) (url.URL, bool) {
 	if !validEndpoint(value) {
-		return false
+		return url.URL{}, false
 	}
-	parsed, _ := url.Parse(value)
-	return parsed.RawQuery == ""
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.RawQuery != "" || parsed.ForceQuery || parsed.Fragment != "" || parsed.User != nil {
+		return url.URL{}, false
+	}
+	return *parsed, true
 }
 
 func isLocalHTTP(parsed *url.URL) bool {
@@ -366,8 +379,6 @@ func validMethod(method string) bool {
 		return false
 	}
 }
-
-func safeID(value string) bool { return safeCorrelationID(value) != "" }
 
 func safeCorrelationID(value string) string {
 	if value == "" || value != strings.TrimSpace(value) || len(value) > 128 {

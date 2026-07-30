@@ -40,6 +40,47 @@ end
 return 1
 `)
 
+var sessionCompareAndSwapWithLockScript = goredis.NewScript(`
+local lockToken = redis.call("GET", KEYS[2])
+if not lockToken or lockToken ~= ARGV[1] then
+	return -3
+end
+if redis.call("EXISTS", KEYS[1]) == 0 then
+	return -1
+end
+local current = redis.call("HGET", KEYS[1], "version")
+if current ~= ARGV[2] then
+	return 0
+end
+local oldPayload = redis.call("HGET", KEYS[1], "payload")
+if not oldPayload then
+	return -2
+end
+redis.call("HSET", KEYS[1], "version", ARGV[3], "payload", ARGV[4])
+local expiry = redis.pcall("PEXPIRE", KEYS[1], ARGV[5])
+if (type(expiry) == "table" and expiry.err) or expiry ~= 1 then
+	redis.pcall("HSET", KEYS[1], "version", current, "payload", oldPayload)
+	return -2
+end
+return 1
+`)
+
+var sessionDeleteWithLockScript = goredis.NewScript(`
+local lockToken = redis.call("GET", KEYS[2])
+if not lockToken or lockToken ~= ARGV[1] then
+	return -3
+end
+if redis.call("EXISTS", KEYS[1]) == 0 then
+	return -1
+end
+local current = redis.call("HGET", KEYS[1], "version")
+if current ~= ARGV[2] then
+	return 0
+end
+redis.call("DEL", KEYS[1])
+return 1
+`)
+
 var flowPutScript = goredis.NewScript(`
 local result = redis.call("SET", KEYS[1], ARGV[1], "NX", "PX", ARGV[2])
 if result then

@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/oidc"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/session"
 )
 
@@ -66,72 +67,172 @@ func (s *Service) refreshSession(
 		return nil, authError(sdkerr.KindUnauthenticated, operation)
 	}
 	if current.Version != baseline.Version {
-		if safeRefreshWinner(current, sessionID, baseline.Version, now, s.refreshBeforeExpiry) {
+		if safeRotatedRefreshWinner(current, baseline, sessionID, now) {
 			return cloneAuthSession(current), nil
 		}
-		return nil, authError(sdkerr.KindSessionUnavailable, operation)
+		if !sameRefreshTokenSupplier(current, baseline, sessionID) {
+			return nil, authError(sdkerr.KindSessionUnavailable, operation)
+		}
 	}
-	if !force && accessTokenFresh(current, now, s.refreshBeforeExpiry) {
+	if current.Version == baseline.Version && !force &&
+		accessTokenFresh(current, now, s.refreshBeforeExpiry) {
 		return cloneAuthSession(current), nil
 	}
 	if strings.TrimSpace(current.TokenSet.RefreshToken) == "" {
 		return nil, authError(sdkerr.KindUnauthenticated, operation)
 	}
+	supplier := cloneAuthSession(current)
 
-	tokens, err := s.oidc.Refresh(ctx, current.TokenSet.RefreshToken)
+	tokens, err := s.oidc.Refresh(ctx, supplier.TokenSet.RefreshToken)
 	if err != nil {
 		if errors.Is(err, sdkerr.ErrInvalidGrant) {
-			if deleteErr := s.backend.Delete(ctx, sessionID); deleteErr != nil {
-				return nil, authError(sdkerr.KindSessionUnavailable, operation)
-			}
-			return nil, authError(sdkerr.KindUnauthenticated, operation)
+			return s.deleteInvalidGrantSession(ctx, lock, sessionID, supplier)
 		}
 		return nil, authError(sdkerr.KindIAMUnavailable, operation)
 	}
-	if !lock.Valid(ctx) {
-		_, _ = s.backend.Get(ctx, sessionID)
-		return nil, authError(sdkerr.KindSessionUnavailable, operation)
-	}
 	if tokens.IDToken != "" {
 		claims, verifyErr := s.oidc.VerifyRefreshedIDToken(ctx, tokens.IDToken)
-		if verifyErr != nil || !constantTimeEqual(claims.Subject, current.Identity.Subject) {
+		if verifyErr != nil || !constantTimeEqual(claims.Subject, supplier.Identity.Subject) {
 			return nil, authError(sdkerr.KindIAMUnavailable, operation)
 		}
 	} else {
-		tokens.IDToken = current.TokenSet.IDToken
+		tokens.IDToken = supplier.TokenSet.IDToken
 	}
 	if tokens.RefreshToken == "" {
-		tokens.RefreshToken = current.TokenSet.RefreshToken
+		tokens.RefreshToken = supplier.TokenSet.RefreshToken
 	}
 	now = s.clock.Now()
 	if strings.TrimSpace(tokens.AccessToken) == "" || !tokens.AccessTokenExpiry.After(now) ||
-		!lock.Valid(ctx) || current.Version == ^uint64(0) {
+		constantTimeEqual(tokens.AccessToken, supplier.TokenSet.AccessToken) {
+		return nil, authError(sdkerr.KindIAMUnavailable, operation)
+	}
+	if supplier.Version == ^uint64(0) {
 		return nil, authError(sdkerr.KindSessionUnavailable, operation)
 	}
+	return s.commitRefreshedTokens(ctx, lock, sessionID, supplier, tokens, now)
+}
 
-	next := cloneAuthSession(current)
-	next.Version = current.Version + 1
+func (s *Service) commitRefreshedTokens(
+	ctx context.Context,
+	lock session.Lock,
+	sessionID string,
+	supplier *session.Session,
+	tokens oidc.TokenSet,
+	now time.Time,
+) (*session.Session, error) {
+	const operation = "authn.refresh"
+	next := cloneAuthSession(supplier)
+	next.Version = supplier.Version + 1
 	next.TokenSet = tokens
 	next.UpdatedAt = now
-	if err := s.backend.CompareAndSwap(ctx, sessionID, current.Version, next); err != nil {
-		if errors.Is(err, session.ErrVersionConflict) {
-			winner, getErr := s.backend.Get(ctx, sessionID)
-			if getErr == nil && safeRefreshWinner(
-				winner,
-				sessionID,
-				current.Version,
-				s.clock.Now(),
-				s.refreshBeforeExpiry,
-			) {
-				return cloneAuthSession(winner), nil
-			}
+
+	err := s.backend.CompareAndSwapWithLock(ctx, lock, sessionID, supplier.Version, next)
+	if err == nil {
+		return cloneAuthSession(next), nil
+	}
+	if errors.Is(err, session.ErrVersionConflict) {
+		latest, getErr := s.backend.Get(ctx, sessionID)
+		if getErr != nil {
+			return nil, refreshCommitReadError(getErr, operation)
 		}
-		if errors.Is(err, session.ErrNotFound) || errors.Is(err, session.ErrExpired) {
+		if safeRotatedRefreshWinner(latest, supplier, sessionID, s.clock.Now()) {
+			return cloneAuthSession(latest), nil
+		}
+		if !sameRefreshTokenSupplier(latest, supplier, sessionID) ||
+			latest.Version <= supplier.Version || latest.Version == ^uint64(0) {
+			return nil, authError(sdkerr.KindSessionUnavailable, operation)
+		}
+		reconciled := cloneAuthSession(latest)
+		reconciled.Version = latest.Version + 1
+		reconciled.TokenSet = tokens
+		reconciled.UpdatedAt = now
+		reconcileErr := s.backend.CompareAndSwapWithLock(
+			ctx,
+			lock,
+			sessionID,
+			latest.Version,
+			reconciled,
+		)
+		if reconcileErr == nil {
+			return cloneAuthSession(reconciled), nil
+		}
+		if errors.Is(reconcileErr, session.ErrVersionConflict) ||
+			errors.Is(reconcileErr, session.ErrLockLost) {
+			final, finalErr := s.backend.Get(ctx, sessionID)
+			if finalErr == nil &&
+				safeRotatedRefreshWinner(final, supplier, sessionID, s.clock.Now()) {
+				return cloneAuthSession(final), nil
+			}
+			return nil, authError(sdkerr.KindSessionUnavailable, operation)
+		}
+		if errors.Is(reconcileErr, session.ErrNotFound) ||
+			errors.Is(reconcileErr, session.ErrExpired) {
 			return nil, authError(sdkerr.KindUnauthenticated, operation)
 		}
 		return nil, authError(sdkerr.KindSessionUnavailable, operation)
 	}
-	return cloneAuthSession(next), nil
+	if errors.Is(err, session.ErrLockLost) {
+		winner, getErr := s.backend.Get(ctx, sessionID)
+		if getErr == nil &&
+			safeRotatedRefreshWinner(winner, supplier, sessionID, s.clock.Now()) {
+			return cloneAuthSession(winner), nil
+		}
+		return nil, authError(sdkerr.KindSessionUnavailable, operation)
+	}
+	if errors.Is(err, session.ErrNotFound) || errors.Is(err, session.ErrExpired) {
+		return nil, authError(sdkerr.KindUnauthenticated, operation)
+	}
+	return nil, authError(sdkerr.KindSessionUnavailable, operation)
+}
+
+func (s *Service) deleteInvalidGrantSession(
+	ctx context.Context,
+	lock session.Lock,
+	sessionID string,
+	supplier *session.Session,
+) (*session.Session, error) {
+	const operation = "authn.refresh"
+	err := s.backend.DeleteWithLock(ctx, lock, sessionID, supplier.Version)
+	if err == nil || errors.Is(err, session.ErrNotFound) || errors.Is(err, session.ErrExpired) {
+		return nil, authError(sdkerr.KindUnauthenticated, operation)
+	}
+	if errors.Is(err, session.ErrVersionConflict) {
+		latest, getErr := s.backend.Get(ctx, sessionID)
+		if getErr != nil {
+			return nil, refreshCommitReadError(getErr, operation)
+		}
+		if safeRotatedRefreshWinner(latest, supplier, sessionID, s.clock.Now()) {
+			return cloneAuthSession(latest), nil
+		}
+		if !sameRefreshTokenSupplier(latest, supplier, sessionID) ||
+			latest.Version <= supplier.Version {
+			return nil, authError(sdkerr.KindSessionUnavailable, operation)
+		}
+		retryErr := s.backend.DeleteWithLock(ctx, lock, sessionID, latest.Version)
+		if retryErr == nil || errors.Is(retryErr, session.ErrNotFound) ||
+			errors.Is(retryErr, session.ErrExpired) {
+			return nil, authError(sdkerr.KindUnauthenticated, operation)
+		}
+		if errors.Is(retryErr, session.ErrVersionConflict) ||
+			errors.Is(retryErr, session.ErrLockLost) {
+			final, finalErr := s.backend.Get(ctx, sessionID)
+			if finalErr == nil &&
+				safeRotatedRefreshWinner(final, supplier, sessionID, s.clock.Now()) {
+				return cloneAuthSession(final), nil
+			}
+			return nil, authError(sdkerr.KindSessionUnavailable, operation)
+		}
+		return nil, authError(sdkerr.KindSessionUnavailable, operation)
+	}
+	if errors.Is(err, session.ErrLockLost) {
+		winner, getErr := s.backend.Get(ctx, sessionID)
+		if getErr == nil &&
+			safeRotatedRefreshWinner(winner, supplier, sessionID, s.clock.Now()) {
+			return cloneAuthSession(winner), nil
+		}
+		return nil, authError(sdkerr.KindSessionUnavailable, operation)
+	}
+	return nil, authError(sdkerr.KindSessionUnavailable, operation)
 }
 
 func (s *Service) acquireRefreshLock(
@@ -162,7 +263,7 @@ func (s *Service) acquireRefreshLock(
 		if getErr != nil {
 			return nil, nil, refreshSessionReadError(getErr, operation)
 		}
-		if safeRefreshWinner(latest, sessionID, baseline.Version, s.clock.Now(), s.refreshBeforeExpiry) {
+		if safeRotatedRefreshWinner(latest, baseline, sessionID, s.clock.Now()) {
 			return nil, cloneAuthSession(latest), nil
 		}
 		timer := time.NewTimer(poll)
@@ -177,6 +278,13 @@ func (s *Service) acquireRefreshLock(
 	}
 }
 
+func refreshCommitReadError(err error, operation string) error {
+	if errors.Is(err, session.ErrNotFound) || errors.Is(err, session.ErrExpired) {
+		return authError(sdkerr.KindUnauthenticated, operation)
+	}
+	return authError(sdkerr.KindSessionUnavailable, operation)
+}
+
 func refreshSessionReadError(err error, operation string) error {
 	if errors.Is(err, session.ErrNotFound) || errors.Is(err, session.ErrExpired) {
 		return authError(sdkerr.KindUnauthenticated, operation)
@@ -184,15 +292,30 @@ func refreshSessionReadError(err error, operation string) error {
 	return authError(sdkerr.KindSessionUnavailable, operation)
 }
 
-func safeRefreshWinner(
-	item *session.Session,
+func safeRotatedRefreshWinner(
+	candidate *session.Session,
+	baseline *session.Session,
 	sessionID string,
-	priorVersion uint64,
 	now time.Time,
-	window time.Duration,
 ) bool {
-	return item != nil && item.Version > priorVersion &&
-		validSessionForUse(item, sessionID, now) && accessTokenFresh(item, now, window)
+	return candidate != nil && baseline != nil && candidate.Version > baseline.Version &&
+		validSessionForUse(candidate, sessionID, now) &&
+		constantTimeEqual(candidate.Identity.Subject, baseline.Identity.Subject) &&
+		strings.TrimSpace(candidate.TokenSet.AccessToken) != "" &&
+		candidate.TokenSet.AccessTokenExpiry.After(now) &&
+		!constantTimeEqual(candidate.TokenSet.AccessToken, baseline.TokenSet.AccessToken)
+}
+
+func sameRefreshTokenSupplier(
+	candidate *session.Session,
+	baseline *session.Session,
+	sessionID string,
+) bool {
+	return candidate != nil && baseline != nil &&
+		constantTimeEqual(candidate.ID, sessionID) &&
+		constantTimeEqual(baseline.ID, sessionID) &&
+		constantTimeEqual(candidate.Identity.Subject, baseline.Identity.Subject) &&
+		constantTimeEqual(candidate.TokenSet.RefreshToken, baseline.TokenSet.RefreshToken)
 }
 
 func accessTokenFresh(item *session.Session, now time.Time, window time.Duration) bool {

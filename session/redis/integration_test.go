@@ -200,6 +200,71 @@ func TestLuaExpiryFailureRollsBackWrites(t *testing.T) {
 				}
 			})
 
+			t.Run("fenced cas restores old fields and ttl", func(t *testing.T) {
+				item := integrationSession("fenced-cas-expiry-fault", time.Now().Add(time.Minute))
+				if err := fixture.backend.Create(ctx, item); err != nil {
+					t.Fatal(err)
+				}
+				lock, err := fixture.backend.Lock(ctx, item.ID, time.Minute)
+				if err != nil {
+					t.Fatal(err)
+				}
+				owned, ok := lock.(*ownedLock)
+				if !ok {
+					t.Fatalf("lock type = %T", lock)
+				}
+				key := fixture.backend.sessionKey(item.ID)
+				before, err := fixture.admin.HGetAll(ctx, key).Result()
+				if err != nil {
+					t.Fatal(err)
+				}
+				ttlBefore, err := fixture.admin.PTTL(ctx, key).Result()
+				if err != nil {
+					t.Fatal(err)
+				}
+				next := *item
+				next.Version = 2
+				next.TokenSet.AccessToken = "next-plaintext-access-token"
+				nextPayload, err := encodeModel(fixture.backend.codec, &next)
+				if err != nil {
+					t.Fatal(err)
+				}
+
+				status, err := sessionCompareAndSwapWithLockScript.Run(
+					ctx,
+					fixture.admin,
+					[]string{key, fixture.backend.lockKey(item.ID)},
+					owned.token,
+					"1",
+					"2",
+					nextPayload,
+					"invalid-milliseconds",
+				).Int64()
+				if err != nil {
+					t.Fatalf("script leaked expiry failure instead of status: %v", err)
+				}
+				if status != -2 {
+					t.Fatalf("status = %d", status)
+				}
+				after, err := fixture.admin.HGetAll(ctx, key).Result()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if before["version"] != after["version"] || before["payload"] != after["payload"] {
+					t.Fatal("failed fenced CAS exposed updated fields")
+				}
+				ttlAfter, err := fixture.admin.PTTL(ctx, key).Result()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if ttlAfter <= 0 || ttlAfter > ttlBefore {
+					t.Fatalf("rollback changed ttl: before=%s after=%s", ttlBefore, ttlAfter)
+				}
+				if err := lock.Unlock(ctx); err != nil {
+					t.Fatal(err)
+				}
+			})
+
 			t.Run("acl denial is sanitized and leaves state safe", func(t *testing.T) {
 				assertACLDeniedExpiryIsSafe(t, fixture)
 			})
@@ -419,7 +484,11 @@ func assertHashedKeysOnly(
 
 func expectedRedisKey(prefix, kind, rawIdentifier string) string {
 	sum := sha256.Sum256([]byte(rawIdentifier))
-	return prefix + ":" + kind + ":" + hex.EncodeToString(sum[:])
+	digest := hex.EncodeToString(sum[:])
+	if kind == "session" || kind == "lock" {
+		digest = "{" + digest + "}"
+	}
+	return prefix + ":" + kind + ":" + digest
 }
 
 func assertACLDeniedExpiryIsSafe(t *testing.T, fixture *integrationFixture) {

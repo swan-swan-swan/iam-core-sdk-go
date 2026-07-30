@@ -131,12 +131,79 @@ func (b *Backend) CompareAndSwap(
 	return nil
 }
 
+func (b *Backend) CompareAndSwapWithLock(
+	_ context.Context,
+	lock session.Lock,
+	id string,
+	expectedVersion uint64,
+	next *session.Session,
+) error {
+	if !validID(id) || expectedVersion == 0 || expectedVersion == ^uint64(0) ||
+		next == nil || next.ID != id || next.Version != expectedVersion+1 {
+		return errInvalidInput
+	}
+	copied := cloneSession(next)
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.clock.Now()
+	if !b.ownsLockLocked(lock, id, now) {
+		return session.ErrLockLost
+	}
+	current, exists := b.sessions[id]
+	if !exists {
+		return session.ErrNotFound
+	}
+	if sessionExpired(current, now) {
+		delete(b.sessions, id)
+		return session.ErrExpired
+	}
+	if current.Version != expectedVersion {
+		return session.ErrVersionConflict
+	}
+	if err := validateSessionExpiry(next, now); err != nil {
+		return err
+	}
+	b.sessions[id] = copied
+	return nil
+}
+
 func (b *Backend) Delete(_ context.Context, id string) error {
 	if !validID(id) {
 		return errInvalidInput
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	delete(b.sessions, id)
+	return nil
+}
+
+func (b *Backend) DeleteWithLock(
+	_ context.Context,
+	lock session.Lock,
+	id string,
+	expectedVersion uint64,
+) error {
+	if !validID(id) || expectedVersion == 0 {
+		return errInvalidInput
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.clock.Now()
+	if !b.ownsLockLocked(lock, id, now) {
+		return session.ErrLockLost
+	}
+	current, exists := b.sessions[id]
+	if !exists {
+		return session.ErrNotFound
+	}
+	if sessionExpired(current, now) {
+		delete(b.sessions, id)
+		return session.ErrExpired
+	}
+	if current.Version != expectedVersion {
+		return session.ErrVersionConflict
+	}
 	delete(b.sessions, id)
 	return nil
 }
@@ -270,6 +337,22 @@ func (l *ownedLock) Unlock(_ context.Context) error {
 	}
 	delete(l.backend.locks, l.id)
 	return nil
+}
+
+func (b *Backend) ownsLockLocked(lock session.Lock, id string, now time.Time) bool {
+	owned, ok := lock.(*ownedLock)
+	if !ok || owned == nil || owned.backend != b || owned.id != id {
+		return false
+	}
+	current, exists := b.locks[id]
+	if !exists {
+		return false
+	}
+	if !current.expiresAt.After(now) {
+		delete(b.locks, id)
+		return false
+	}
+	return sameToken(current.token, owned.token)
 }
 
 func sameToken(left, right string) bool {

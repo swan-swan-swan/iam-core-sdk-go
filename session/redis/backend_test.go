@@ -52,7 +52,7 @@ func TestKeyNeverContainsRawIdentifier(t *testing.T) {
 	raw := "session-secret-id"
 	got := backend.sessionKey(raw)
 	sum := sha256.Sum256([]byte(raw))
-	want := "iamcore:session:" + hex.EncodeToString(sum[:])
+	want := "iamcore:session:{" + hex.EncodeToString(sum[:]) + "}"
 	if got != want {
 		t.Fatalf("key = %q, want %q", got, want)
 	}
@@ -61,21 +61,39 @@ func TestKeyNeverContainsRawIdentifier(t *testing.T) {
 	}
 }
 
+func TestSessionAndLockKeysShareExactHashTag(t *testing.T) {
+	backend := &Backend{prefix: "iamcore"}
+	raw := "shared-session-secret"
+	sum := sha256.Sum256([]byte(raw))
+	tag := "{" + hex.EncodeToString(sum[:]) + "}"
+	sessionKey := backend.sessionKey(raw)
+	lockKey := backend.lockKey(raw)
+	if sessionKey != "iamcore:session:"+tag || lockKey != "iamcore:lock:"+tag {
+		t.Fatalf("session/lock keys = %q / %q", sessionKey, lockKey)
+	}
+	if !strings.Contains(sessionKey, tag) || !strings.Contains(lockKey, tag) {
+		t.Fatal("session and lock keys do not share a Redis Cluster hash tag")
+	}
+}
+
 func TestAllRedisKeysHashRawIdentifiers(t *testing.T) {
 	backend := &Backend{prefix: "iamcore"}
 	raw := "shared-raw-secret"
 	sum := sha256.Sum256([]byte(raw))
 	digest := hex.EncodeToString(sum[:])
-	for name, got := range map[string]string{
-		"session": backend.sessionKey(raw),
-		"flow":    backend.flowKey(raw),
-		"lock":    backend.lockKey(raw),
+	for name, test := range map[string]struct {
+		got    string
+		suffix string
+	}{
+		"session": {got: backend.sessionKey(raw), suffix: "{" + digest + "}"},
+		"flow":    {got: backend.flowKey(raw), suffix: digest},
+		"lock":    {got: backend.lockKey(raw), suffix: "{" + digest + "}"},
 	} {
-		if strings.Contains(got, raw) {
+		if strings.Contains(test.got, raw) {
 			t.Fatalf("%s key exposed identifier", name)
 		}
-		if !strings.HasSuffix(got, digest) {
-			t.Fatalf("%s key = %q, missing digest", name, got)
+		if !strings.HasSuffix(test.got, test.suffix) {
+			t.Fatalf("%s key = %q, missing digest", name, test.got)
 		}
 	}
 }
@@ -114,6 +132,16 @@ func TestNewValidatesDependenciesAndNormalizesPrefix(t *testing.T) {
 		{name: "empty prefix", client: client, options: func() Options {
 			options := validOptions()
 			options.Prefix = " :: "
+			return options
+		}()},
+		{name: "prefix with opening hash tag", client: client, options: func() Options {
+			options := validOptions()
+			options.Prefix = "iam{shared"
+			return options
+		}()},
+		{name: "prefix with closing hash tag", client: client, options: func() Options {
+			options := validOptions()
+			options.Prefix = "iam}shared"
 			return options
 		}()},
 	}

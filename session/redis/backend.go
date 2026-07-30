@@ -155,6 +155,45 @@ func (b *Backend) CompareAndSwap(
 	return mapCASStatus(status)
 }
 
+func (b *Backend) CompareAndSwapWithLock(
+	ctx context.Context,
+	lock session.Lock,
+	id string,
+	expectedVersion uint64,
+	next *session.Session,
+) error {
+	if !validID(id) || expectedVersion == 0 || expectedVersion == ^uint64(0) ||
+		next == nil || next.ID != id || next.Version != expectedVersion+1 {
+		return errInvalidInput
+	}
+	owned, ok := b.ownedLock(lock, id)
+	if !ok {
+		return session.ErrLockLost
+	}
+	ttl, err := sessionTTL(next, b.clock.Now())
+	if err != nil {
+		return err
+	}
+	payload, err := encodeModel(b.codec, next)
+	if err != nil {
+		return err
+	}
+	status, err := sessionCompareAndSwapWithLockScript.Run(
+		ctx,
+		b.client,
+		[]string{b.sessionKey(id), b.lockKey(id)},
+		owned.token,
+		strconv.FormatUint(expectedVersion, 10),
+		strconv.FormatUint(next.Version, 10),
+		payload,
+		ttl.Milliseconds(),
+	).Int64()
+	if err != nil {
+		return backendError(err)
+	}
+	return mapFencedStatus(status)
+}
+
 func (b *Backend) Delete(ctx context.Context, id string) error {
 	if !validID(id) {
 		return errInvalidInput
@@ -163,6 +202,32 @@ func (b *Backend) Delete(ctx context.Context, id string) error {
 		return backendError(err)
 	}
 	return nil
+}
+
+func (b *Backend) DeleteWithLock(
+	ctx context.Context,
+	lock session.Lock,
+	id string,
+	expectedVersion uint64,
+) error {
+	if !validID(id) || expectedVersion == 0 {
+		return errInvalidInput
+	}
+	owned, ok := b.ownedLock(lock, id)
+	if !ok {
+		return session.ErrLockLost
+	}
+	status, err := sessionDeleteWithLockScript.Run(
+		ctx,
+		b.client,
+		[]string{b.sessionKey(id), b.lockKey(id)},
+		owned.token,
+		strconv.FormatUint(expectedVersion, 10),
+	).Int64()
+	if err != nil {
+		return backendError(err)
+	}
+	return mapFencedStatus(status)
 }
 
 func (b *Backend) PutFlow(ctx context.Context, flow *session.Flow) error {
@@ -243,22 +308,29 @@ func (b *Backend) Lock(ctx context.Context, id string, duration time.Duration) (
 	if status != 1 {
 		return nil, session.ErrLocked
 	}
-	return &ownedLock{client: b.client, key: key, token: token}, nil
+	return &ownedLock{backend: b, id: id, key: key, token: token}, nil
 }
 
 type ownedLock struct {
-	client goredis.UniversalClient
-	key    string
-	token  string
+	backend *Backend
+	id      string
+	key     string
+	token   string
 }
 
 func (l *ownedLock) Valid(ctx context.Context) bool {
-	status, err := lockValidScript.Run(ctx, l.client, []string{l.key}, l.token).Int64()
+	if l == nil || l.backend == nil {
+		return false
+	}
+	status, err := lockValidScript.Run(ctx, l.backend.client, []string{l.key}, l.token).Int64()
 	return err == nil && status == 1
 }
 
 func (l *ownedLock) Unlock(ctx context.Context) error {
-	status, err := lockUnlockScript.Run(ctx, l.client, []string{l.key}, l.token).Int64()
+	if l == nil || l.backend == nil {
+		return session.ErrLockLost
+	}
+	status, err := lockUnlockScript.Run(ctx, l.backend.client, []string{l.key}, l.token).Int64()
 	if err != nil {
 		return backendError(err)
 	}
@@ -268,17 +340,35 @@ func (l *ownedLock) Unlock(ctx context.Context) error {
 	return nil
 }
 
-func (b *Backend) sessionKey(id string) string { return b.key("session", id) }
+func (b *Backend) ownedLock(lock session.Lock, id string) (*ownedLock, bool) {
+	owned, ok := lock.(*ownedLock)
+	return owned, ok && owned != nil && owned.backend == b && owned.id == id &&
+		owned.key == b.lockKey(id)
+}
+
+func (b *Backend) sessionKey(id string) string { return b.taggedKey("session", id) }
 func (b *Backend) flowKey(id string) string    { return b.key("flow", id) }
-func (b *Backend) lockKey(id string) string    { return b.key("lock", id) }
+func (b *Backend) lockKey(id string) string    { return b.taggedKey("lock", id) }
+
+func (b *Backend) taggedKey(kind, id string) string {
+	return b.prefix + ":" + kind + ":{" + b.digest(id) + "}"
+}
 
 func (b *Backend) key(kind, id string) string {
+	return b.prefix + ":" + kind + ":" + b.digest(id)
+}
+
+func (b *Backend) digest(id string) string {
 	sum := sha256.Sum256([]byte(id))
-	return b.prefix + ":" + kind + ":" + hex.EncodeToString(sum[:])
+	return hex.EncodeToString(sum[:])
 }
 
 func normalizePrefix(prefix string) string {
-	return strings.TrimSpace(strings.Trim(strings.TrimSpace(prefix), ":"))
+	normalized := strings.TrimSpace(strings.Trim(strings.TrimSpace(prefix), ":"))
+	if strings.ContainsAny(normalized, "{}") {
+		return ""
+	}
+	return normalized
 }
 
 func validID(id string) bool {
@@ -371,6 +461,23 @@ func mapCASStatus(status int64) error {
 		return session.ErrVersionConflict
 	case -1:
 		return session.ErrNotFound
+	case scriptStatusStorageFailure:
+		return ErrBackendUnavailable
+	default:
+		return ErrBackendUnavailable
+	}
+}
+
+func mapFencedStatus(status int64) error {
+	switch status {
+	case 1:
+		return nil
+	case 0:
+		return session.ErrVersionConflict
+	case -1:
+		return session.ErrNotFound
+	case -3:
+		return session.ErrLockLost
 	case scriptStatusStorageFailure:
 		return ErrBackendUnavailable
 	default:

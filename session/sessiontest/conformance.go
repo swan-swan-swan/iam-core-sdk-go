@@ -413,6 +413,192 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
+	t.Run("fenced compare and swap and delete require current owner", func(t *testing.T) {
+		backend := factory(t)
+		ctx := context.Background()
+		item := fullSession("session-fenced-valid", time.Now().Add(time.Hour))
+		if err := backend.Create(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		lock, err := backend.Lock(ctx, item.ID, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next := fullSession(item.ID, item.ExpiresAt)
+		next.Version = 2
+		next.TokenSet.AccessToken = "access-fenced"
+		if err := backend.CompareAndSwapWithLock(ctx, lock, item.ID, 1, next); err != nil {
+			t.Fatalf("fenced CAS error = %v", err)
+		}
+		stored, err := backend.Get(ctx, item.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if stored.Version != 2 || stored.TokenSet.AccessToken != "access-fenced" {
+			t.Fatalf("stored = %#v", stored)
+		}
+		if err := backend.DeleteWithLock(ctx, lock, item.ID, 2); err != nil {
+			t.Fatalf("fenced delete error = %v", err)
+		}
+		if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrNotFound) {
+			t.Fatalf("Get() error = %v", err)
+		}
+		if err := lock.Unlock(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("fenced operations reject lock from another backend or session", func(t *testing.T) {
+		ctx := context.Background()
+		first := factory(t)
+		second := factory(t)
+		for _, backend := range []session.Backend{first, second} {
+			for _, id := range []string{"session-fenced-owner", "session-fenced-other"} {
+				if err := backend.Create(ctx, fullSession(id, time.Now().Add(time.Hour))); err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		lock, err := first.Lock(ctx, "session-fenced-owner", time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		nextOwner := fullSession("session-fenced-owner", time.Now().Add(time.Hour))
+		nextOwner.Version = 2
+		if err := second.CompareAndSwapWithLock(
+			ctx,
+			lock,
+			nextOwner.ID,
+			1,
+			nextOwner,
+		); !errors.Is(err, session.ErrLockLost) {
+			t.Fatalf("foreign backend CAS error = %v", err)
+		}
+		if err := second.DeleteWithLock(
+			ctx,
+			lock,
+			"session-fenced-owner",
+			1,
+		); !errors.Is(err, session.ErrLockLost) {
+			t.Fatalf("foreign backend delete error = %v", err)
+		}
+		nextOther := fullSession("session-fenced-other", time.Now().Add(time.Hour))
+		nextOther.Version = 2
+		if err := first.CompareAndSwapWithLock(
+			ctx,
+			lock,
+			nextOther.ID,
+			1,
+			nextOther,
+		); !errors.Is(err, session.ErrLockLost) {
+			t.Fatalf("wrong-session CAS error = %v", err)
+		}
+		if err := first.DeleteWithLock(
+			ctx,
+			lock,
+			"session-fenced-other",
+			1,
+		); !errors.Is(err, session.ErrLockLost) {
+			t.Fatalf("wrong-session delete error = %v", err)
+		}
+		for _, backend := range []session.Backend{first, second} {
+			for _, id := range []string{"session-fenced-owner", "session-fenced-other"} {
+				stored, err := backend.Get(ctx, id)
+				if err != nil || stored.Version != 1 {
+					t.Fatalf("stored %s = %#v, error = %v", id, stored, err)
+				}
+			}
+		}
+		if err := lock.Unlock(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("fenced operations reject version mismatch without mutation", func(t *testing.T) {
+		backend := factory(t)
+		ctx := context.Background()
+		item := fullSession("session-fenced-version", time.Now().Add(time.Hour))
+		if err := backend.Create(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		lock, err := backend.Lock(ctx, item.ID, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next := fullSession(item.ID, item.ExpiresAt)
+		next.Version = 3
+		if err := backend.CompareAndSwapWithLock(
+			ctx,
+			lock,
+			item.ID,
+			2,
+			next,
+		); !errors.Is(err, session.ErrVersionConflict) {
+			t.Fatalf("fenced CAS error = %v", err)
+		}
+		if err := backend.DeleteWithLock(
+			ctx,
+			lock,
+			item.ID,
+			2,
+		); !errors.Is(err, session.ErrVersionConflict) {
+			t.Fatalf("fenced delete error = %v", err)
+		}
+		stored, err := backend.Get(ctx, item.ID)
+		if err != nil || stored.Version != 1 {
+			t.Fatalf("stored = %#v, error = %v", stored, err)
+		}
+		if err := lock.Unlock(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	t.Run("expired replaced owner cannot fenced CAS or delete", func(t *testing.T) {
+		backend := factory(t)
+		ctx := context.Background()
+		item := fullSession("session-fenced-stale", time.Now().Add(time.Hour))
+		if err := backend.Create(ctx, item); err != nil {
+			t.Fatal(err)
+		}
+		stale, err := backend.Lock(ctx, item.ID, 30*time.Millisecond)
+		if err != nil {
+			t.Fatal(err)
+		}
+		eventually(t, time.Second, func() bool { return !stale.Valid(ctx) })
+		current, err := backend.Lock(ctx, item.ID, time.Minute)
+		if err != nil {
+			t.Fatal(err)
+		}
+		next := fullSession(item.ID, item.ExpiresAt)
+		next.Version = 2
+		next.TokenSet.AccessToken = "stale-access"
+		if err := backend.CompareAndSwapWithLock(
+			ctx,
+			stale,
+			item.ID,
+			1,
+			next,
+		); !errors.Is(err, session.ErrLockLost) {
+			t.Fatalf("stale fenced CAS error = %v", err)
+		}
+		if err := backend.DeleteWithLock(
+			ctx,
+			stale,
+			item.ID,
+			1,
+		); !errors.Is(err, session.ErrLockLost) {
+			t.Fatalf("stale fenced delete error = %v", err)
+		}
+		stored, err := backend.Get(ctx, item.ID)
+		if err != nil || stored.Version != 1 ||
+			stored.TokenSet.AccessToken != "access-original" {
+			t.Fatalf("stored = %#v, error = %v", stored, err)
+		}
+		if err := current.Unlock(ctx); err != nil {
+			t.Fatal(err)
+		}
+	})
+
 	t.Run("invalid inputs fail without exposing identifiers", func(t *testing.T) {
 		backend := factory(t)
 		ctx := context.Background()
@@ -443,6 +629,27 @@ func Run(t *testing.T, factory Factory) {
 				next := *valid
 				next.Version = 0
 				return backend.CompareAndSwap(ctx, secretID, ^uint64(0), &next)
+			}},
+			{name: "nil fenced cas lock", call: func() error {
+				next := *valid
+				next.Version = 2
+				return backend.CompareAndSwapWithLock(ctx, nil, secretID, 1, &next)
+			}},
+			{name: "nil fenced cas session", call: func() error {
+				lock, err := backend.Lock(ctx, secretID, time.Second)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = lock.Unlock(ctx) }()
+				return backend.CompareAndSwapWithLock(ctx, lock, secretID, 1, nil)
+			}},
+			{name: "zero fenced delete version", call: func() error {
+				lock, err := backend.Lock(ctx, secretID, time.Second)
+				if err != nil {
+					return err
+				}
+				defer func() { _ = lock.Unlock(ctx) }()
+				return backend.DeleteWithLock(ctx, lock, secretID, 0)
 			}},
 			{name: "blank delete id", call: func() error { return backend.Delete(ctx, " ") }},
 			{name: "nil flow", call: func() error { return backend.PutFlow(ctx, nil) }},

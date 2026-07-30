@@ -153,6 +153,8 @@ type fakeBrowserOIDC struct {
 	includeRefreshIDToken bool
 	refreshStarted        chan<- struct{}
 	refreshBlock          <-chan struct{}
+	rotateRefreshTokens   bool
+	usedRefreshTokens     map[string]bool
 	logoutStatus          int
 	lastLogoutAccessToken string
 	lastLogoutIDTokenHint string
@@ -179,6 +181,7 @@ func newFakeBrowserOIDC(t *testing.T) *fakeBrowserOIDC {
 		refreshIDSubject:      "user-1",
 		includeRefreshToken:   true,
 		includeRefreshIDToken: true,
+		usedRefreshTokens:     make(map[string]bool),
 		logoutStatus:          http.StatusNoContent,
 	}
 	mux := http.NewServeMux()
@@ -250,13 +253,22 @@ func (f *fakeBrowserOIDC) exchangeToken(w http.ResponseWriter, request *http.Req
 }
 
 func (f *fakeBrowserOIDC) refresh(w http.ResponseWriter, request *http.Request) {
-	if request.PostForm.Get("refresh_token") == "" {
+	submittedRefreshToken := request.PostForm.Get("refresh_token")
+	if submittedRefreshToken == "" {
 		http.Error(w, "bad request", http.StatusBadRequest)
 		return
 	}
 	f.mu.Lock()
 	status := f.refreshStatus
 	errorCode := f.refreshError
+	if f.rotateRefreshTokens {
+		if f.usedRefreshTokens[submittedRefreshToken] {
+			status = http.StatusBadRequest
+			errorCode = "invalid_grant"
+		} else {
+			f.usedRefreshTokens[submittedRefreshToken] = true
+		}
+	}
 	accessToken := f.refreshAccessToken
 	refreshToken := f.refreshToken
 	idSubject := f.refreshIDSubject

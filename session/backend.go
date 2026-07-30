@@ -26,10 +26,16 @@ type RefreshLocker interface {
 	Lock(context.Context, string, time.Duration) (Lock, error)
 }
 
+type RefreshCommitter interface {
+	CompareAndSwapWithLock(context.Context, Lock, string, uint64, *Session) error
+	DeleteWithLock(context.Context, Lock, string, uint64) error
+}
+
 type Backend interface {
 	SessionStore
 	FlowStore
 	RefreshLocker
+	RefreshCommitter
 }
 
 type Clock interface {

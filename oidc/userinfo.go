@@ -51,7 +51,11 @@ func (c *Client) UserInfo(
 	var raw map[string]json.RawMessage
 	if err := transport.DecodeJSON(response.Body, &raw); err != nil {
 		protocolErr := sdkerr.New(sdkerr.KindProtocol, operation, response.StatusCode, false, nil)
-		return Identity{}, withSubmittedSafeCorrelation(protocolErr, response.Correlation, sensitiveValues...)
+		return Identity{}, withSubmittedSafeCorrelation(
+			protocolErr,
+			headerCorrelation(response.Header),
+			sensitiveValues...,
+		)
 	}
 
 	extraClaims := cloneRawClaims(raw)
@@ -62,7 +66,11 @@ func (c *Client) UserInfo(
 		decodeKnownClaim(raw, "roles", &identity.Roles) != nil ||
 		strings.TrimSpace(identity.Subject) == "" {
 		protocolErr := sdkerr.New(sdkerr.KindProtocol, operation, response.StatusCode, false, nil)
-		return Identity{}, withSubmittedSafeCorrelation(protocolErr, response.Correlation, sensitiveValues...)
+		return Identity{}, withSubmittedSafeCorrelation(
+			protocolErr,
+			headerCorrelation(response.Header),
+			sensitiveValues...,
+		)
 	}
 	for _, known := range []string{"sub", "username", "email", "display_name", "roles"} {
 		delete(extraClaims, known)
@@ -122,6 +130,10 @@ func endpointQueryValues(endpoint string) []string {
 		values = append(values, entries...)
 	}
 	return values
+}
+
+func headerCorrelation(header http.Header) transport.Correlation {
+	return transport.Correlation{RequestID: header.Get("X-Request-ID")}
 }
 
 var errInvalidKnownClaim = &knownClaimError{}

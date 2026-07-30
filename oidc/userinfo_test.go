@@ -285,6 +285,30 @@ func TestUserInfoEmptyOrNonJSON2xxIsProtocolError(t *testing.T) {
 	}
 }
 
+func TestUserInfoShapeErrorIgnoresBodyCorrelation(t *testing.T) {
+	client, calls := newTask4EndpointClient(t, "userinfo_endpoint", func(writer http.ResponseWriter, _ *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("X-Request-ID", "request-safe")
+		_, _ = writer.Write([]byte(`{
+			"sub":"` + task4Subject + `",
+			"roles":"invalid-shape",
+			"request_id":"body-secret-request",
+			"trace_id":"body-secret-trace"
+		}`))
+	})
+	_, err := client.UserInfo(t.Context(), "access-token-secret")
+	typed, ok := err.(*sdkerr.Error)
+	if !ok || typed.Kind != sdkerr.KindProtocol || typed.Cause != nil ||
+		typed.RequestID != "request-safe" || typed.TraceID != "" || calls.Load() != 1 {
+		t.Fatalf("error=%#v calls=%d", err, calls.Load())
+	}
+	for _, secret := range []string{"body-secret-request", "body-secret-trace", "access-token-secret"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatalf("error exposed %q: %v", secret, err)
+		}
+	}
+}
+
 func TestUserInfoMalformed2xxAndMissingSubjectAreProtocolErrors(t *testing.T) {
 	for name, body := range map[string]string{
 		"malformed":        `{"sub":`,

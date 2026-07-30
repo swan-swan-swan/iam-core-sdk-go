@@ -291,6 +291,27 @@ func TestVerifyAccessTokenJWTAcceptsFractionalNumericDates(t *testing.T) {
 	}
 }
 
+func TestVerifyAccessTokenJWTAcceptsExponentNumericDates(t *testing.T) {
+	client, signer := newVerificationClient(t)
+	fixedNow := time.Unix(1_700_000_000, 500_000_000)
+	raw := signer.rawToken(t, fmt.Sprintf(`{
+		"iss":%q,
+		"aud":%q,
+		"sub":%q,
+		"exp":1.70000000125e9,
+		"nbf":1.7000000005e9
+	}`, signer.Issuer, signer.ClientID, task4Subject))
+
+	got, err := client.verifyAccessTokenJWTAt(t.Context(), raw, fixedNow)
+
+	if err != nil {
+		t.Fatalf("verifyAccessTokenJWTAt() error = %v", err)
+	}
+	if got.Expiry != 1_700_000_001 {
+		t.Fatalf("expiry = %d", got.Expiry)
+	}
+}
+
 func TestVerifyAccessTokenJWTRejectsExpiryAtExactBoundary(t *testing.T) {
 	client, signer := newVerificationClient(t)
 	fixedNow := time.Unix(1_700_000_000, 500_000_000)

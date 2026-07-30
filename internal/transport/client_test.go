@@ -65,6 +65,7 @@ func TestClientRejectsOversizedBody(t *testing.T) {
 }
 
 func TestClientReturnsBoundedMetadataWithOversizedBodyError(t *testing.T) {
+	bodyEnvelope := `{"request_id":"body-secret","trace_id":"trace-secret"}`
 	rawHeader := http.Header{
 		"Content-Type": {"application/json"},
 		"X-Request-Id": {"request-safe"},
@@ -74,19 +75,20 @@ func TestClientReturnsBoundedMetadataWithOversizedBodyError(t *testing.T) {
 			return &http.Response{
 				StatusCode: http.StatusUnauthorized,
 				Header:     rawHeader,
-				Body:       io.NopCloser(strings.NewReader(`{"hostile":"response-secret"}`)),
+				Body:       io.NopCloser(strings.NewReader(bodyEnvelope + "X")),
 			}, nil
 		})},
-		MaxBodyBytes: 8,
+		MaxBodyBytes: int64(len(bodyEnvelope)),
 	}
 	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
 
 	response, err := client.Do(request)
 
 	assertSDKError(t, err, sdkerr.KindProtocol, "transport.response", http.StatusUnauthorized, false)
-	if response.StatusCode != http.StatusUnauthorized || len(response.Body) != 8 ||
+	if response.StatusCode != http.StatusUnauthorized || string(response.Body) != bodyEnvelope ||
 		response.Header.Get("X-Request-ID") != "request-safe" ||
-		response.Correlation.RequestID != "request-safe" {
+		response.Correlation.RequestID != "request-safe" ||
+		response.Correlation.TraceID != "" {
 		t.Fatalf("response = %#v", response)
 	}
 	response.Header.Set("X-Request-ID", "mutated")
@@ -96,6 +98,7 @@ func TestClientReturnsBoundedMetadataWithOversizedBodyError(t *testing.T) {
 }
 
 func TestClientReturnsMetadataWithContentTypeError(t *testing.T) {
+	bodyEnvelope := `{"request_id":"body-secret","trace_id":"trace-secret"}`
 	client := Client{HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusServiceUnavailable,
@@ -103,7 +106,7 @@ func TestClientReturnsMetadataWithContentTypeError(t *testing.T) {
 				"Content-Type": {"text/plain; hostile=response-secret"},
 				"X-Request-Id": {"request-safe"},
 			},
-			Body: io.NopCloser(strings.NewReader("hostile-response-secret")),
+			Body: io.NopCloser(strings.NewReader(bodyEnvelope)),
 		}, nil
 	})}}
 	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
@@ -114,7 +117,8 @@ func TestClientReturnsMetadataWithContentTypeError(t *testing.T) {
 	if response.StatusCode != http.StatusServiceUnavailable ||
 		response.Header.Get("X-Request-ID") != "request-safe" ||
 		response.Correlation.RequestID != "request-safe" ||
-		string(response.Body) != "hostile-response-secret" {
+		response.Correlation.TraceID != "" ||
+		string(response.Body) != bodyEnvelope {
 		t.Fatalf("response = %#v", response)
 	}
 	if strings.Contains(err.Error(), "hostile") || strings.Contains(err.Error(), "response-secret") {
@@ -123,6 +127,7 @@ func TestClientReturnsMetadataWithContentTypeError(t *testing.T) {
 }
 
 func TestClientReturnsMetadataWithBodyReadError(t *testing.T) {
+	bodyEnvelope := `{"request_id":"body-secret","trace_id":"trace-secret"}`
 	client := Client{HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
 		return &http.Response{
 			StatusCode: http.StatusUnauthorized,
@@ -131,7 +136,7 @@ func TestClientReturnsMetadataWithBodyReadError(t *testing.T) {
 				"X-Request-Id": {"request-safe"},
 			},
 			Body: &partialFailingBody{
-				body:   "partial-response-secret",
+				body:   bodyEnvelope,
 				secret: "hostile-read-secret",
 			},
 		}, nil
@@ -144,11 +149,37 @@ func TestClientReturnsMetadataWithBodyReadError(t *testing.T) {
 	if response.StatusCode != http.StatusUnauthorized ||
 		response.Header.Get("X-Request-ID") != "request-safe" ||
 		response.Correlation.RequestID != "request-safe" ||
-		string(response.Body) != "partial-response-secret" {
+		response.Correlation.TraceID != "" ||
+		string(response.Body) != bodyEnvelope {
 		t.Fatalf("response = %#v", response)
 	}
 	if strings.Contains(err.Error(), "hostile") || strings.Contains(err.Error(), "read-secret") {
 		t.Fatalf("unsafe error = %v", err)
+	}
+}
+
+func TestClientIgnoresBodyCorrelationWhenEnvelopeCannotBeParsed(t *testing.T) {
+	client := Client{HTTP: &http.Client{Transport: roundTripperFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header: http.Header{
+				"Content-Type": {"application/json"},
+				"X-Request-Id": {"request-safe"},
+			},
+			Body: io.NopCloser(strings.NewReader(
+				`{"trace_id":"trace-secret","request_id":123}`,
+			)),
+		}, nil
+	})}}
+	request, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "https://example.test", nil)
+
+	response, err := client.Do(request)
+
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	if response.Correlation.RequestID != "request-safe" || response.Correlation.TraceID != "" {
+		t.Fatalf("correlation = %#v", response.Correlation)
 	}
 }
 

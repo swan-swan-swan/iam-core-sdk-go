@@ -62,13 +62,13 @@ func (c Client) Do(request *http.Request) (Response, error) {
 	}
 	defer raw.Body.Close()
 	response := Response{StatusCode: raw.StatusCode, Header: raw.Header.Clone()}
+	response.Correlation.RequestID = strings.TrimSpace(response.Header.Get("X-Request-ID"))
 	body, err := io.ReadAll(io.LimitReader(raw.Body, limit+1))
 	oversized := int64(len(body)) > limit
 	if oversized {
 		body = body[:int(limit)]
 	}
 	response.Body = body
-	response.Correlation = responseCorrelation(response.Header, body)
 	if err != nil {
 		return response, sdkerr.New(
 			sdkerr.KindIAMUnavailable,
@@ -88,6 +88,7 @@ func (c Client) Do(request *http.Request) (Response, error) {
 	if err != nil || (mediaType != "application/json" && !strings.HasSuffix(mediaType, "+json")) {
 		return response, sdkerr.New(sdkerr.KindProtocol, "transport.response", raw.StatusCode, false, nil)
 	}
+	response.Correlation = responseCorrelation(response.Header, body)
 	return response, nil
 }
 
@@ -97,7 +98,9 @@ func responseCorrelation(header http.Header, body []byte) Correlation {
 		RequestID string `json:"request_id"`
 		TraceID   string `json:"trace_id"`
 	}
-	_ = json.Unmarshal(body, &envelope)
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return correlation
+	}
 	if correlation.RequestID == "" {
 		correlation.RequestID = strings.TrimSpace(envelope.RequestID)
 	}

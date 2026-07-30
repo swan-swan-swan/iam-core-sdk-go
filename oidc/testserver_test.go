@@ -18,10 +18,12 @@ import (
 )
 
 type fakeOIDCServer struct {
-	Server         *httptest.Server
-	DiscoveryCalls atomic.Int32
-	TokenCalls     atomic.Int32
-	LastTokenForm  url.Values
+	Server          *httptest.Server
+	DiscoveryCalls  atomic.Int32
+	TokenCalls      atomic.Int32
+	JWKSCalls       atomic.Int32
+	JWKSTargetCalls atomic.Int32
+	LastTokenForm   url.Values
 
 	mu                       sync.Mutex
 	key                      *rsa.PrivateKey
@@ -31,6 +33,7 @@ type fakeOIDCServer struct {
 	tokenResponse            map[string]any
 	tokenResponseRequestID   string
 	rejectBasicAuthorization bool
+	jwksRedirectTarget       string
 }
 
 func newFakeOIDCServer(t *testing.T) *fakeOIDCServer {
@@ -57,6 +60,7 @@ func newFakeOIDCServer(t *testing.T) *fakeOIDCServer {
 	mux.HandleFunc("/.well-known/openid-configuration", fake.handleDiscovery)
 	mux.HandleFunc("/oidc/token", fake.handleToken)
 	mux.HandleFunc("/oidc/jwks", fake.handleJWKS)
+	mux.HandleFunc("/oidc/jwks-target", fake.handleJWKSTarget)
 	fake.Server = httptest.NewServer(mux)
 	t.Cleanup(fake.Server.Close)
 
@@ -84,6 +88,12 @@ func (f *fakeOIDCServer) setTokenResponse(status int, response map[string]any, r
 	f.tokenStatus = status
 	f.tokenResponse = response
 	f.tokenResponseRequestID = requestID
+}
+
+func (f *fakeOIDCServer) setJWKSRedirect(target string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jwksRedirectTarget = target
 }
 
 func (f *fakeOIDCServer) tokenForm() url.Values {
@@ -175,6 +185,26 @@ func (f *fakeOIDCServer) handleToken(writer http.ResponseWriter, request *http.R
 }
 
 func (f *fakeOIDCServer) handleJWKS(writer http.ResponseWriter, _ *http.Request) {
+	f.JWKSCalls.Add(1)
+	f.mu.Lock()
+	redirectTarget := f.jwksRedirectTarget
+	f.mu.Unlock()
+	if redirectTarget != "" {
+		writer.Header().Set("Content-Type", "application/json")
+		writer.Header().Set("Location", redirectTarget)
+		writer.WriteHeader(http.StatusFound)
+		_, _ = writer.Write([]byte(`{}`))
+		return
+	}
+	f.writeJWKS(writer)
+}
+
+func (f *fakeOIDCServer) handleJWKSTarget(writer http.ResponseWriter, _ *http.Request) {
+	f.JWKSTargetCalls.Add(1)
+	f.writeJWKS(writer)
+}
+
+func (f *fakeOIDCServer) writeJWKS(writer http.ResponseWriter) {
 	exponent := big.NewInt(int64(f.key.PublicKey.E)).Bytes()
 	writer.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(writer).Encode(map[string]any{

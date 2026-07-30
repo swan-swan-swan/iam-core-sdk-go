@@ -113,7 +113,8 @@ func New(ctx context.Context, config Config) (result *Client, resultErr error) {
 		err := sdkerr.New(sdkerr.KindInvalidConfig, "oidc.discovery", 0, false, nil)
 		return nil, withCorrelation(err, correlation)
 	}
-	if err := validateMetadata(metadata); err != nil {
+	issuerURL, _ := url.Parse(config.IssuerURL)
+	if err := validateMetadata(metadata, isLocalHTTP(issuerURL)); err != nil {
 		return nil, withCorrelation(err, correlation)
 	}
 
@@ -131,6 +132,9 @@ func New(ctx context.Context, config Config) (result *Client, resultErr error) {
 	jwksHTTPClient := &http.Client{
 		Transport: boundedRoundTripper{client: client.transport},
 		Timeout:   timeout,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
 	}
 	keySetContext := coreosoidc.ClientContext(context.WithoutCancel(ctx), jwksHTTPClient)
 	client.keySet = coreosoidc.NewRemoteKeySet(keySetContext, metadata.JWKSURI)
@@ -207,7 +211,7 @@ func validateConfig(config Config) error {
 	return nil
 }
 
-func validateMetadata(metadata Metadata) *sdkerr.Error {
+func validateMetadata(metadata Metadata, allowLocalHTTP bool) *sdkerr.Error {
 	endpoints := []string{
 		metadata.AuthorizationEndpoint,
 		metadata.TokenEndpoint,
@@ -219,14 +223,14 @@ func validateMetadata(metadata Metadata) *sdkerr.Error {
 		return sdkerr.New(sdkerr.KindProtocol, "oidc.discovery", http.StatusOK, false, nil)
 	}
 	for _, endpoint := range endpoints {
-		if !validEndpoint(endpoint) {
+		if !validEndpoint(endpoint, allowLocalHTTP) {
 			return sdkerr.New(sdkerr.KindProtocol, "oidc.discovery", http.StatusOK, false, nil)
 		}
 	}
 	return nil
 }
 
-func validEndpoint(value string) bool {
+func validEndpoint(value string, allowLocalHTTP bool) bool {
 	if value != strings.TrimSpace(value) {
 		return false
 	}
@@ -234,7 +238,7 @@ func validEndpoint(value string) bool {
 	if err != nil || parsed.User != nil || parsed.Host == "" || parsed.Fragment != "" {
 		return false
 	}
-	return parsed.Scheme == "https" || isLocalHTTP(parsed)
+	return parsed.Scheme == "https" || (allowLocalHTTP && isLocalHTTP(parsed))
 }
 
 func isLocalHTTP(parsed *url.URL) bool {

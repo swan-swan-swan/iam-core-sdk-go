@@ -86,6 +86,36 @@ func TestNewDoesNotRewriteDiscoveredEndpointHost(t *testing.T) {
 	}
 }
 
+func TestNewRejectsLoopbackHTTPEndpointForHTTPSIssuer(t *testing.T) {
+	fake := newFakeOIDCServer(t)
+	issuer := "https://issuer.example"
+	fake.OverrideDiscoveryIssuer(issuer)
+	fake.overrideDiscoveryEndpoint("authorization_endpoint", issuer+"/oidc/authorize")
+	fake.overrideDiscoveryEndpoint("token_endpoint", fake.Server.URL+"/oidc/token")
+	fake.overrideDiscoveryEndpoint("userinfo_endpoint", "https://userinfo.example/oidc/userinfo")
+	fake.overrideDiscoveryEndpoint("jwks_uri", "https://keys.example/oidc/jwks")
+	fake.overrideDiscoveryEndpoint("end_session_endpoint", "https://logout.example/oidc/logout")
+
+	_, err := New(t.Context(), Config{
+		IssuerURL:      issuer,
+		ClientID:       "client-1",
+		SecretProvider: StaticSecret("secret-1"),
+		RedirectURL:    "https://app.example/callback",
+		Scopes:         []string{"openid"},
+		HTTPClient:     routeIssuerToFakeServer(t, issuer, fake),
+	})
+	if err == nil {
+		t.Fatal("expected HTTP loopback token endpoint rejection")
+	}
+	typed, ok := err.(*sdkerr.Error)
+	if !ok || typed.Kind != sdkerr.KindProtocol || typed.Cause != nil {
+		t.Fatalf("error = %#v", err)
+	}
+	if fake.TokenCalls.Load() != 0 {
+		t.Fatalf("token calls = %d", fake.TokenCalls.Load())
+	}
+}
+
 func TestNewPreservesDiscoveredEndpointQuery(t *testing.T) {
 	fake := newFakeOIDCServer(t)
 	endpoint := fake.Server.URL + "/oidc/token?tenant=tenant-1"
@@ -251,6 +281,69 @@ func TestAuthCodeURLRequiresStateAndNonce(t *testing.T) {
 	if got := client.AuthCodeURL("state-1", ""); got != "" {
 		t.Fatalf("URL with empty nonce = %q", got)
 	}
+}
+
+func TestRemoteKeySetOuterClientDoesNotFollowRedirect(t *testing.T) {
+	fake := newFakeOIDCServer(t)
+	fake.setJWKSRedirect(fake.Server.URL + "/oidc/jwks-target")
+	httpClient := fake.Server.Client()
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error {
+		return http.ErrUseLastResponse
+	}
+	client, err := New(t.Context(), Config{
+		IssuerURL:      fake.Server.URL,
+		ClientID:       "client-1",
+		SecretProvider: StaticSecret("secret-1"),
+		RedirectURL:    "https://app.example/callback",
+		Scopes:         []string{"openid"},
+		HTTPClient:     httpClient,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	_, verifyErr := client.verifier.Verify(t.Context(), fake.signIDToken(t))
+	if verifyErr == nil || fake.JWKSCalls.Load() != 1 || fake.JWKSTargetCalls.Load() != 0 {
+		t.Fatalf(
+			"verify error = %v, JWKS calls = %d, target calls = %d",
+			verifyErr,
+			fake.JWKSCalls.Load(),
+			fake.JWKSTargetCalls.Load(),
+		)
+	}
+}
+
+type roundTripperFunc func(*http.Request) (*http.Response, error)
+
+func (function roundTripperFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return function(request)
+}
+
+func routeIssuerToFakeServer(
+	t *testing.T,
+	issuer string,
+	fake *fakeOIDCServer,
+) *http.Client {
+	t.Helper()
+	issuerURL, err := url.Parse(issuer)
+	if err != nil {
+		t.Fatalf("parse issuer URL: %v", err)
+	}
+	fakeURL, err := url.Parse(fake.Server.URL)
+	if err != nil {
+		t.Fatalf("parse fake server URL: %v", err)
+	}
+	baseTransport := fake.Server.Client().Transport
+	return &http.Client{Transport: roundTripperFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Scheme != issuerURL.Scheme || request.URL.Host != issuerURL.Host {
+			t.Fatalf("unexpected outbound URL: %s", request.URL.Redacted())
+		}
+		cloned := request.Clone(request.Context())
+		rewrittenURL := *request.URL
+		rewrittenURL.Scheme = fakeURL.Scheme
+		rewrittenURL.Host = fakeURL.Host
+		cloned.URL = &rewrittenURL
+		return baseTransport.RoundTrip(cloned)
+	})}
 }
 
 type recordingHooks struct {

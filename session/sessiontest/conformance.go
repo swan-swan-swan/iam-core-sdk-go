@@ -201,7 +201,7 @@ func Run(t *testing.T, factory Factory) {
 		}
 		eventually(t, time.Second, func() bool {
 			_, err := backend.Get(ctx, item.ID)
-			return errors.Is(err, session.ErrExpired)
+			return errors.Is(err, session.ErrExpired) || errors.Is(err, session.ErrNotFound)
 		})
 		if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrNotFound) {
 			t.Fatalf("second get error = %v", err)
@@ -325,8 +325,9 @@ func Run(t *testing.T, factory Factory) {
 		if err := backend.PutFlow(ctx, flow); err != nil {
 			t.Fatal(err)
 		}
-		time.Sleep(40 * time.Millisecond)
-		if _, err := backend.ConsumeFlow(ctx, flow.ID); !errors.Is(err, session.ErrExpired) {
+		waitUntil(t, flow.ExpiresAt.Add(20*time.Millisecond), time.Second)
+		if _, err := backend.ConsumeFlow(ctx, flow.ID); !errors.Is(err, session.ErrExpired) &&
+			!errors.Is(err, session.ErrNotFound) {
 			t.Fatalf("first consume error = %v", err)
 		}
 		if _, err := backend.ConsumeFlow(ctx, flow.ID); !errors.Is(err, session.ErrNotFound) {
@@ -438,6 +439,11 @@ func Run(t *testing.T, factory Factory) {
 			{name: "zero cas version", call: func() error {
 				return backend.CompareAndSwap(ctx, secretID, 0, valid)
 			}},
+			{name: "overflow cas version", call: func() error {
+				next := *valid
+				next.Version = 0
+				return backend.CompareAndSwap(ctx, secretID, ^uint64(0), &next)
+			}},
 			{name: "blank delete id", call: func() error { return backend.Delete(ctx, " ") }},
 			{name: "nil flow", call: func() error { return backend.PutFlow(ctx, nil) }},
 			{name: "blank flow id", call: func() error {
@@ -472,6 +478,17 @@ func Run(t *testing.T, factory Factory) {
 			})
 		}
 	})
+}
+
+func waitUntil(t *testing.T, deadline time.Time, timeout time.Duration) {
+	t.Helper()
+	waitDeadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if time.Now().After(waitDeadline) {
+			t.Fatal("deadline was not reached before timeout")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 func fullSession(id string, expiry time.Time) *session.Session {

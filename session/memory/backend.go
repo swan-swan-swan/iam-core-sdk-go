@@ -24,6 +24,7 @@ type Options struct {
 
 type Backend struct {
 	mu       sync.Mutex
+	randomMu sync.Mutex
 	clock    session.Clock
 	random   io.Reader
 	sessions map[string]*session.Session
@@ -57,14 +58,17 @@ func New(options Options) *Backend {
 }
 
 func (b *Backend) Create(_ context.Context, item *session.Session) error {
-	now := b.clock.Now()
-	if err := validateCreatedSession(item, now); err != nil {
+	if err := validateCreatedSession(item); err != nil {
 		return err
 	}
 	copied := cloneSession(item)
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	now := b.clock.Now()
+	if err := validateSessionExpiry(item, now); err != nil {
+		return err
+	}
 	if current, exists := b.sessions[item.ID]; exists {
 		if sessionExpired(current, now) {
 			delete(b.sessions, item.ID)
@@ -80,9 +84,9 @@ func (b *Backend) Get(_ context.Context, id string) (*session.Session, error) {
 	if !validID(id) {
 		return nil, errInvalidInput
 	}
-	now := b.clock.Now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	now := b.clock.Now()
 	item, exists := b.sessions[id]
 	if !exists {
 		return nil, session.ErrNotFound
@@ -100,18 +104,15 @@ func (b *Backend) CompareAndSwap(
 	expectedVersion uint64,
 	next *session.Session,
 ) error {
-	now := b.clock.Now()
 	if !validID(id) || expectedVersion == 0 || expectedVersion == ^uint64(0) ||
 		next == nil || next.ID != id || next.Version != expectedVersion+1 {
 		return errInvalidInput
-	}
-	if err := validateSessionExpiry(next, now); err != nil {
-		return err
 	}
 	copied := cloneSession(next)
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	now := b.clock.Now()
 	current, exists := b.sessions[id]
 	if !exists {
 		return session.ErrNotFound
@@ -122,6 +123,9 @@ func (b *Backend) CompareAndSwap(
 	}
 	if current.Version != expectedVersion {
 		return session.ErrVersionConflict
+	}
+	if err := validateSessionExpiry(next, now); err != nil {
+		return err
 	}
 	b.sessions[id] = copied
 	return nil
@@ -138,20 +142,20 @@ func (b *Backend) Delete(_ context.Context, id string) error {
 }
 
 func (b *Backend) PutFlow(_ context.Context, flow *session.Flow) error {
-	now := b.clock.Now()
 	if flow == nil || !validID(flow.ID) {
 		return errInvalidInput
 	}
 	if flow.ExpiresAt.IsZero() {
 		return errInvalidInput
 	}
-	if !flow.ExpiresAt.After(now) {
-		return session.ErrExpired
-	}
 	copied := cloneFlow(flow)
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	now := b.clock.Now()
+	if !flow.ExpiresAt.After(now) {
+		return session.ErrExpired
+	}
 	if current, exists := b.flows[flow.ID]; exists {
 		if !current.ExpiresAt.After(now) {
 			delete(b.flows, flow.ID)
@@ -167,9 +171,9 @@ func (b *Backend) ConsumeFlow(_ context.Context, id string) (*session.Flow, erro
 	if !validID(id) {
 		return nil, errInvalidInput
 	}
-	now := b.clock.Now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	now := b.clock.Now()
 	flow, exists := b.flows[id]
 	if !exists {
 		return nil, session.ErrNotFound
@@ -185,31 +189,32 @@ func (b *Backend) Lock(_ context.Context, id string, duration time.Duration) (se
 	if !validID(id) || duration <= 0 {
 		return nil, errInvalidInput
 	}
+	b.randomMu.Lock()
+	token, err := random.ID(b.random, 32)
+	b.randomMu.Unlock()
+	if err != nil {
+		return nil, errors.New("session memory: random source failed")
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	now := b.clock.Now()
 	if now.Add(duration).Before(now) {
 		return nil, errInvalidInput
 	}
-
-	b.mu.Lock()
-	defer b.mu.Unlock()
 	if current, exists := b.locks[id]; exists {
 		if current.expiresAt.After(now) {
 			return nil, session.ErrLocked
 		}
 		delete(b.locks, id)
 	}
-	token, err := random.ID(b.random, 32)
-	if err != nil {
-		return nil, errors.New("session memory: random source failed")
-	}
 	b.locks[id] = lockRecord{token: token, expiresAt: now.Add(duration)}
 	return &ownedLock{backend: b, id: id, token: token}, nil
 }
 
 func (b *Backend) Prune() {
-	now := b.clock.Now()
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	now := b.clock.Now()
 	for id, item := range b.sessions {
 		if sessionExpired(item, now) {
 			delete(b.sessions, id)
@@ -234,9 +239,9 @@ type ownedLock struct {
 }
 
 func (l *ownedLock) Valid(_ context.Context) bool {
-	now := l.backend.clock.Now()
 	l.backend.mu.Lock()
 	defer l.backend.mu.Unlock()
+	now := l.backend.clock.Now()
 	current, exists := l.backend.locks[l.id]
 	if !exists {
 		return false
@@ -249,9 +254,9 @@ func (l *ownedLock) Valid(_ context.Context) bool {
 }
 
 func (l *ownedLock) Unlock(_ context.Context) error {
-	now := l.backend.clock.Now()
 	l.backend.mu.Lock()
 	defer l.backend.mu.Unlock()
+	now := l.backend.clock.Now()
 	current, exists := l.backend.locks[l.id]
 	if !exists {
 		return session.ErrLockLost
@@ -271,11 +276,14 @@ func sameToken(left, right string) bool {
 	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
 }
 
-func validateCreatedSession(item *session.Session, now time.Time) error {
+func validateCreatedSession(item *session.Session) error {
 	if item == nil || !validID(item.ID) || item.Version != 1 {
 		return errInvalidInput
 	}
-	return validateSessionExpiry(item, now)
+	if item.ExpiresAt.IsZero() {
+		return errInvalidInput
+	}
+	return nil
 }
 
 func validateSessionExpiry(item *session.Session, now time.Time) error {

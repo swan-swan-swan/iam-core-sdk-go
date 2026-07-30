@@ -84,13 +84,8 @@ func (c *aesGCMCodec) Encode(plaintext []byte) ([]byte, error) {
 }
 
 func (c *aesGCMCodec) Decode(encoded []byte) ([]byte, error) {
-	var envelope encryptedEnvelope
-	decoder := json.NewDecoder(bytes.NewReader(encoded))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&envelope); err != nil {
-		return nil, errDecodeFailed
-	}
-	if err := requireJSONEOF(decoder); err != nil {
+	envelope, err := parseEncryptedEnvelope(encoded)
+	if err != nil {
 		return nil, errDecodeFailed
 	}
 	if envelope.Version != encryptedEnvelopeVersion || envelope.KeyID == "" ||
@@ -106,11 +101,13 @@ func (c *aesGCMCodec) Decode(encoded []byte) ([]byte, error) {
 		return nil, errDecodeFailed
 	}
 	nonce, err := base64.RawURLEncoding.DecodeString(envelope.Nonce)
-	if err != nil || len(nonce) != gcm.NonceSize() {
+	if err != nil || len(nonce) != gcm.NonceSize() ||
+		base64.RawURLEncoding.EncodeToString(nonce) != envelope.Nonce {
 		return nil, errDecodeFailed
 	}
 	ciphertext, err := base64.RawURLEncoding.DecodeString(envelope.Ciphertext)
-	if err != nil || len(ciphertext) < gcm.Overhead() {
+	if err != nil || len(ciphertext) < gcm.Overhead() ||
+		base64.RawURLEncoding.EncodeToString(ciphertext) != envelope.Ciphertext {
 		return nil, errDecodeFailed
 	}
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, envelopeAAD(envelope.Version, envelope.KeyID))
@@ -118,6 +115,55 @@ func (c *aesGCMCodec) Decode(encoded []byte) ([]byte, error) {
 		return nil, errDecodeFailed
 	}
 	return plaintext, nil
+}
+
+func parseEncryptedEnvelope(encoded []byte) (encryptedEnvelope, error) {
+	var envelope encryptedEnvelope
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	open, err := decoder.Token()
+	if err != nil || open != json.Delim('{') {
+		return encryptedEnvelope{}, errDecodeFailed
+	}
+	seen := make(map[string]bool, 4)
+	for decoder.More() {
+		token, err := decoder.Token()
+		if err != nil {
+			return encryptedEnvelope{}, errDecodeFailed
+		}
+		name, ok := token.(string)
+		if !ok || seen[name] {
+			return encryptedEnvelope{}, errDecodeFailed
+		}
+		seen[name] = true
+		switch name {
+		case "version":
+			err = decoder.Decode(&envelope.Version)
+		case "key_id":
+			err = decoder.Decode(&envelope.KeyID)
+		case "nonce":
+			err = decoder.Decode(&envelope.Nonce)
+		case "ciphertext":
+			err = decoder.Decode(&envelope.Ciphertext)
+		default:
+			return encryptedEnvelope{}, errDecodeFailed
+		}
+		if err != nil {
+			return encryptedEnvelope{}, errDecodeFailed
+		}
+	}
+	closeToken, err := decoder.Token()
+	if err != nil || closeToken != json.Delim('}') {
+		return encryptedEnvelope{}, errDecodeFailed
+	}
+	for _, name := range []string{"version", "key_id", "nonce", "ciphertext"} {
+		if !seen[name] {
+			return encryptedEnvelope{}, errDecodeFailed
+		}
+	}
+	if err := requireJSONEOF(decoder); err != nil {
+		return encryptedEnvelope{}, errDecodeFailed
+	}
+	return envelope, nil
 }
 
 func newGCM(key []byte) (cipher.AEAD, error) {

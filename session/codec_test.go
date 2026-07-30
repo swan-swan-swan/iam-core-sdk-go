@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -123,13 +124,42 @@ func TestAESGCMCodecCopiesKeysAndInputs(t *testing.T) {
 	}
 }
 
+func TestAESGCMCodecCopiesFallbackKeyMaterial(t *testing.T) {
+	oldBytes := bytes.Repeat([]byte{10}, 32)
+	oldCodec, err := NewAESGCMCodec(Key{ID: "old", Bytes: append([]byte(nil), oldBytes...)}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := oldCodec.Encode([]byte("fallback plaintext"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := NewAESGCMCodec(
+		Key{ID: "new", Bytes: bytes.Repeat([]byte{11}, 32)},
+		[]Key{{ID: "old", Bytes: oldBytes}},
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range oldBytes {
+		oldBytes[index] = 12
+	}
+	decoded, err := rotated.Decode(encoded)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(decoded) != "fallback plaintext" {
+		t.Fatalf("plaintext = %q", decoded)
+	}
+}
+
 func TestAESGCMCodecRejectsMalformedTamperedAndUnknownEnvelopes(t *testing.T) {
 	key := Key{ID: "primary", Bytes: bytes.Repeat([]byte{3}, 32)}
 	codec, err := NewAESGCMCodec(key, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	plaintext := []byte("plaintext-must-stay-secret")
+	plaintext := []byte("plaintext-must-stay-secret-x")
 	valid, err := codec.Encode(plaintext)
 	if err != nil {
 		t.Fatal(err)
@@ -162,6 +192,15 @@ func TestAESGCMCodecRejectsMalformedTamperedAndUnknownEnvelopes(t *testing.T) {
 		{name: "malformed json", value: []byte(`{`)},
 		{name: "trailing json", value: append(append([]byte(nil), valid...), []byte(` {}`)...)},
 		{name: "unknown field", value: []byte(`{"version":1,"key_id":"primary","nonce":"AA","ciphertext":"AA","extra":true}`)},
+		{name: "case variant field", value: []byte(fmt.Sprintf(`{"Version":1,"key_id":%q,"nonce":%q,"ciphertext":%q}`, original.KeyID, original.Nonce, original.Ciphertext))},
+		{name: "duplicate version", value: []byte(fmt.Sprintf(`{"version":1,"version":1,"key_id":%q,"nonce":%q,"ciphertext":%q}`, original.KeyID, original.Nonce, original.Ciphertext))},
+		{name: "duplicate key id", value: []byte(fmt.Sprintf(`{"version":1,"key_id":%q,"key_id":%q,"nonce":%q,"ciphertext":%q}`, original.KeyID, original.KeyID, original.Nonce, original.Ciphertext))},
+		{name: "duplicate nonce", value: []byte(fmt.Sprintf(`{"version":1,"key_id":%q,"nonce":%q,"nonce":%q,"ciphertext":%q}`, original.KeyID, original.Nonce, original.Nonce, original.Ciphertext))},
+		{name: "duplicate ciphertext", value: []byte(fmt.Sprintf(`{"version":1,"key_id":%q,"nonce":%q,"ciphertext":%q,"ciphertext":%q}`, original.KeyID, original.Nonce, original.Ciphertext, original.Ciphertext))},
+		{name: "missing version", value: []byte(`{"key_id":"primary","nonce":"AA","ciphertext":"AA"}`)},
+		{name: "missing key id", value: []byte(`{"version":1,"nonce":"AA","ciphertext":"AA"}`)},
+		{name: "missing nonce", value: []byte(`{"version":1,"key_id":"primary","ciphertext":"AA"}`)},
+		{name: "missing ciphertext field", value: []byte(`{"version":1,"key_id":"primary","nonce":"AA"}`)},
 		{name: "unknown version", value: envelopeJSON(func() encryptedEnvelope { value := original; value.Version++; return value }())},
 		{name: "unknown key id", value: envelopeJSON(func() encryptedEnvelope { value := original; value.KeyID = "unknown"; return value }())},
 		{name: "empty key id", value: envelopeJSON(func() encryptedEnvelope { value := original; value.KeyID = ""; return value }())},
@@ -169,12 +208,22 @@ func TestAESGCMCodecRejectsMalformedTamperedAndUnknownEnvelopes(t *testing.T) {
 		{name: "tampered nonce", value: envelopeJSON(func() encryptedEnvelope { value := original; value.Nonce = mutateBinary(value.Nonce); return value }())},
 		{name: "short nonce", value: envelopeJSON(func() encryptedEnvelope { value := original; value.Nonce = "AA"; return value }())},
 		{name: "invalid nonce base64", value: envelopeJSON(func() encryptedEnvelope { value := original; value.Nonce = "%%%"; return value }())},
+		{name: "noncanonical nonce base64", value: envelopeJSON(func() encryptedEnvelope {
+			value := original
+			value.Nonce = value.Nonce[:1] + "\n" + value.Nonce[1:]
+			return value
+		}())},
 		{name: "tampered ciphertext", value: envelopeJSON(func() encryptedEnvelope {
 			value := original
 			value.Ciphertext = mutateBinary(value.Ciphertext)
 			return value
 		}())},
 		{name: "invalid ciphertext base64", value: envelopeJSON(func() encryptedEnvelope { value := original; value.Ciphertext = "%%%"; return value }())},
+		{name: "noncanonical ciphertext base64", value: envelopeJSON(func() encryptedEnvelope {
+			value := original
+			value.Ciphertext = nonCanonicalRawURL(t, value.Ciphertext)
+			return value
+		}())},
 		{name: "missing ciphertext", value: envelopeJSON(func() encryptedEnvelope { value := original; value.Ciphertext = ""; return value }())},
 	}
 	for _, test := range cases {
@@ -193,6 +242,27 @@ func TestAESGCMCodecRejectsMalformedTamperedAndUnknownEnvelopes(t *testing.T) {
 			}
 		})
 	}
+}
+
+func nonCanonicalRawURL(t *testing.T, canonical string) string {
+	t.Helper()
+	decoded, err := base64.RawURLEncoding.DecodeString(canonical)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_"
+	for _, replacement := range alphabet {
+		candidate := canonical[:len(canonical)-1] + string(replacement)
+		if candidate == canonical {
+			continue
+		}
+		candidateDecoded, err := base64.RawURLEncoding.DecodeString(candidate)
+		if err == nil && bytes.Equal(candidateDecoded, decoded) {
+			return candidate
+		}
+	}
+	t.Fatal("test value has no noncanonical RawURL representation")
+	return ""
 }
 
 func TestAESGCMCodecAuthenticatesVersionAndKeyID(t *testing.T) {

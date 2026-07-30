@@ -62,6 +62,10 @@ func TestLoginRejectsUnsafeReturnTo(t *testing.T) {
 		"/%0d%0aX-Evil:true",
 		"/%250aX-Evil:true",
 		"/%25250aX-Evil:true",
+		"/%C2%85evil",
+		"/%25C2%2585evil",
+		"/%C2%9Fevil",
+		"/%25C2%259Fevil",
 		"/%2f%2fevil.example",
 		"/%252F%252Fevil.example",
 		"/%25252F%25252Fevil.example",
@@ -298,6 +302,35 @@ func TestNewRejectsOIDCRedirectMismatch(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("New accepted a redirect URL different from the OIDC client")
+	}
+}
+
+func TestNewRejectsUnicodeControlsInAllowedReturnToURLs(t *testing.T) {
+	fake := newFakeBrowserOIDC(t)
+	client, err := oidcClientForTest(t, fake)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, candidate := range []string{
+		"https://app.example/post%C2%85login",
+		"https://app.example/post%25C2%2585login",
+		"https://app.example/post%C2%9Flogin",
+		"https://app.example/post%25C2%259Flogin",
+	} {
+		t.Run(candidate, func(t *testing.T) {
+			_, err := New(Config{
+				OIDC:                client,
+				Backend:             memoryBackendForTest(),
+				RedirectURL:         "https://app.example/auth/callback",
+				AllowedReturnToURLs: []string{candidate},
+			})
+			if err == nil {
+				t.Fatalf("New accepted Unicode control allowlist candidate %q", candidate)
+			}
+			if strings.Contains(err.Error(), candidate) {
+				t.Fatalf("New reflected rejected allowlist candidate: %v", err)
+			}
+		})
 	}
 }
 

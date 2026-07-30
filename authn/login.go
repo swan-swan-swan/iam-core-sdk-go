@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/random"
@@ -186,7 +187,7 @@ func containsUnsafeURLCharacter(value string) bool {
 		return true
 	}
 	for _, character := range value {
-		if character < 0x20 || character == 0x7f {
+		if unicode.IsControl(character) {
 			return true
 		}
 	}

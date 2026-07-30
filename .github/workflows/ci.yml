@@ -18,6 +18,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go 1.24
         uses: actions/setup-go@v5
@@ -39,7 +41,12 @@ jobs:
         run: go vet ./...
 
       - name: Diff whitespace check
-        run: git diff --check
+        env:
+          IAMCORE_CI_EVENT_NAME: ${{ github.event_name }}
+          IAMCORE_CI_HEAD_SHA: ${{ github.sha }}
+          IAMCORE_CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          IAMCORE_CI_BEFORE_SHA: ${{ github.event.before }}
+        run: bash .github/scripts/check-diff.sh
 
       - name: Fuzz transport decoder
         run: go test ./internal/transport -run '^$' -fuzz=FuzzDecodeJSON -fuzztime=10s
@@ -60,6 +67,8 @@ jobs:
     steps:
       - name: Check out source
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Set up Go 1.24
         uses: actions/setup-go@v5

@@ -92,6 +92,12 @@ func newSessionBackend() (*redisstore.Backend, goredis.UniversalClient, error) {
 ### 4. 构造根 Client
 
 ```go
+redisBackend, redisClient, err := newSessionBackend()
+if err != nil {
+    return err
+}
+defer redisClient.Close()
+
 ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
 
@@ -174,7 +180,10 @@ router.GET(
 
 ### 8. Session Cookie 与 Bearer 行为
 
-- Session Cookie 仅保存随机 Session ID；Token 和身份数据保存在后端并加密。
+- Session Cookie 仅保存随机 Session ID。使用 Redis Backend 并配置 Codec 时，Redis 中的
+  Session/Flow Payload 由 AES-256-GCM 加密。
+- Memory Backend 保存进程内结构，仅适用于开发、测试和单进程。自定义 Backend 的
+  静态加密、访问控制、备份保护和其他存储安全由其实现方负责。
 - `Authorization: Bearer <access_token>` 通过 UserInfo 在线验证，不创建 Session，也不会
   自动刷新。
 - Cookie 和 Bearer 同时出现时，仅当 Bearer 与当前 Session Access Token 完全一致才接受；

@@ -189,6 +189,28 @@ func TestNewDerivesExactDecisionPathFromIssuer(t *testing.T) {
 	}
 }
 
+func TestNewPreservesEscapedIssuerPathWhenDerivingEndpoint(t *testing.T) {
+	for _, test := range []struct {
+		issuer string
+		want   string
+	}{
+		{"https://issuer.example/tenant%2Fone", "https://issuer.example/tenant%2Fone/authorization/v1/decisions"},
+		{"https://issuer.example/tenant%2fone", "https://issuer.example/tenant%2fone/authorization/v1/decisions"},
+		{"https://issuer.example/tenant%7Eone", "https://issuer.example/tenant%7Eone/authorization/v1/decisions"},
+		{"https://issuer.example/tenant%2Fone/", "https://issuer.example/tenant%2Fone/authorization/v1/decisions"},
+	} {
+		t.Run(test.issuer, func(t *testing.T) {
+			client, err := New(Config{IssuerURL: test.issuer})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := client.endpoint; got != test.want {
+				t.Fatalf("endpoint = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestDecidePreservesConfiguredEndpointQuery(t *testing.T) {
 	var gotPath, gotQuery string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -287,6 +309,56 @@ func TestDecideRejectsInvalidInputsWithoutLeakingThem(t *testing.T) {
 			t.Fatal("Decide unexpectedly succeeded")
 		}
 		assertDecisionError(t, err, sdkerr.KindInvalidConfig, 0, false, test.secret, test.token)
+	}
+}
+
+func TestDecideRejectsInvalidUTF8BeforeRequestOrObservationReflection(t *testing.T) {
+	invalid := string([]byte{'b', 0xff, 'd'})
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"decision_id":"dec-1","allowed":true,"reason_code":"allowed"}`)
+	}))
+	defer server.Close()
+	for _, test := range []struct {
+		name       string
+		token      string
+		permission Permission
+	}{
+		{"token", invalid, validPermission()},
+		{"resource server", "access-token", Permission{ResourceServer: invalid, Resource: "assets", HTTPMethod: http.MethodGet}},
+		{"resource", "access-token", Permission{ResourceServer: "asset-api", Resource: invalid, HTTPMethod: http.MethodGet}},
+		{"method", "access-token", Permission{ResourceServer: "asset-api", Resource: "assets", HTTPMethod: invalid}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			hook := &recordingHook{}
+			client, err := New(Config{IssuerURL: server.URL, HTTPClient: server.Client(), Hooks: hook, Logger: slog.New(slog.NewTextHandler(&logs, nil))})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.Decide(context.Background(), test.token, test.permission)
+			assertDecisionError(t, err, sdkerr.KindInvalidConfig, 0, false, invalid)
+			if strings.Contains(logs.String(), invalid) || hook.event.Operation != operation || hook.event.Outcome != "error" {
+				t.Fatalf("invalid input reflected: logs=%q event=%#v", logs.String(), hook.event)
+			}
+		})
+	}
+	if got := calls.Load(); got != 0 {
+		t.Fatalf("calls = %d, want 0", got)
+	}
+}
+
+func TestDecideSerializesValidUnicodeIdentifiersExactly(t *testing.T) {
+	server, captured := newDecisionServer(t, http.StatusOK, `{"decision_id":"dec-1","allowed":true,"reason_code":"allowed"}`)
+	defer server.Close()
+	permission := Permission{ResourceServer: "资产-api", Resource: "资源/一", HTTPMethod: http.MethodGet}
+	if _, err := newDecisionClient(t, server).Decide(context.Background(), "access-token", permission); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := captured.Load().(string), `{"resource_server":"资产-api","resource":"资源/一","http_method":"GET"}`; got != want {
+		t.Fatalf("body = %q, want %q", got, want)
 	}
 }
 

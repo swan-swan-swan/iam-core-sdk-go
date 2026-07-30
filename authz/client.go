@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/transport"
@@ -71,8 +72,10 @@ func New(config Config) (*Client, error) {
 	}
 	endpoint := config.Endpoint
 	if endpoint == "" {
-		issuer.Path = strings.TrimSuffix(issuer.Path, "/") + decisionPath
-		issuer.RawPath = ""
+		issuer.Path = appendDecisionPath(issuer.Path)
+		if issuer.RawPath != "" {
+			issuer.RawPath = appendDecisionPath(issuer.RawPath)
+		}
 		endpoint = issuer.String()
 	}
 	if !validEndpoint(endpoint) {
@@ -349,7 +352,7 @@ func isLocalHTTP(parsed *url.URL) bool {
 }
 
 func validInput(value string) bool {
-	return value != "" && value == strings.TrimSpace(value) && !containsControlOrWhitespace(value)
+	return utf8.ValidString(value) && value != "" && value == strings.TrimSpace(value) && !containsControlOrWhitespace(value)
 }
 
 func containsControl(value string) bool {
@@ -371,6 +374,9 @@ func containsControlOrWhitespace(value string) bool {
 }
 
 func validMethod(method string) bool {
+	if !utf8.ValidString(method) {
+		return false
+	}
 	switch method {
 	case http.MethodConnect, http.MethodDelete, http.MethodGet, http.MethodHead, http.MethodOptions,
 		http.MethodPatch, http.MethodPost, http.MethodPut, http.MethodTrace:
@@ -378,6 +384,10 @@ func validMethod(method string) bool {
 	default:
 		return false
 	}
+}
+
+func appendDecisionPath(path string) string {
+	return strings.TrimSuffix(path, "/") + decisionPath
 }
 
 func safeCorrelationID(value string) string {

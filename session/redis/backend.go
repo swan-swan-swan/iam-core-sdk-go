@@ -26,6 +26,8 @@ var (
 	ErrBackendUnavailable = errors.New("session redis: backend unavailable")
 )
 
+const scriptStatusStorageFailure int64 = -2
+
 type Options struct {
 	Prefix string
 	Codec  session.Codec
@@ -349,13 +351,16 @@ func decodeModel(codec session.Codec, encoded []byte, destination any) error {
 }
 
 func mapCreateStatus(status int64) error {
-	if status == 1 {
+	switch status {
+	case 1:
 		return nil
-	}
-	if status == 0 {
+	case 0:
 		return session.ErrVersionConflict
+	case scriptStatusStorageFailure:
+		return ErrBackendUnavailable
+	default:
+		return ErrBackendUnavailable
 	}
-	return ErrBackendUnavailable
 }
 
 func mapCASStatus(status int64) error {
@@ -366,6 +371,8 @@ func mapCASStatus(status int64) error {
 		return session.ErrVersionConflict
 	case -1:
 		return session.ErrNotFound
+	case scriptStatusStorageFailure:
+		return ErrBackendUnavailable
 	default:
 		return ErrBackendUnavailable
 	}

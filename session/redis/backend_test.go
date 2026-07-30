@@ -232,6 +232,12 @@ func TestStatusMappingPreservesSentinelsAndSanitizesBackendErrors(t *testing.T) 
 	if err := mapCASStatus(0); !errors.Is(err, session.ErrVersionConflict) {
 		t.Fatalf("cas conflict error = %v", err)
 	}
+	if err := mapCreateStatus(-2); !errors.Is(err, ErrBackendUnavailable) {
+		t.Fatalf("create storage failure = %v", err)
+	}
+	if err := mapCASStatus(-2); !errors.Is(err, ErrBackendUnavailable) {
+		t.Fatalf("cas storage failure = %v", err)
+	}
 
 	raw := errors.New("dial redis://user:password@host secret-key payload")
 	err := backendError(raw)

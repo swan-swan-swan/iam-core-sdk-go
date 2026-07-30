@@ -7,7 +7,15 @@ if redis.call("EXISTS", KEYS[1]) ~= 0 then
 	return 0
 end
 redis.call("HSET", KEYS[1], "version", ARGV[1], "payload", ARGV[2])
-redis.call("PEXPIRE", KEYS[1], ARGV[3])
+local expiry = redis.pcall("PEXPIRE", KEYS[1], ARGV[3])
+if type(expiry) == "table" and expiry.err then
+	redis.pcall("DEL", KEYS[1])
+	return -2
+end
+if expiry ~= 1 then
+	redis.pcall("DEL", KEYS[1])
+	return -2
+end
 return 1
 `)
 
@@ -19,8 +27,16 @@ local current = redis.call("HGET", KEYS[1], "version")
 if current ~= ARGV[1] then
 	return 0
 end
+local oldPayload = redis.call("HGET", KEYS[1], "payload")
+if not oldPayload then
+	return -2
+end
 redis.call("HSET", KEYS[1], "version", ARGV[2], "payload", ARGV[3])
-redis.call("PEXPIRE", KEYS[1], ARGV[4])
+local expiry = redis.pcall("PEXPIRE", KEYS[1], ARGV[4])
+if (type(expiry) == "table" and expiry.err) or expiry ~= 1 then
+	redis.pcall("HSET", KEYS[1], "version", current, "payload", oldPayload)
+	return -2
+end
 return 1
 `)
 

@@ -49,10 +49,14 @@ func (s *Service) refreshSession(
 	if winner != nil {
 		return winner, nil
 	}
+	recoveredAfterLockLoss := false
 	defer func() {
 		unlockCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), s.refreshLockTTL)
 		defer cancel()
 		if unlockErr := lock.Unlock(unlockCtx); unlockErr != nil && resultErr == nil {
+			if recoveredAfterLockLoss && errors.Is(unlockErr, session.ErrLockLost) {
+				return
+			}
 			result = nil
 			resultErr = authError(sdkerr.KindSessionUnavailable, operation)
 		}
@@ -86,7 +90,13 @@ func (s *Service) refreshSession(
 	tokens, err := s.oidc.Refresh(ctx, supplier.TokenSet.RefreshToken)
 	if err != nil {
 		if errors.Is(err, sdkerr.ErrInvalidGrant) {
-			return s.deleteInvalidGrantSession(ctx, lock, sessionID, supplier)
+			result, recoveredAfterLockLoss, resultErr = s.deleteInvalidGrantSession(
+				ctx,
+				lock,
+				sessionID,
+				supplier,
+			)
+			return result, resultErr
 		}
 		return nil, authError(sdkerr.KindIAMUnavailable, operation)
 	}
@@ -109,7 +119,15 @@ func (s *Service) refreshSession(
 	if supplier.Version == ^uint64(0) {
 		return nil, authError(sdkerr.KindSessionUnavailable, operation)
 	}
-	return s.commitRefreshedTokens(ctx, lock, sessionID, supplier, tokens, now)
+	result, recoveredAfterLockLoss, resultErr = s.commitRefreshedTokens(
+		ctx,
+		lock,
+		sessionID,
+		supplier,
+		tokens,
+		now,
+	)
+	return result, resultErr
 }
 
 func (s *Service) commitRefreshedTokens(
@@ -119,7 +137,7 @@ func (s *Service) commitRefreshedTokens(
 	supplier *session.Session,
 	tokens oidc.TokenSet,
 	now time.Time,
-) (*session.Session, error) {
+) (result *session.Session, recoveredAfterLockLoss bool, resultErr error) {
 	const operation = "authn.refresh"
 	next := cloneAuthSession(supplier)
 	next.Version = supplier.Version + 1
@@ -128,19 +146,19 @@ func (s *Service) commitRefreshedTokens(
 
 	err := s.backend.CompareAndSwapWithLock(ctx, lock, sessionID, supplier.Version, next)
 	if err == nil {
-		return cloneAuthSession(next), nil
+		return cloneAuthSession(next), false, nil
 	}
 	if errors.Is(err, session.ErrVersionConflict) {
 		latest, getErr := s.backend.Get(ctx, sessionID)
 		if getErr != nil {
-			return nil, refreshCommitReadError(getErr, operation)
+			return nil, false, refreshCommitReadError(getErr, operation)
 		}
 		if safeRotatedRefreshWinner(latest, supplier, sessionID, s.clock.Now()) {
-			return cloneAuthSession(latest), nil
+			return cloneAuthSession(latest), false, nil
 		}
 		if !sameRefreshTokenSupplier(latest, supplier, sessionID) ||
 			latest.Version <= supplier.Version || latest.Version == ^uint64(0) {
-			return nil, authError(sdkerr.KindSessionUnavailable, operation)
+			return nil, false, authError(sdkerr.KindSessionUnavailable, operation)
 		}
 		reconciled := cloneAuthSession(latest)
 		reconciled.Version = latest.Version + 1
@@ -154,35 +172,35 @@ func (s *Service) commitRefreshedTokens(
 			reconciled,
 		)
 		if reconcileErr == nil {
-			return cloneAuthSession(reconciled), nil
+			return cloneAuthSession(reconciled), false, nil
 		}
 		if errors.Is(reconcileErr, session.ErrVersionConflict) ||
 			errors.Is(reconcileErr, session.ErrLockLost) {
 			final, finalErr := s.backend.Get(ctx, sessionID)
 			if finalErr == nil &&
 				safeRotatedRefreshWinner(final, supplier, sessionID, s.clock.Now()) {
-				return cloneAuthSession(final), nil
+				return cloneAuthSession(final), errors.Is(reconcileErr, session.ErrLockLost), nil
 			}
-			return nil, authError(sdkerr.KindSessionUnavailable, operation)
+			return nil, false, authError(sdkerr.KindSessionUnavailable, operation)
 		}
 		if errors.Is(reconcileErr, session.ErrNotFound) ||
 			errors.Is(reconcileErr, session.ErrExpired) {
-			return nil, authError(sdkerr.KindUnauthenticated, operation)
+			return nil, false, authError(sdkerr.KindUnauthenticated, operation)
 		}
-		return nil, authError(sdkerr.KindSessionUnavailable, operation)
+		return nil, false, authError(sdkerr.KindSessionUnavailable, operation)
 	}
 	if errors.Is(err, session.ErrLockLost) {
 		winner, getErr := s.backend.Get(ctx, sessionID)
 		if getErr == nil &&
 			safeRotatedRefreshWinner(winner, supplier, sessionID, s.clock.Now()) {
-			return cloneAuthSession(winner), nil
+			return cloneAuthSession(winner), true, nil
 		}
-		return nil, authError(sdkerr.KindSessionUnavailable, operation)
+		return nil, false, authError(sdkerr.KindSessionUnavailable, operation)
 	}
 	if errors.Is(err, session.ErrNotFound) || errors.Is(err, session.ErrExpired) {
-		return nil, authError(sdkerr.KindUnauthenticated, operation)
+		return nil, false, authError(sdkerr.KindUnauthenticated, operation)
 	}
-	return nil, authError(sdkerr.KindSessionUnavailable, operation)
+	return nil, false, authError(sdkerr.KindSessionUnavailable, operation)
 }
 
 func (s *Service) deleteInvalidGrantSession(
@@ -190,49 +208,49 @@ func (s *Service) deleteInvalidGrantSession(
 	lock session.Lock,
 	sessionID string,
 	supplier *session.Session,
-) (*session.Session, error) {
+) (result *session.Session, recoveredAfterLockLoss bool, resultErr error) {
 	const operation = "authn.refresh"
 	err := s.backend.DeleteWithLock(ctx, lock, sessionID, supplier.Version)
 	if err == nil || errors.Is(err, session.ErrNotFound) || errors.Is(err, session.ErrExpired) {
-		return nil, authError(sdkerr.KindUnauthenticated, operation)
+		return nil, false, authError(sdkerr.KindUnauthenticated, operation)
 	}
 	if errors.Is(err, session.ErrVersionConflict) {
 		latest, getErr := s.backend.Get(ctx, sessionID)
 		if getErr != nil {
-			return nil, refreshCommitReadError(getErr, operation)
+			return nil, false, refreshCommitReadError(getErr, operation)
 		}
 		if safeRotatedRefreshWinner(latest, supplier, sessionID, s.clock.Now()) {
-			return cloneAuthSession(latest), nil
+			return cloneAuthSession(latest), false, nil
 		}
 		if !sameRefreshTokenSupplier(latest, supplier, sessionID) ||
 			latest.Version <= supplier.Version {
-			return nil, authError(sdkerr.KindSessionUnavailable, operation)
+			return nil, false, authError(sdkerr.KindSessionUnavailable, operation)
 		}
 		retryErr := s.backend.DeleteWithLock(ctx, lock, sessionID, latest.Version)
 		if retryErr == nil || errors.Is(retryErr, session.ErrNotFound) ||
 			errors.Is(retryErr, session.ErrExpired) {
-			return nil, authError(sdkerr.KindUnauthenticated, operation)
+			return nil, false, authError(sdkerr.KindUnauthenticated, operation)
 		}
 		if errors.Is(retryErr, session.ErrVersionConflict) ||
 			errors.Is(retryErr, session.ErrLockLost) {
 			final, finalErr := s.backend.Get(ctx, sessionID)
 			if finalErr == nil &&
 				safeRotatedRefreshWinner(final, supplier, sessionID, s.clock.Now()) {
-				return cloneAuthSession(final), nil
+				return cloneAuthSession(final), errors.Is(retryErr, session.ErrLockLost), nil
 			}
-			return nil, authError(sdkerr.KindSessionUnavailable, operation)
+			return nil, false, authError(sdkerr.KindSessionUnavailable, operation)
 		}
-		return nil, authError(sdkerr.KindSessionUnavailable, operation)
+		return nil, false, authError(sdkerr.KindSessionUnavailable, operation)
 	}
 	if errors.Is(err, session.ErrLockLost) {
 		winner, getErr := s.backend.Get(ctx, sessionID)
 		if getErr == nil &&
 			safeRotatedRefreshWinner(winner, supplier, sessionID, s.clock.Now()) {
-			return cloneAuthSession(winner), nil
+			return cloneAuthSession(winner), true, nil
 		}
-		return nil, authError(sdkerr.KindSessionUnavailable, operation)
+		return nil, false, authError(sdkerr.KindSessionUnavailable, operation)
 	}
-	return nil, authError(sdkerr.KindSessionUnavailable, operation)
+	return nil, false, authError(sdkerr.KindSessionUnavailable, operation)
 }
 
 func (s *Service) acquireRefreshLock(

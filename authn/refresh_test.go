@@ -57,6 +57,15 @@ func TestConcurrentRefreshUsesRefreshTokenOnce(t *testing.T) {
 }
 
 func TestDistinctServicesShareDistributedRefreshWinner(t *testing.T) {
+	testDistinctServicesShareDistributedRefreshWinner(t, false)
+}
+
+func TestDistinctServicesForceRefreshShareDistributedWinner(t *testing.T) {
+	testDistinctServicesShareDistributedRefreshWinner(t, true)
+}
+
+func testDistinctServicesShareDistributedRefreshWinner(t *testing.T, force bool) {
+	t.Helper()
 	harness := newRefreshHarness(t)
 	baselines := make(chan struct{}, 2)
 	releaseBaselines := make(chan struct{})
@@ -101,7 +110,13 @@ func TestDistinctServicesShareDistributedRefreshWinner(t *testing.T) {
 	results := make(chan result, 2)
 	for _, service := range []*Service{harness.service, peer} {
 		go func(service *Service) {
-			item, err := service.refreshSession(context.Background(), "session-1", false)
+			var item *session.Session
+			var err error
+			if force {
+				item, err = service.ForceRefresh(context.Background(), "session-1")
+			} else {
+				item, err = service.refreshSession(context.Background(), "session-1", false)
+			}
 			results <- result{item: item, err: err}
 		}(service)
 	}
@@ -326,6 +341,80 @@ func TestRefreshStaleOwnerCannotOverwriteNewOwnerWinner(t *testing.T) {
 	}
 }
 
+func TestRefreshReturnsWinnerWhenRealStaleMemoryLockCannotUnlock(t *testing.T) {
+	harness := newRefreshHarness(t)
+	baseline, err := harness.backend.Get(t.Context(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner := rotatedWinner(baseline, "new-owner-access", "new-owner-refresh")
+	unlockErrors := make(chan error, 1)
+	var replacement session.Lock
+	wrapper := &refreshBackend{Backend: harness.backend}
+	wrapper.lockFunc = func(ctx context.Context, id string, ttl time.Duration) (session.Lock, error) {
+		lock, lockErr := harness.backend.Lock(ctx, id, ttl)
+		if lockErr != nil {
+			return nil, lockErr
+		}
+		return &observedRefreshLock{Lock: lock, unlockErrors: unlockErrors}, nil
+	}
+	wrapper.fencedCASFunc = func(
+		ctx context.Context,
+		lock session.Lock,
+		id string,
+		expected uint64,
+		next *session.Session,
+	) error {
+		observed := lock.(*observedRefreshLock)
+		if unlockErr := observed.Lock.Unlock(ctx); unlockErr != nil {
+			t.Fatal(unlockErr)
+		}
+		var lockErr error
+		replacement, lockErr = harness.backend.Lock(ctx, id, time.Minute)
+		if lockErr != nil {
+			t.Fatal(lockErr)
+		}
+		if commitErr := harness.backend.CompareAndSwapWithLock(
+			ctx,
+			replacement,
+			id,
+			expected,
+			winner,
+		); commitErr != nil {
+			t.Fatal(commitErr)
+		}
+		staleErr := harness.backend.CompareAndSwapWithLock(
+			ctx,
+			observed.Lock,
+			id,
+			expected,
+			next,
+		)
+		if !errors.Is(staleErr, session.ErrLockLost) {
+			t.Fatalf("stale fenced CAS error = %v", staleErr)
+		}
+		return staleErr
+	}
+	harness.service.backend = wrapper
+
+	got, err := harness.service.refreshSession(t.Context(), "session-1", false)
+	if err != nil {
+		t.Fatalf("refreshSession() error = %v", err)
+	}
+	if got == nil || got.TokenSet.AccessToken != "new-owner-access" || got.Version != 2 {
+		t.Fatalf("session = %#v", got)
+	}
+	if unlockErr := <-unlockErrors; !errors.Is(unlockErr, session.ErrLockLost) {
+		t.Fatalf("old Lock.Unlock() error = %v", unlockErr)
+	}
+	if replacement == nil {
+		t.Fatal("replacement lock was not installed")
+	}
+	if err := replacement.Unlock(t.Context()); err != nil {
+		t.Fatalf("replacement Unlock() error = %v", err)
+	}
+}
+
 func TestDelayedStaleInvalidGrantCannotDeleteRotatedWinner(t *testing.T) {
 	harness := newRefreshHarness(t)
 	baseline, err := harness.backend.Get(t.Context(), "session-1")
@@ -361,6 +450,77 @@ func TestDelayedStaleInvalidGrantCannotDeleteRotatedWinner(t *testing.T) {
 	stored, getErr := harness.backend.Get(t.Context(), "session-1")
 	if getErr != nil || stored.TokenSet.RefreshToken != "new-owner-refresh" {
 		t.Fatalf("stored = %#v, error = %v", stored, getErr)
+	}
+}
+
+func TestInvalidGrantReturnsWinnerWhenRealStaleMemoryLockCannotUnlock(t *testing.T) {
+	harness := newRefreshHarness(t)
+	baseline, err := harness.backend.Get(t.Context(), "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	winner := rotatedWinner(baseline, "new-owner-access", "new-owner-refresh")
+	harness.oidc.mu.Lock()
+	harness.oidc.refreshStatus = http.StatusBadRequest
+	harness.oidc.refreshError = "invalid_grant"
+	harness.oidc.mu.Unlock()
+	unlockErrors := make(chan error, 1)
+	var replacement session.Lock
+	wrapper := &refreshBackend{Backend: harness.backend}
+	wrapper.lockFunc = func(ctx context.Context, id string, ttl time.Duration) (session.Lock, error) {
+		lock, lockErr := harness.backend.Lock(ctx, id, ttl)
+		if lockErr != nil {
+			return nil, lockErr
+		}
+		return &observedRefreshLock{Lock: lock, unlockErrors: unlockErrors}, nil
+	}
+	wrapper.fencedDeleteFunc = func(
+		ctx context.Context,
+		lock session.Lock,
+		id string,
+		expected uint64,
+	) error {
+		observed := lock.(*observedRefreshLock)
+		if unlockErr := observed.Lock.Unlock(ctx); unlockErr != nil {
+			t.Fatal(unlockErr)
+		}
+		var lockErr error
+		replacement, lockErr = harness.backend.Lock(ctx, id, time.Minute)
+		if lockErr != nil {
+			t.Fatal(lockErr)
+		}
+		if commitErr := harness.backend.CompareAndSwapWithLock(
+			ctx,
+			replacement,
+			id,
+			expected,
+			winner,
+		); commitErr != nil {
+			t.Fatal(commitErr)
+		}
+		staleErr := harness.backend.DeleteWithLock(ctx, observed.Lock, id, expected)
+		if !errors.Is(staleErr, session.ErrLockLost) {
+			t.Fatalf("stale fenced delete error = %v", staleErr)
+		}
+		return staleErr
+	}
+	harness.service.backend = wrapper
+
+	got, err := harness.service.refreshSession(t.Context(), "session-1", false)
+	if err != nil {
+		t.Fatalf("refreshSession() error = %v", err)
+	}
+	if got == nil || got.TokenSet.AccessToken != "new-owner-access" || got.Version != 2 {
+		t.Fatalf("session = %#v", got)
+	}
+	if unlockErr := <-unlockErrors; !errors.Is(unlockErr, session.ErrLockLost) {
+		t.Fatalf("old Lock.Unlock() error = %v", unlockErr)
+	}
+	if replacement == nil {
+		t.Fatal("replacement lock was not installed")
+	}
+	if err := replacement.Unlock(t.Context()); err != nil {
+		t.Fatalf("replacement Unlock() error = %v", err)
 	}
 }
 
@@ -627,6 +787,28 @@ func TestRefreshUnlockFailureAfterSuccessReturnsUnavailable(t *testing.T) {
 	assertSDKKind(t, err, sdkerr.KindSessionUnavailable)
 }
 
+func TestRefreshNonLockLostUnlockFailureAfterSuccessReturnsUnavailable(t *testing.T) {
+	harness := newRefreshHarness(t)
+	harness.service.backend = &refreshBackend{
+		Backend: harness.backend,
+		lockFunc: func(context.Context, string, time.Duration) (session.Lock, error) {
+			return &testRefreshLock{valid: true, unlockErr: errors.New("unlock backend unavailable")}, nil
+		},
+		fencedCASFunc: func(
+			ctx context.Context,
+			_ session.Lock,
+			id string,
+			expected uint64,
+			next *session.Session,
+		) error {
+			return harness.backend.CompareAndSwap(ctx, id, expected, next)
+		},
+	}
+
+	_, err := harness.service.refreshSession(t.Context(), "session-1", false)
+	assertSDKKind(t, err, sdkerr.KindSessionUnavailable)
+}
+
 func TestRefreshWaitingHonorsContextCancellation(t *testing.T) {
 	harness := newRefreshHarness(t)
 	var lockCalls atomic.Int32
@@ -810,6 +992,17 @@ type testRefreshLock struct {
 func (l *testRefreshLock) Valid(context.Context) bool { return l.valid }
 func (l *testRefreshLock) Unlock(context.Context) error {
 	return l.unlockErr
+}
+
+type observedRefreshLock struct {
+	session.Lock
+	unlockErrors chan<- error
+}
+
+func (l *observedRefreshLock) Unlock(ctx context.Context) error {
+	err := l.Lock.Unlock(ctx)
+	l.unlockErrors <- err
+	return err
 }
 
 func assertSDKKind(t *testing.T, err error, kind sdkerr.Kind) {

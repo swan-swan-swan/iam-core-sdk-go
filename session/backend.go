@@ -26,6 +26,11 @@ type RefreshLocker interface {
 	Lock(context.Context, string, time.Duration) (Lock, error)
 }
 
+// RefreshCommitter applies refresh mutations while fencing stale lock owners.
+// Implementations must validate the lock ownership token, lock expiry, and
+// current Session version in the same atomic operation that mutates or deletes
+// the Session. Third-party Backend implementations must not check ownership
+// and then mutate in a separate operation.
 type RefreshCommitter interface {
 	CompareAndSwapWithLock(context.Context, Lock, string, uint64, *Session) error
 	DeleteWithLock(context.Context, Lock, string, uint64) error

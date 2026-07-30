@@ -16,6 +16,7 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/nilcheck"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/transport"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/observability"
@@ -23,7 +24,7 @@ import (
 
 const (
 	decisionPath   = "/authorization/v1/decisions"
-	defaultTimeout = 5 * time.Second
+	defaultTimeout = 3 * time.Second
 	operation      = "authz.decide"
 )
 
@@ -85,7 +86,7 @@ func New(config Config) (*Client, error) {
 		timeout = defaultTimeout
 	}
 	hooks := config.Hooks
-	if hooks == nil {
+	if nilcheck.IsNil(hooks) {
 		hooks = observability.Nop{}
 	}
 	logger := config.Logger

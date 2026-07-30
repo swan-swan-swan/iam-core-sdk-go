@@ -7,13 +7,18 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"net/http"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/transport"
 )
 
 const task4Subject = "op_usr_0123456789abcdefgjk"
@@ -58,6 +63,18 @@ func (s *testTokenSigner) rawToken(t *testing.T, payload string) string {
 		[]byte(`{"alg":"RS256","kid":"` + s.KeyID + `","typ":"JWT"}`),
 	)
 	signingInput := header + "." + base64.RawURLEncoding.EncodeToString([]byte(payload))
+	digest := sha256.Sum256([]byte(signingInput))
+	signature, err := rsa.SignPKCS1v15(rand.Reader, s.PrivateKey, crypto.SHA256, digest[:])
+	if err != nil {
+		t.Fatalf("sign raw token: %v", err)
+	}
+	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature)
+}
+
+func (s *testTokenSigner) rawTokenWithHeader(t *testing.T, header, payload string) string {
+	t.Helper()
+	signingInput := base64.RawURLEncoding.EncodeToString([]byte(header)) + "." +
+		base64.RawURLEncoding.EncodeToString([]byte(payload))
 	digest := sha256.Sum256([]byte(signingInput))
 	signature, err := rsa.SignPKCS1v15(rand.Reader, s.PrivateKey, crypto.SHA256, digest[:])
 	if err != nil {
@@ -174,6 +191,267 @@ func TestVerifyIDTokenRejectsWrongAlgorithm(t *testing.T) {
 	raw := signer.token(t, jwt.SigningMethodRS384, signer.validClaims())
 	_, err := client.VerifyIDToken(t.Context(), raw, "nonce-1")
 	assertProtocolErrorIsRedacted(t, err, raw)
+}
+
+func TestVerifyIDAndAccessTokensRequireStrictRS256KidHeader(t *testing.T) {
+	headers := map[string]string{
+		"missing kid":      `{"alg":"RS256"}`,
+		"empty kid":        `{"alg":"RS256","kid":""}`,
+		"non-string kid":   `{"alg":"RS256","kid":7}`,
+		"duplicate kid":    `{"alg":"RS256","kid":"test-key","kid":"test-key"}`,
+		"duplicate alg":    `{"alg":"RS256","alg":"RS256","kid":"test-key"}`,
+		"nested duplicate": `{"alg":"RS256","kid":"test-key","future":{"x":1,"x":2}}`,
+		"trailing":         `{"alg":"RS256","kid":"test-key"} true`,
+	}
+	for name, header := range headers {
+		t.Run(name, func(t *testing.T) {
+			client, signer := newVerificationClient(t)
+			claims := signer.validClaims()
+			raw := signer.rawTokenWithHeader(t, header, mustJSON(t, claims))
+			_, idErr := client.VerifyIDToken(t.Context(), raw, "nonce-1")
+			assertProtocolErrorIsRedacted(t, idErr, raw)
+			_, accessErr := client.VerifyAccessTokenJWT(t.Context(), raw)
+			assertProtocolErrorIsRedacted(t, accessErr, raw)
+		})
+	}
+}
+
+func TestJWKSFetchPropagatesOnlyAllowlistedCallerHeadersAndCachesKeys(t *testing.T) {
+	fake := newFakeOIDCServer(t)
+	recorder := &recordingRoundTripper{base: fake.Server.Client().Transport}
+	client, err := New(t.Context(), Config{
+		IssuerURL:      fake.Server.URL,
+		ClientID:       "client-1",
+		SecretProvider: StaticSecret("secret-1"),
+		RedirectURL:    "https://app.example/callback",
+		Scopes:         []string{"openid"},
+		HTTPClient:     &http.Client{Transport: recorder},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := &testTokenSigner{
+		PrivateKey: fake.key,
+		Issuer:     fake.Server.URL,
+		ClientID:   "client-1",
+		KeyID:      "test-key",
+	}
+	headers := make(http.Header)
+	headers.Set("Traceparent", "00-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa-bbbbbbbbbbbbbbbb-01")
+	headers.Set("Tracestate", "vendor=value")
+	headers.Set("X-Request-ID", "request-jwks-1")
+	headers.Set("Authorization", "Bearer must-not-propagate")
+	headers.Set("Cookie", "session=must-not-propagate")
+	headers.Set("X-Untrusted", "must-not-propagate")
+	ctx := transport.WithHeaders(t.Context(), headers)
+	raw := signer.IDToken(t, signer.validClaims())
+
+	if _, err := client.VerifyIDToken(ctx, raw, "nonce-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.VerifyIDToken(t.Context(), raw, "nonce-1"); err != nil {
+		t.Fatal(err)
+	}
+	fakeHeaders := recorder.headers()
+	if fakeHeaders.Get("Traceparent") != headers.Get("Traceparent") ||
+		fakeHeaders.Get("Tracestate") != "vendor=value" ||
+		fakeHeaders.Get("X-Request-ID") != "request-jwks-1" {
+		t.Fatalf("propagated headers = %#v", fakeHeaders)
+	}
+	for _, name := range []string{"Authorization", "Cookie", "X-Untrusted"} {
+		if fakeHeaders.Get(name) != "" {
+			t.Fatalf("%s propagated to JWKS", name)
+		}
+	}
+	if fake.JWKSCalls.Load() != 1 {
+		t.Fatalf("JWKS calls = %d", fake.JWKSCalls.Load())
+	}
+}
+
+type recordingRoundTripper struct {
+	base http.RoundTripper
+	mu   sync.Mutex
+	last http.Header
+}
+
+func (r *recordingRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	r.mu.Lock()
+	r.last = request.Header.Clone()
+	r.mu.Unlock()
+	return r.base.RoundTrip(request)
+}
+
+func (r *recordingRoundTripper) headers() http.Header {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.last.Clone()
+}
+
+func TestJWKSCacheRotatesOnUnknownKid(t *testing.T) {
+	client, fake := newTestClientAndServer(t)
+	firstSigner := &testTokenSigner{
+		PrivateKey: fake.key,
+		Issuer:     fake.Server.URL,
+		ClientID:   "client-1",
+		KeyID:      "test-key",
+	}
+	if _, err := client.VerifyIDToken(t.Context(), firstSigner.IDToken(t, firstSigner.validClaims()), "nonce-1"); err != nil {
+		t.Fatal(err)
+	}
+	rotatedKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fake.setJWKSKey(rotatedKey, "rotated-key")
+	rotatedSigner := &testTokenSigner{
+		PrivateKey: rotatedKey,
+		Issuer:     fake.Server.URL,
+		ClientID:   "client-1",
+		KeyID:      "rotated-key",
+	}
+	if _, err := client.VerifyIDToken(t.Context(), rotatedSigner.IDToken(t, rotatedSigner.validClaims()), "nonce-1"); err != nil {
+		t.Fatal(err)
+	}
+	if fake.JWKSCalls.Load() != 2 {
+		t.Fatalf("JWKS calls = %d", fake.JWKSCalls.Load())
+	}
+}
+
+func TestConcurrentJWKSCacheMissUsesSingleInflightFetch(t *testing.T) {
+	client, fake := newTestClientAndServer(t)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	fake.mu.Lock()
+	fake.jwksStarted = started
+	fake.jwksBlock = release
+	fake.mu.Unlock()
+	signer := &testTokenSigner{
+		PrivateKey: fake.key,
+		Issuer:     fake.Server.URL,
+		ClientID:   "client-1",
+		KeyID:      "test-key",
+	}
+	raw := signer.IDToken(t, signer.validClaims())
+	const count = 6
+	start := make(chan struct{})
+	errs := make(chan error, count)
+	for range count {
+		go func() {
+			<-start
+			_, err := client.VerifyIDToken(t.Context(), raw, "nonce-1")
+			errs <- err
+		}()
+	}
+	close(start)
+	<-started
+	deadline := time.After(time.Second)
+	for {
+		client.keySet.mu.RLock()
+		waiters := 0
+		if client.keySet.inflight != nil {
+			waiters = client.keySet.inflight.waiters
+		}
+		client.keySet.mu.RUnlock()
+		if waiters == count {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatalf("inflight waiters = %d", waiters)
+		default:
+			runtime.Gosched()
+		}
+	}
+	close(release)
+	for range count {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fake.JWKSCalls.Load() != 1 {
+		t.Fatalf("JWKS calls = %d", fake.JWKSCalls.Load())
+	}
+}
+
+func TestJWKSFetchHonorsCallerCancellationWhileSharedFetchContinues(t *testing.T) {
+	client, fake := newTestClientAndServer(t)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	fake.mu.Lock()
+	fake.jwksStarted = started
+	fake.jwksBlock = release
+	fake.mu.Unlock()
+	signer := &testTokenSigner{
+		PrivateKey: fake.key,
+		Issuer:     fake.Server.URL,
+		ClientID:   "client-1",
+		KeyID:      "test-key",
+	}
+	raw := signer.IDToken(t, signer.validClaims())
+	ctx, cancel := context.WithCancel(t.Context())
+	first := make(chan error, 1)
+	go func() {
+		_, err := client.VerifyIDToken(ctx, raw, "nonce-1")
+		first <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-first:
+		assertProtocolErrorIsRedacted(t, err, raw)
+	case <-time.After(time.Second):
+		t.Fatal("verification did not honor caller cancellation")
+	}
+
+	second := make(chan error, 1)
+	go func() {
+		_, err := client.VerifyIDToken(t.Context(), raw, "nonce-1")
+		second <- err
+	}()
+	close(release)
+	if err := <-second; err != nil {
+		t.Fatalf("shared fetch did not complete: %v", err)
+	}
+	if fake.JWKSCalls.Load() != 1 {
+		t.Fatalf("JWKS calls = %d", fake.JWKSCalls.Load())
+	}
+}
+
+func TestJWKSFetchRejectsBadStatusContentTypeAndOversizedBody(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+	}{
+		{"status", http.StatusServiceUnavailable, "application/json", `{"keys":[]}`},
+		{"content type", http.StatusOK, "text/plain", `{"keys":[]}`},
+		{"oversized", http.StatusOK, "application/json", strings.Repeat("x", (1<<20)+1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, fake := newTestClientAndServer(t)
+			fake.setRawJWKSResponse(test.status, test.contentType, test.body)
+			_, signer := newVerificationClient(t)
+			signer.Issuer = fake.Server.URL
+			signer.PrivateKey = fake.key
+			raw := signer.IDToken(t, signer.validClaims())
+			_, err := client.VerifyIDToken(t.Context(), raw, "nonce-1")
+			assertProtocolErrorIsRedacted(t, err, raw, test.body)
+			if fake.JWKSCalls.Load() != 1 {
+				t.Fatalf("JWKS calls = %d", fake.JWKSCalls.Load())
+			}
+		})
+	}
+}
+
+func mustJSON(t *testing.T, value any) string {
+	t.Helper()
+	raw, err := json.Marshal(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(raw)
 }
 
 func TestVerifyIDTokenRejectsMissingSubject(t *testing.T) {

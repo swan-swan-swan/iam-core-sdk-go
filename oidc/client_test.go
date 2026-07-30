@@ -2,6 +2,7 @@ package oidc
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"net/url"
 	"strings"
@@ -359,6 +360,68 @@ func TestNewRequiresOpenIDScope(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected openid scope rejection")
+	}
+}
+
+func TestNewRejectsNilContextAndTypedNilSecretProvider(t *testing.T) {
+	fake := newFakeOIDCServer(t)
+	valid := Config{
+		IssuerURL:      fake.Server.URL,
+		ClientID:       "client-1",
+		SecretProvider: StaticSecret("secret-1"),
+		RedirectURL:    "https://app.example/callback",
+		Scopes:         []string{"openid"},
+		HTTPClient:     fake.Server.Client(),
+	}
+	for name, mutate := range map[string]func(*Config){
+		"typed nil function provider": func(config *Config) {
+			var provider SecretProviderFunc
+			config.SecretProvider = provider
+		},
+		"typed nil pointer provider": func(config *Config) {
+			var provider *typedNilSecretProvider
+			config.SecretProvider = provider
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			config := valid
+			mutate(&config)
+			client, err := New(t.Context(), config)
+			var typed *sdkerr.Error
+			if client != nil || !errors.As(err, &typed) ||
+				typed.Kind != sdkerr.KindInvalidConfig || fake.DiscoveryCalls.Load() != 0 {
+				t.Fatalf("client = %#v, error = %#v, discovery calls = %d", client, err, fake.DiscoveryCalls.Load())
+			}
+		})
+	}
+	client, err := New(nil, valid)
+	var typed *sdkerr.Error
+	if client != nil || !errors.As(err, &typed) || typed.Kind != sdkerr.KindInvalidConfig ||
+		fake.DiscoveryCalls.Load() != 0 {
+		t.Fatalf("client = %#v, error = %#v, discovery calls = %d", client, err, fake.DiscoveryCalls.Load())
+	}
+}
+
+type typedNilSecretProvider struct{}
+
+func (*typedNilSecretProvider) Secret(context.Context) (string, error) {
+	return "must-not-be-called", nil
+}
+
+func TestNewNormalizesTypedNilHooks(t *testing.T) {
+	fake := newFakeOIDCServer(t)
+	var hooks *recordingHooks
+	client, err := New(t.Context(), Config{
+		IssuerURL:      fake.Server.URL,
+		ClientID:       "client-1",
+		SecretProvider: StaticSecret("secret-1"),
+		RedirectURL:    "https://app.example/callback",
+		Scopes:         []string{"openid"},
+		HTTPClient:     fake.Server.Client(),
+		Hooks:          hooks,
+	})
+	if err != nil || client == nil {
+		t.Fatalf("client = %#v, error = %v", client, err)
 	}
 }
 

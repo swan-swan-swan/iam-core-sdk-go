@@ -4,10 +4,10 @@ import (
 	"context"
 	"log/slog"
 	"net/http"
-	"reflect"
 	"strings"
 	"time"
 
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/nilcheck"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/middleware"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/oidc"
@@ -73,9 +73,9 @@ func validateRootConfig(ctx context.Context, config Config) error {
 	if ctx == nil ||
 		strings.TrimSpace(config.IssuerURL) == "" ||
 		strings.TrimSpace(config.ClientID) == "" ||
-		nilInterface(config.ClientSecretProvider) ||
+		nilcheck.IsNil(config.ClientSecretProvider) ||
 		strings.TrimSpace(config.RedirectURL) == "" ||
-		nilInterface(config.Session.Backend) {
+		nilcheck.IsNil(config.Session.Backend) {
 		return rootConfigurationError()
 	}
 	if config.Timeouts.DiscoveryJWKS < 0 ||
@@ -129,17 +129,4 @@ func durationOrDefault(value, fallback time.Duration) time.Duration {
 
 func rootConfigurationError() *sdkerr.Error {
 	return sdkerr.New(sdkerr.KindInvalidConfig, "iamcore.configure", 0, false, nil)
-}
-
-func nilInterface(value any) bool {
-	if value == nil {
-		return true
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
-	}
 }

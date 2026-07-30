@@ -94,6 +94,12 @@ func (c *Client) verifyIDToken(
 	rawIDToken string,
 	operation string,
 ) (IDTokenClaims, error) {
+	if ctx == nil {
+		return IDTokenClaims{}, verificationError(operation)
+	}
+	if _, err := parseProtectedHeader(rawIDToken); err != nil {
+		return IDTokenClaims{}, verificationError(operation)
+	}
 	token, err := c.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		return IDTokenClaims{}, verificationError(operation)
@@ -133,7 +139,10 @@ func (c *Client) verifyAccessTokenJWTAt(
 	now time.Time,
 ) (AccessTokenClaims, error) {
 	const operation = "oidc.verify_access_token"
-	if !usesRS256(rawAccessToken) {
+	if ctx == nil {
+		return AccessTokenClaims{}, verificationError(operation)
+	}
+	if _, err := parseProtectedHeader(rawAccessToken); err != nil {
 		return AccessTokenClaims{}, verificationError(operation)
 	}
 	payload, err := c.keySet.VerifySignature(ctx, rawAccessToken)
@@ -230,19 +239,69 @@ func numericDateFromTime(value time.Time) *big.Rat {
 	return seconds.Add(seconds, fraction)
 }
 
-func usesRS256(rawToken string) bool {
+type protectedHeader struct {
+	Algorithm string
+	KeyID     string
+}
+
+func parseProtectedHeader(rawToken string) (protectedHeader, error) {
 	parts := strings.Split(rawToken, ".")
 	if len(parts) != 3 {
-		return false
+		return protectedHeader{}, errInvalidProtectedHeader
 	}
 	header, err := base64.RawURLEncoding.DecodeString(parts[0])
 	if err != nil {
-		return false
+		return protectedHeader{}, errInvalidProtectedHeader
 	}
-	var value struct {
-		Algorithm string `json:"alg"`
+	if err := rejectDuplicateHeaderJSON(header); err != nil {
+		return protectedHeader{}, errInvalidProtectedHeader
 	}
-	return json.Unmarshal(header, &value) == nil && value.Algorithm == "RS256"
+	var values map[string]json.RawMessage
+	if err := json.Unmarshal(header, &values); err != nil {
+		return protectedHeader{}, errInvalidProtectedHeader
+	}
+	var algorithm, keyID string
+	if raw, ok := values["alg"]; !ok || json.Unmarshal(raw, &algorithm) != nil ||
+		algorithm != "RS256" {
+		return protectedHeader{}, errInvalidProtectedHeader
+	}
+	if raw, ok := values["kid"]; !ok || json.Unmarshal(raw, &keyID) != nil ||
+		strings.TrimSpace(keyID) == "" {
+		return protectedHeader{}, errInvalidProtectedHeader
+	}
+	return protectedHeader{Algorithm: algorithm, KeyID: keyID}, nil
+}
+
+func rejectDuplicateHeaderJSON(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return errInvalidProtectedHeader
+	}
+	seen := make(map[string]struct{})
+	for decoder.More() {
+		key, err := decoder.Token()
+		name, ok := key.(string)
+		if err != nil || !ok {
+			return errInvalidProtectedHeader
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return errInvalidProtectedHeader
+		}
+		seen[name] = struct{}{}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return errInvalidProtectedHeader
+		}
+	}
+	if token, err = decoder.Token(); err != nil || token != json.Delim('}') {
+		return errInvalidProtectedHeader
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return errInvalidProtectedHeader
+	}
+	return nil
 }
 
 func decodeAudience(raw json.RawMessage) ([]string, error) {
@@ -276,6 +335,7 @@ func containsAudience(audiences []string, expected string) bool {
 
 var errInvalidAudience = &audienceError{}
 var errInvalidNumericDate = &numericDateError{}
+var errInvalidProtectedHeader = &protectedHeaderError{}
 
 type audienceError struct{}
 
@@ -287,6 +347,12 @@ type numericDateError struct{}
 
 func (*numericDateError) Error() string {
 	return "invalid numeric date"
+}
+
+type protectedHeaderError struct{}
+
+func (*protectedHeaderError) Error() string {
+	return "invalid protected header"
 }
 
 func verificationError(operation string) *sdkerr.Error {

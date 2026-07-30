@@ -93,6 +93,22 @@ func TestBackendConformance(t *testing.T) {
 	})
 }
 
+func TestNewNormalizesTypedNilOptionalCollaborators(t *testing.T) {
+	var clock *mutableClock
+	var random *bytes.Reader
+	backend := New(Options{Clock: clock, Random: random})
+	if backend == nil || backend.clock == nil || backend.random == nil {
+		t.Fatalf("backend retained typed nil collaborators: %#v", backend)
+	}
+	lock, err := backend.Lock(t.Context(), "typed-nil-options", time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Unlock(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestBackendUsesInjectedClockForExpiryAndPrune(t *testing.T) {
 	now := time.Date(2026, 7, 30, 12, 0, 0, 0, time.UTC)
 	clock := &mutableClock{now: now}

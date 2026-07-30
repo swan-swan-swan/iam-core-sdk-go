@@ -1,7 +1,6 @@
 package oidc
 
 import (
-	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"time"
 
 	coreosoidc "github.com/coreos/go-oidc/v3/oidc"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/nilcheck"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/transport"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/observability"
@@ -76,11 +76,14 @@ type Client struct {
 	tokenUserInfoTimeout time.Duration
 	hooks                observability.Hooks
 	logger               *slog.Logger
-	keySet               *coreosoidc.RemoteKeySet
+	keySet               *contextualKeySet
 	verifier             *coreosoidc.IDTokenVerifier
 }
 
 func New(ctx context.Context, config Config) (result *Client, resultErr error) {
+	if ctx == nil {
+		return nil, sdkerr.New(sdkerr.KindInvalidConfig, "oidc.configure", 0, false, nil)
+	}
 	if err := validateConfig(config); err != nil {
 		return nil, err
 	}
@@ -96,7 +99,7 @@ func New(ctx context.Context, config Config) (result *Client, resultErr error) {
 		defaultTokenUserInfoTimeout,
 	)
 	hooks := config.Hooks
-	if hooks == nil {
+	if nilcheck.IsNil(hooks) {
 		hooks = observability.Nop{}
 	}
 	logger := config.Logger
@@ -142,15 +145,11 @@ func New(ctx context.Context, config Config) (result *Client, resultErr error) {
 			AuthStyle: oauth2.AuthStyleInParams,
 		},
 	}
-	jwksHTTPClient := &http.Client{
-		Transport: boundedRoundTripper{client: client.transport},
-		Timeout:   discoveryJWKSTimeout,
-		CheckRedirect: func(*http.Request, []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
-	}
-	keySetContext := coreosoidc.ClientContext(context.WithoutCancel(ctx), jwksHTTPClient)
-	client.keySet = coreosoidc.NewRemoteKeySet(keySetContext, metadata.JWKSURI)
+	client.keySet = newContextualKeySet(
+		metadata.JWKSURI,
+		config.HTTPClient,
+		discoveryJWKSTimeout,
+	)
 	client.verifier = coreosoidc.NewVerifier(metadata.Issuer, client.keySet, &coreosoidc.Config{
 		ClientID: config.ClientID,
 	})
@@ -199,7 +198,8 @@ func (c *Client) discover(ctx context.Context, issuer string) (Metadata, transpo
 
 func validateConfig(config Config) error {
 	issuer := config.IssuerURL
-	if strings.TrimSpace(issuer) == "" || strings.TrimSpace(config.ClientID) == "" || config.SecretProvider == nil ||
+	if strings.TrimSpace(issuer) == "" || strings.TrimSpace(config.ClientID) == "" ||
+		nilcheck.IsNil(config.SecretProvider) ||
 		strings.TrimSpace(config.RedirectURL) == "" {
 		return sdkerr.New(sdkerr.KindInvalidConfig, "oidc.configure", 0, false, nil)
 	}
@@ -367,23 +367,4 @@ func safeCorrelationID(value string) string {
 		}
 	}
 	return value
-}
-
-type boundedRoundTripper struct {
-	client transport.Client
-}
-
-func (roundTripper boundedRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
-	response, err := roundTripper.client.Do(request)
-	if err != nil {
-		return nil, err
-	}
-	return &http.Response{
-		StatusCode:    response.StatusCode,
-		Status:        fmt.Sprintf("%d %s", response.StatusCode, http.StatusText(response.StatusCode)),
-		Header:        response.Header,
-		Body:          io.NopCloser(bytes.NewReader(response.Body)),
-		ContentLength: int64(len(response.Body)),
-		Request:       request,
-	}, nil
 }

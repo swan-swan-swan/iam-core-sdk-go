@@ -7,13 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"reflect"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/nilcheck"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/random"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/session"
 )
@@ -46,8 +46,8 @@ type Backend struct {
 
 func New(client goredis.UniversalClient, options Options) (*Backend, error) {
 	prefix := normalizePrefix(options.Prefix)
-	if isNilInterface(client) || isNilInterface(options.Codec) ||
-		isNilInterface(options.Clock) || isNilInterface(options.Random) || prefix == "" {
+	if nilcheck.IsNil(client) || nilcheck.IsNil(options.Codec) ||
+		nilcheck.IsNil(options.Clock) || nilcheck.IsNil(options.Random) || prefix == "" {
 		return nil, errInvalidInput
 	}
 	return &Backend{
@@ -495,18 +495,5 @@ func backendError(err error) error {
 		return context.DeadlineExceeded
 	default:
 		return ErrBackendUnavailable
-	}
-}
-
-func isNilInterface(value any) bool {
-	if value == nil {
-		return true
-	}
-	reflected := reflect.ValueOf(value)
-	switch reflected.Kind() {
-	case reflect.Chan, reflect.Func, reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice:
-		return reflected.IsNil()
-	default:
-		return false
 	}
 }

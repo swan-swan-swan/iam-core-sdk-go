@@ -80,7 +80,7 @@ jobs:
       - name: Download modules
         run: go mod download
 
-      - name: Redis conformance
+      - name: Redis package
         env:
           IAMCORE_TEST_REDIS_IMAGE: ${{ matrix.redis-image }}
-        run: go test ./session/redis -run TestBackendConformance -count=1 -timeout=5m
+        run: go test ./session/redis -count=1 -timeout=5m

@@ -8,6 +8,7 @@ import (
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/authn"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/authz"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/nilcheck"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/transport"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/middleware"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/observability"
@@ -38,7 +39,7 @@ func New(ctx context.Context, config Config) (*Client, error) {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	hooks := config.Hooks
-	if nilInterface(hooks) {
+	if nilcheck.IsNil(hooks) {
 		hooks = observability.Nop{}
 	}
 	httpClient := config.HTTPClient
@@ -97,7 +98,7 @@ func New(ctx context.Context, config Config) (*Client, error) {
 		middleware.WithHooks(hooks),
 		middleware.WithLogger(logger),
 	}
-	if !nilInterface(config.ErrorResponder) {
+	if !nilcheck.IsNil(config.ErrorResponder) {
 		options = append(options, middleware.WithErrorResponder(config.ErrorResponder))
 	}
 	return &Client{

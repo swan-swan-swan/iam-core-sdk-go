@@ -1,6 +1,7 @@
 package authn
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -17,6 +18,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/nilcheck"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/oidc"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/session"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/session/memory"
@@ -439,3 +442,51 @@ type errorReader struct{ err error }
 func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
 
 var _ io.Reader = errorReader{}
+
+type typedNilClock struct{}
+
+func (*typedNilClock) Now() time.Time { return fixedNow }
+
+func TestNewRejectsTypedNilBackendAndNormalizesOptionalTypedNils(t *testing.T) {
+	fake := newFakeBrowserOIDC(t)
+	client, err := oidc.New(t.Context(), oidc.Config{
+		IssuerURL:      fake.server.URL,
+		ClientID:       "client-1",
+		SecretProvider: oidc.StaticSecret("client-secret"),
+		RedirectURL:    "https://app.example/auth/callback",
+		Scopes:         []string{"openid"},
+		HTTPClient:     fake.server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var backend *memory.Backend
+	service, err := New(Config{
+		OIDC:        client,
+		Backend:     backend,
+		RedirectURL: "https://app.example/auth/callback",
+	})
+	var typed *sdkerr.Error
+	if service != nil || !errors.As(err, &typed) || typed.Kind != sdkerr.KindInvalidConfig {
+		t.Fatalf("service = %#v, error = %#v", service, err)
+	}
+
+	var optionalClock *typedNilClock
+	var optionalRandom *bytes.Reader
+	var optionalHooks *recordingHooks
+	service, err = New(Config{
+		OIDC:        client,
+		Backend:     memory.New(memory.Options{}),
+		RedirectURL: "https://app.example/auth/callback",
+		Clock:       optionalClock,
+		Random:      optionalRandom,
+		Hooks:       optionalHooks,
+	})
+	if err != nil || service == nil {
+		t.Fatalf("service = %#v, error = %v", service, err)
+	}
+	if nilcheck.IsNil(service.clock) || nilcheck.IsNil(service.random) ||
+		nilcheck.IsNil(service.hooks) {
+		t.Fatalf("typed nil optional collaborator remained: %#v", service)
+	}
+}

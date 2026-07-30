@@ -179,6 +179,20 @@ func TestNewValidatesIssuerAndEndpoint(t *testing.T) {
 	}
 }
 
+func TestNewNormalizesTypedNilHooksAndUsesThreeSecondDefault(t *testing.T) {
+	var hooks *recordingHook
+	client, err := New(Config{IssuerURL: "https://issuer.example", Hooks: hooks})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.timeout != 3*time.Second {
+		t.Fatalf("timeout = %v", client.timeout)
+	}
+	if _, err := client.Decide(t.Context(), "", validPermission()); err == nil {
+		t.Fatal("expected invalid input error")
+	}
+}
+
 func TestNewDerivesExactDecisionPathFromIssuer(t *testing.T) {
 	client, err := New(Config{IssuerURL: "https://issuer.example/base/"})
 	if err != nil {

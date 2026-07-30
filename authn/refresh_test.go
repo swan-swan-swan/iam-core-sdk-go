@@ -564,6 +564,60 @@ func TestRefreshReconcilesIssuedTokensAfterTouchOnlyConflict(t *testing.T) {
 	}
 }
 
+func TestRefreshReconcilesIssuedTokensAfterRepeatedTouchConflicts(t *testing.T) {
+	harness := newRefreshHarness(t)
+	var fencedCalls atomic.Int32
+	wrapper := &refreshBackend{Backend: harness.backend}
+	wrapper.fencedCASFunc = func(
+		ctx context.Context,
+		lock session.Lock,
+		id string,
+		expected uint64,
+		next *session.Session,
+	) error {
+		call := fencedCalls.Add(1)
+		if call <= 3 {
+			current, err := harness.backend.Get(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			touched := cloneTestSession(current)
+			touched.Version++
+			touched.LastSeenAt = fixedNow.Add(time.Duration(call) * time.Second)
+			touched.IdleExpiresAt = fixedNow.Add(time.Duration(call+1) * time.Hour)
+			touched.IdentityValidatedAt = fixedNow.Add(time.Duration(call) * time.Minute)
+			touched.Identity.DisplayName = "latest identity"
+			if err := harness.backend.CompareAndSwap(ctx, id, expected, touched); err != nil {
+				t.Fatal(err)
+			}
+			return session.ErrVersionConflict
+		}
+		return harness.backend.CompareAndSwapWithLock(ctx, lock, id, expected, next)
+	}
+	harness.service.backend = wrapper
+
+	got, err := harness.service.refreshSession(t.Context(), "session-1", false)
+	if err != nil {
+		t.Fatalf("refreshSession() error = %v", err)
+	}
+	if fencedCalls.Load() != 4 || harness.oidc.tokenCalls.Load() != 1 {
+		t.Fatalf("fenced calls = %d, token calls = %d", fencedCalls.Load(), harness.oidc.tokenCalls.Load())
+	}
+	if got.Version != 5 || got.TokenSet.AccessToken != "access-refreshed" ||
+		got.TokenSet.RefreshToken != "refresh-rotated" ||
+		got.LastSeenAt != fixedNow.Add(3*time.Second) ||
+		got.IdleExpiresAt != fixedNow.Add(4*time.Hour) ||
+		got.IdentityValidatedAt != fixedNow.Add(3*time.Minute) ||
+		got.Identity.DisplayName != "latest identity" {
+		t.Fatalf("session = %#v", got)
+	}
+	stored, getErr := harness.backend.Get(t.Context(), "session-1")
+	if getErr != nil || stored.Version != got.Version ||
+		stored.TokenSet.RefreshToken != "refresh-rotated" {
+		t.Fatalf("stored = %#v, error = %v", stored, getErr)
+	}
+}
+
 func TestInvalidGrantRetriesConditionalDeleteAfterTouchConflict(t *testing.T) {
 	harness := newRefreshHarness(t)
 	harness.oidc.mu.Lock()
@@ -602,6 +656,120 @@ func TestInvalidGrantRetriesConditionalDeleteAfterTouchConflict(t *testing.T) {
 	}
 	if _, getErr := harness.backend.Get(t.Context(), "session-1"); !errors.Is(getErr, session.ErrNotFound) {
 		t.Fatalf("Get() error = %v", getErr)
+	}
+}
+
+func TestInvalidGrantDeletesAfterRepeatedTouchConflicts(t *testing.T) {
+	harness := newRefreshHarness(t)
+	harness.oidc.mu.Lock()
+	harness.oidc.refreshStatus = http.StatusBadRequest
+	harness.oidc.refreshError = "invalid_grant"
+	harness.oidc.mu.Unlock()
+	var deleteCalls atomic.Int32
+	wrapper := &refreshBackend{Backend: harness.backend}
+	wrapper.fencedDeleteFunc = func(
+		ctx context.Context,
+		lock session.Lock,
+		id string,
+		expected uint64,
+	) error {
+		if deleteCalls.Add(1) <= 3 {
+			current, err := harness.backend.Get(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			touched := cloneTestSession(current)
+			touched.Version++
+			touched.LastSeenAt = fixedNow.Add(time.Duration(deleteCalls.Load()) * time.Second)
+			if err := harness.backend.CompareAndSwap(ctx, id, expected, touched); err != nil {
+				t.Fatal(err)
+			}
+			return session.ErrVersionConflict
+		}
+		return harness.backend.DeleteWithLock(ctx, lock, id, expected)
+	}
+	harness.service.backend = wrapper
+
+	_, err := harness.service.refreshSession(t.Context(), "session-1", false)
+	assertSDKKind(t, err, sdkerr.KindUnauthenticated)
+	if deleteCalls.Load() != 4 || harness.oidc.tokenCalls.Load() != 1 {
+		t.Fatalf("delete calls = %d, token calls = %d", deleteCalls.Load(), harness.oidc.tokenCalls.Load())
+	}
+	if _, getErr := harness.backend.Get(t.Context(), "session-1"); !errors.Is(getErr, session.ErrNotFound) {
+		t.Fatalf("Get() error = %v", getErr)
+	}
+}
+
+func TestRepeatedRefreshReconciliationStopsSafelyOnLockLoss(t *testing.T) {
+	harness := newRefreshHarness(t)
+	var calls atomic.Int32
+	wrapper := &refreshBackend{Backend: harness.backend}
+	wrapper.fencedCASFunc = func(
+		ctx context.Context,
+		_ session.Lock,
+		id string,
+		expected uint64,
+		_ *session.Session,
+	) error {
+		if calls.Add(1) <= 3 {
+			current, err := harness.backend.Get(ctx, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			touched := cloneTestSession(current)
+			touched.Version++
+			if err := harness.backend.CompareAndSwap(ctx, id, expected, touched); err != nil {
+				t.Fatal(err)
+			}
+			return session.ErrVersionConflict
+		}
+		return session.ErrLockLost
+	}
+	harness.service.backend = wrapper
+
+	_, err := harness.service.refreshSession(t.Context(), "session-1", false)
+	assertSDKKind(t, err, sdkerr.KindSessionUnavailable)
+	if harness.oidc.tokenCalls.Load() != 1 || calls.Load() != 4 {
+		t.Fatalf("token calls = %d, fenced calls = %d", harness.oidc.tokenCalls.Load(), calls.Load())
+	}
+}
+
+func TestRepeatedRefreshReconciliationStopsSafelyOnContextCancellation(t *testing.T) {
+	harness := newRefreshHarness(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	var calls atomic.Int32
+	wrapper := &refreshBackend{Backend: harness.backend}
+	wrapper.fencedCASFunc = func(
+		callContext context.Context,
+		_ session.Lock,
+		id string,
+		expected uint64,
+		_ *session.Session,
+	) error {
+		calls.Add(1)
+		current, err := harness.backend.Get(callContext, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		touched := cloneTestSession(current)
+		touched.Version++
+		if err := harness.backend.CompareAndSwap(callContext, id, expected, touched); err != nil {
+			t.Fatal(err)
+		}
+		cancel()
+		return session.ErrVersionConflict
+	}
+	harness.service.backend = wrapper
+
+	_, err := harness.service.refreshSession(ctx, "session-1", false)
+	assertSDKKind(t, err, sdkerr.KindSessionUnavailable)
+	if harness.oidc.tokenCalls.Load() != 1 || calls.Load() != 1 {
+		t.Fatalf("token calls = %d, fenced calls = %d", harness.oidc.tokenCalls.Load(), calls.Load())
+	}
+	stored, getErr := harness.backend.Get(t.Context(), "session-1")
+	if getErr != nil || stored.TokenSet.RefreshToken != "refresh-original" ||
+		stored.TokenSet.AccessToken != "access-original" {
+		t.Fatalf("stored = %#v, error = %v", stored, getErr)
 	}
 }
 

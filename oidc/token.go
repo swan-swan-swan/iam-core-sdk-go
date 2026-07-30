@@ -96,17 +96,25 @@ func (c *Client) requestToken(
 	request.Header.Set("Accept", "application/json")
 
 	response, err := c.transport.Do(request)
-	if err != nil {
-		return TokenSet{}, sanitizeError(operation, err)
-	}
 	var body tokenResponse
+	if response.StatusCode != 0 && response.StatusCode != http.StatusOK {
+		endpointErr := statusError(operation, response.StatusCode)
+		if response.StatusCode == http.StatusBadRequest && err == nil &&
+			transport.DecodeJSON(response.Body, &body) == nil {
+			endpointErr = tokenEndpointError(operation, response.StatusCode, body)
+		}
+		return TokenSet{}, withFormSafeCorrelation(endpointErr, response.Correlation, form)
+	}
+	if err != nil {
+		return TokenSet{}, withFormSafeCorrelation(
+			sanitizeError(operation, err),
+			response.Correlation,
+			form,
+		)
+	}
 	if err := transport.DecodeJSON(response.Body, &body); err != nil {
 		protocolErr := sdkerr.New(sdkerr.KindProtocol, operation, response.StatusCode, false, nil)
 		return TokenSet{}, withFormSafeCorrelation(protocolErr, response.Correlation, form)
-	}
-	if response.StatusCode != http.StatusOK {
-		endpointErr := tokenEndpointError(operation, response.StatusCode, body)
-		return TokenSet{}, withFormSafeCorrelation(endpointErr, response.Correlation, form)
 	}
 	refreshToken, refreshTokenPresent, refreshTokenValid := decodeRefreshToken(body.RefreshToken)
 	if body.Error != "" || body.IAMCode != 0 || strings.TrimSpace(body.AccessToken) == "" ||

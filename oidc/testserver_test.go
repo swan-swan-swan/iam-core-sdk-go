@@ -27,11 +27,20 @@ type fakeOIDCServer struct {
 
 	mu                       sync.Mutex
 	key                      *rsa.PrivateKey
+	keyID                    string
+	lastJWKSHeaders          http.Header
+	jwksStarted              chan<- struct{}
+	jwksBlock                <-chan struct{}
+	jwksStatus               int
+	jwksContentType          string
+	jwksRawBody              *string
 	discoveryIssuer          string
 	discoveryOverrides       map[string]string
 	tokenStatus              int
 	tokenResponse            map[string]any
 	tokenResponseRequestID   string
+	tokenRawBody             *string
+	tokenContentType         string
 	rejectBasicAuthorization bool
 	jwksRedirectTarget       string
 }
@@ -45,8 +54,10 @@ func newFakeOIDCServer(t *testing.T) *fakeOIDCServer {
 	}
 	fake := &fakeOIDCServer{
 		key:                key,
+		keyID:              "test-key",
 		discoveryOverrides: make(map[string]string),
 		tokenStatus:        http.StatusOK,
+		jwksStatus:         http.StatusOK,
 		tokenResponse: map[string]any{
 			"access_token":  "access-1",
 			"token_type":    "Bearer",
@@ -64,9 +75,7 @@ func newFakeOIDCServer(t *testing.T) *fakeOIDCServer {
 	fake.Server = httptest.NewServer(mux)
 	t.Cleanup(fake.Server.Close)
 
-	fake.mu.Lock()
 	fake.tokenResponse["id_token"] = fake.signIDToken(t)
-	fake.mu.Unlock()
 	return fake
 }
 
@@ -88,12 +97,42 @@ func (f *fakeOIDCServer) setTokenResponse(status int, response map[string]any, r
 	f.tokenStatus = status
 	f.tokenResponse = response
 	f.tokenResponseRequestID = requestID
+	f.tokenRawBody = nil
+}
+
+func (f *fakeOIDCServer) setRawTokenResponse(status int, contentType, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.tokenStatus = status
+	f.tokenContentType = contentType
+	f.tokenRawBody = &body
 }
 
 func (f *fakeOIDCServer) setJWKSRedirect(target string) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.jwksRedirectTarget = target
+}
+
+func (f *fakeOIDCServer) setJWKSKey(key *rsa.PrivateKey, keyID string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.key = key
+	f.keyID = keyID
+}
+
+func (f *fakeOIDCServer) jwksHeaders() http.Header {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastJWKSHeaders.Clone()
+}
+
+func (f *fakeOIDCServer) setRawJWKSResponse(status int, contentType, body string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.jwksStatus = status
+	f.jwksContentType = contentType
+	f.jwksRawBody = &body
 }
 
 func (f *fakeOIDCServer) tokenForm() url.Values {
@@ -146,6 +185,8 @@ func (f *fakeOIDCServer) handleToken(writer http.ResponseWriter, request *http.R
 	status := f.tokenStatus
 	response := cloneMap(f.tokenResponse)
 	requestID := f.tokenResponseRequestID
+	rawBody := f.tokenRawBody
+	contentType := f.tokenContentType
 	rejectBasic := f.rejectBasicAuthorization
 	f.mu.Unlock()
 
@@ -180,15 +221,42 @@ func (f *fakeOIDCServer) handleToken(writer http.ResponseWriter, request *http.R
 	if requestID != "" {
 		writer.Header().Set("X-Request-ID", requestID)
 	}
+	if rawBody != nil {
+		writer.Header().Set("Content-Type", contentType)
+		writer.WriteHeader(status)
+		_, _ = writer.Write([]byte(*rawBody))
+		return
+	}
 	writer.WriteHeader(status)
 	_ = json.NewEncoder(writer).Encode(response)
 }
 
-func (f *fakeOIDCServer) handleJWKS(writer http.ResponseWriter, _ *http.Request) {
+func (f *fakeOIDCServer) handleJWKS(writer http.ResponseWriter, request *http.Request) {
 	f.JWKSCalls.Add(1)
 	f.mu.Lock()
 	redirectTarget := f.jwksRedirectTarget
+	f.lastJWKSHeaders = request.Header.Clone()
+	started := f.jwksStarted
+	block := f.jwksBlock
+	status := f.jwksStatus
+	contentType := f.jwksContentType
+	rawBody := f.jwksRawBody
 	f.mu.Unlock()
+	if started != nil {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+	}
+	if block != nil {
+		<-block
+	}
+	if rawBody != nil {
+		writer.Header().Set("Content-Type", contentType)
+		writer.WriteHeader(status)
+		_, _ = writer.Write([]byte(*rawBody))
+		return
+	}
 	if redirectTarget != "" {
 		writer.Header().Set("Content-Type", "application/json")
 		writer.Header().Set("Location", redirectTarget)
@@ -205,15 +273,19 @@ func (f *fakeOIDCServer) handleJWKSTarget(writer http.ResponseWriter, _ *http.Re
 }
 
 func (f *fakeOIDCServer) writeJWKS(writer http.ResponseWriter) {
-	exponent := big.NewInt(int64(f.key.PublicKey.E)).Bytes()
+	f.mu.Lock()
+	key := f.key
+	keyID := f.keyID
+	f.mu.Unlock()
+	exponent := big.NewInt(int64(key.PublicKey.E)).Bytes()
 	writer.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(writer).Encode(map[string]any{
 		"keys": []map[string]string{{
 			"kty": "RSA",
-			"kid": "test-key",
+			"kid": keyID,
 			"use": "sig",
 			"alg": "RS256",
-			"n":   base64.RawURLEncoding.EncodeToString(f.key.PublicKey.N.Bytes()),
+			"n":   base64.RawURLEncoding.EncodeToString(key.PublicKey.N.Bytes()),
 			"e":   base64.RawURLEncoding.EncodeToString(exponent),
 		}},
 	})
@@ -228,8 +300,12 @@ func (f *fakeOIDCServer) signIDToken(t *testing.T) string {
 		"exp": time.Now().Add(time.Hour).Unix(),
 		"iat": time.Now().Unix(),
 	})
-	token.Header["kid"] = "test-key"
-	signed, err := token.SignedString(f.key)
+	f.mu.Lock()
+	key := f.key
+	keyID := f.keyID
+	f.mu.Unlock()
+	token.Header["kid"] = keyID
+	signed, err := token.SignedString(key)
 	if err != nil {
 		t.Fatalf("sign fake ID token: %v", err)
 	}

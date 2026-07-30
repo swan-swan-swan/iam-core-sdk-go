@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/nilcheck"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/random"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/session"
 )
@@ -42,10 +43,10 @@ type realClock struct{}
 func (realClock) Now() time.Time { return time.Now() }
 
 func New(options Options) *Backend {
-	if options.Clock == nil {
+	if nilcheck.IsNil(options.Clock) {
 		options.Clock = realClock{}
 	}
-	if options.Random == nil {
+	if nilcheck.IsNil(options.Random) {
 		options.Random = rand.Reader
 	}
 	return &Backend{

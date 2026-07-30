@@ -10,9 +10,94 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
 )
+
+func TestTokenEndpointHTTPStatusTakesPrecedenceOverMalformedBody(t *testing.T) {
+	tests := []struct {
+		name        string
+		status      int
+		contentType string
+		body        string
+		kind        sdkerr.Kind
+		retryable   bool
+	}{
+		{"empty 503", http.StatusServiceUnavailable, "application/json", "", sdkerr.KindIAMUnavailable, true},
+		{"non-json 500", http.StatusInternalServerError, "text/plain", "hostile-secret", sdkerr.KindIAMUnavailable, true},
+		{"oversized 502", http.StatusBadGateway, "application/json", strings.Repeat("x", (1<<20)+1), sdkerr.KindIAMUnavailable, true},
+		{"malformed 429", http.StatusTooManyRequests, "application/json", "{", sdkerr.KindIAMUnavailable, true},
+		{"malformed 401", http.StatusUnauthorized, "application/json", "{", sdkerr.KindUnauthenticated, false},
+		{"malformed 403", http.StatusForbidden, "application/json", "{", sdkerr.KindForbidden, false},
+		{"malformed 400", http.StatusBadRequest, "application/json", "{", sdkerr.KindProtocol, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := newFakeOIDCServer(t)
+			fake.setRawTokenResponse(test.status, test.contentType, test.body)
+			client, err := New(t.Context(), Config{
+				IssuerURL:      fake.Server.URL,
+				ClientID:       "client-1",
+				SecretProvider: StaticSecret("secret-1"),
+				RedirectURL:    "https://app.example/callback",
+				Scopes:         []string{"openid"},
+				HTTPClient:     fake.Server.Client(),
+				Timeout:        time.Second,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.Refresh(t.Context(), "refresh-secret")
+			var typed *sdkerr.Error
+			if !errors.As(err, &typed) || typed.Kind != test.kind ||
+				typed.Retryable != test.retryable || typed.HTTPStatus != test.status ||
+				typed.Cause != nil || strings.Contains(err.Error(), "hostile-secret") ||
+				fake.TokenCalls.Load() != 1 {
+				t.Fatalf("error = %#v, calls = %d", err, fake.TokenCalls.Load())
+			}
+		})
+	}
+}
+
+func TestTokenEndpointAuthoritativeStatusCannotBeOverriddenByOAuthBody(t *testing.T) {
+	tests := []struct {
+		name   string
+		status int
+		body   string
+		kind   sdkerr.Kind
+		retry  bool
+	}{
+		{"429 invalid grant", http.StatusTooManyRequests, `{"error":"invalid_grant"}`, sdkerr.KindIAMUnavailable, true},
+		{"500 invalid client", http.StatusInternalServerError, `{"error":"invalid_client"}`, sdkerr.KindIAMUnavailable, true},
+		{"401 access denied", http.StatusUnauthorized, `{"error":"access_denied"}`, sdkerr.KindUnauthenticated, false},
+		{"403 invalid grant", http.StatusForbidden, `{"error":"invalid_grant"}`, sdkerr.KindForbidden, false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := newFakeOIDCServer(t)
+			fake.setRawTokenResponse(test.status, "application/json", test.body)
+			client, err := New(t.Context(), Config{
+				IssuerURL:      fake.Server.URL,
+				ClientID:       "client-1",
+				SecretProvider: StaticSecret("secret-1"),
+				RedirectURL:    "https://app.example/callback",
+				Scopes:         []string{"openid"},
+				HTTPClient:     fake.Server.Client(),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = client.Refresh(t.Context(), "refresh-secret")
+			var typed *sdkerr.Error
+			if !errors.As(err, &typed) || typed.Kind != test.kind ||
+				typed.Retryable != test.retry || typed.Reason != "" ||
+				errors.Is(err, sdkerr.ErrInvalidGrant) {
+				t.Fatalf("error = %#v", err)
+			}
+		})
+	}
+}
 
 func TestExchangeUsesClientSecretInFormAndDoesNotRetry(t *testing.T) {
 	client, fake := newTestClientAndServer(t)

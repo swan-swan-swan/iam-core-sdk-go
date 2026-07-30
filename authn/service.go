@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/clock"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/nilcheck"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/sdkerr"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/observability"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/oidc"
@@ -75,7 +76,7 @@ type Service struct {
 }
 
 func New(config Config) (*Service, error) {
-	if config.OIDC == nil || config.Backend == nil {
+	if config.OIDC == nil || nilcheck.IsNil(config.Backend) {
 		return nil, authError(sdkerr.KindInvalidConfig, "authn.configure")
 	}
 	redirectURL, err := validateRedirectURL(config.RedirectURL)
@@ -138,16 +139,16 @@ func New(config Config) (*Service, error) {
 		}
 		allowed[candidate] = struct{}{}
 	}
-	if config.Clock == nil {
+	if nilcheck.IsNil(config.Clock) {
 		config.Clock = clock.Real{}
 	}
-	if config.Random == nil {
+	if nilcheck.IsNil(config.Random) {
 		config.Random = rand.Reader
 	}
 	if config.Logger == nil {
 		config.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
-	if config.Hooks == nil {
+	if nilcheck.IsNil(config.Hooks) {
 		config.Hooks = observability.Nop{}
 	}
 	return &Service{

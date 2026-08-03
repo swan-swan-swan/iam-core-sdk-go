@@ -570,6 +570,153 @@ func TestIssuerTokenLifetimesUseReceiptTimeAndExpiresIn(t *testing.T) {
 	}
 }
 
+func TestIssuerMixedTokenIssuanceUsesUniqueJTIsAndRawTokens(t *testing.T) {
+	issuer := testkit.NewIssuer(t)
+	defer issuer.Close()
+	runtime, err := core.New(t.Context(), core.Config{
+		IssuerURL: issuer.URL(), Audiences: []string{testAudience}, HTTPClient: issuer.HTTPClient(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const firstNonce = "mixed-first-nonce"
+	code := authorizeCode(t, issuer, firstNonce, validVerifier)
+	first := postToken(t, issuer, authorizationCodeForm(code, validVerifier))
+	directAccess := issuer.SignAccessToken(testAudience)
+	directID := issuer.SignIDToken(testAudience, firstNonce)
+	refreshed := postToken(t, issuer, refreshForm(first.RefreshToken))
+	laterAccess := issuer.SignAccessToken(testAudience)
+	laterID := issuer.SignIDToken(testAudience, "mixed-later-nonce")
+
+	accessTokens := []string{first.AccessToken, directAccess, refreshed.AccessToken, laterAccess}
+	accessJTIs := make(map[string]struct{}, len(accessTokens))
+	for _, raw := range accessTokens {
+		auth, verifyErr := runtime.VerifyAccessToken(t.Context(), raw)
+		if verifyErr != nil {
+			t.Fatal(verifyErr)
+		}
+		if _, duplicate := accessJTIs[auth.TokenID]; duplicate {
+			t.Fatalf("duplicate access-token jti %q", auth.TokenID)
+		}
+		accessJTIs[auth.TokenID] = struct{}{}
+	}
+
+	idTokens := []struct {
+		raw       string
+		nonce     string
+		refreshed bool
+	}{
+		{raw: first.IDToken, nonce: firstNonce},
+		{raw: directID, nonce: firstNonce},
+		{raw: refreshed.IDToken, refreshed: true},
+		{raw: laterID, nonce: "mixed-later-nonce"},
+	}
+	idJTIs := make(map[string]struct{}, len(idTokens))
+	allRaw := make(map[string]struct{}, len(accessTokens)+len(idTokens))
+	for _, raw := range accessTokens {
+		allRaw[raw] = struct{}{}
+	}
+	for _, fixture := range idTokens {
+		var auth core.AuthContext
+		var verifyErr error
+		if fixture.refreshed {
+			auth, verifyErr = runtime.VerifyRefreshedIDToken(t.Context(), fixture.raw)
+		} else {
+			auth, verifyErr = runtime.VerifyIDToken(t.Context(), fixture.raw, fixture.nonce)
+		}
+		if verifyErr != nil {
+			t.Fatal(verifyErr)
+		}
+		if _, duplicate := idJTIs[auth.TokenID]; duplicate {
+			t.Fatalf("duplicate ID-token jti %q", auth.TokenID)
+		}
+		idJTIs[auth.TokenID] = struct{}{}
+		if _, duplicate := allRaw[fixture.raw]; duplicate {
+			t.Fatal("mixed issuance returned a duplicate raw token")
+		}
+		allRaw[fixture.raw] = struct{}{}
+	}
+	if len(allRaw) != len(accessTokens)+len(idTokens) {
+		t.Fatalf("unique raw tokens=%d", len(allRaw))
+	}
+}
+
+func TestIssuerConcurrentMixedTokenIssuanceUsesUniqueJTIs(t *testing.T) {
+	issuer := testkit.NewIssuer(t)
+	defer issuer.Close()
+	const workers = 12
+	codes := make([]authorizationFixture, workers)
+	for index := range workers {
+		verifier := fmt.Sprintf("%043d", index+3000)
+		codes[index] = authorizationFixture{
+			code:     authorizeCode(t, issuer, fmt.Sprintf("mixed-concurrent-nonce-%d", index), verifier),
+			verifier: verifier,
+		}
+	}
+
+	tokens := make(chan string, workers*4)
+	errs := make(chan error, workers)
+	start := make(chan struct{})
+	var wait sync.WaitGroup
+	for index := range workers {
+		wait.Add(3)
+		go func() {
+			defer wait.Done()
+			<-start
+			status, raw, err := rawTokenRequest(context.Background(), issuer, http.MethodPost, "application/x-www-form-urlencoded", authorizationCodeForm(codes[index].code, codes[index].verifier))
+			if err != nil || status != http.StatusOK {
+				errs <- fmt.Errorf("endpoint issuance status=%d: %w", status, err)
+				return
+			}
+			var issued tokenWireResponse
+			if err := json.Unmarshal(raw, &issued); err != nil {
+				errs <- err
+				return
+			}
+			tokens <- issued.AccessToken
+			tokens <- issued.IDToken
+		}()
+		go func() {
+			defer wait.Done()
+			<-start
+			tokens <- issuer.SignAccessToken(testAudience)
+		}()
+		go func() {
+			defer wait.Done()
+			<-start
+			tokens <- issuer.SignIDToken(testAudience, fmt.Sprintf("direct-concurrent-nonce-%d", index))
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(tokens)
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	seenJTIs := make(map[string]struct{}, workers*4)
+	seenRaw := make(map[string]struct{}, workers*4)
+	for raw := range tokens {
+		claims, err := tokenClaims(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, duplicate := seenJTIs[claims.TokenID]; duplicate {
+			t.Fatalf("duplicate concurrent jti %q", claims.TokenID)
+		}
+		seenJTIs[claims.TokenID] = struct{}{}
+		if _, duplicate := seenRaw[raw]; duplicate {
+			t.Fatal("concurrent issuance returned a duplicate raw token")
+		}
+		seenRaw[raw] = struct{}{}
+	}
+	if len(seenJTIs) != workers*4 {
+		t.Fatalf("unique concurrent jtis=%d", len(seenJTIs))
+	}
+}
+
 func TestIssuerCloseIsIdempotent(t *testing.T) {
 	issuer := testkit.NewIssuer(t)
 	issuer.Close()
@@ -591,6 +738,7 @@ type authorizationFixture struct {
 }
 
 type jwtFixtureClaims struct {
+	TokenID   string `json:"jti"`
 	Nonce     string `json:"nonce"`
 	IssuedAt  int64  `json:"iat"`
 	ExpiresAt int64  `json:"exp"`

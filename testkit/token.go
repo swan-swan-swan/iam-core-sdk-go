@@ -17,7 +17,10 @@ const (
 // current scope and groups fixture. The issuer's private key is never exposed.
 func (i *Issuer) SignAccessToken(audience string) string {
 	i.t.Helper()
-	response, key, serial := i.tokenSigningSnapshot()
+	response, key, serial, err := i.tokenSigningSnapshot()
+	if err != nil {
+		i.t.Fatal("allocate test access token")
+	}
 	raw, err := signTestToken(key, i.URL(), audience, response, "access", "", serial, timeNow())
 	if err != nil {
 		i.t.Fatal("sign test access token")
@@ -29,7 +32,10 @@ func (i *Issuer) SignAccessToken(audience string) string {
 // current scope and groups fixture. The issuer's private key is never exposed.
 func (i *Issuer) SignIDToken(audience, nonce string) string {
 	i.t.Helper()
-	response, key, serial := i.tokenSigningSnapshot()
+	response, key, serial, err := i.tokenSigningSnapshot()
+	if err != nil {
+		i.t.Fatal("allocate test ID token")
+	}
 	raw, err := signTestToken(key, i.URL(), audience, response, "id", nonce, serial, timeNow())
 	if err != nil {
 		i.t.Fatal("sign test ID token")
@@ -37,11 +43,14 @@ func (i *Issuer) SignIDToken(audience, nonce string) string {
 	return raw
 }
 
-func (i *Issuer) tokenSigningSnapshot() (TokenResponse, *rsa.PrivateKey, uint64) {
+func (i *Issuer) tokenSigningSnapshot() (TokenResponse, *rsa.PrivateKey, uint64, error) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.tokenSerial == ^uint64(0) {
+		return TokenResponse{}, nil, 0, fmt.Errorf("token serial exhausted")
+	}
 	i.tokenSerial++
-	return cloneTokenResponse(i.tokenResponse), i.key, i.tokenSerial
+	return cloneTokenResponse(i.tokenResponse), i.key, i.tokenSerial, nil
 }
 
 func signTestToken(

@@ -219,12 +219,12 @@ func (i *Issuer) handleToken(w http.ResponseWriter, request *http.Request) {
 		return
 	}
 	issuedAt := timeNow()
-	access, err := signTestToken(accepted.key, i.URL(), accepted.clientID, accepted.response, "access", "", accepted.serial*2, issuedAt)
+	access, err := signTestToken(accepted.key, i.URL(), accepted.clientID, accepted.response, "access", "", accepted.serial, issuedAt)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
 	}
-	idToken, err := signTestToken(accepted.key, i.URL(), accepted.clientID, accepted.response, "id", accepted.nonce, accepted.serial*2+1, issuedAt)
+	idToken, err := signTestToken(accepted.key, i.URL(), accepted.clientID, accepted.response, "id", accepted.nonce, accepted.serial, issuedAt)
 	if err != nil {
 		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
 		return
@@ -300,6 +300,9 @@ func (i *Issuer) acceptTokenForm(form url.Values) (acceptedTokenRequest, error) 
 		return acceptedTokenRequest{}, errors.New("invalid grant")
 	}
 	accepted := acceptedTokenRequest{response: cloneTokenResponse(i.tokenResponse), key: i.key}
+	if accepted.response.OAuthError == "" && i.tokenSerial == ^uint64(0) {
+		return acceptedTokenRequest{}, errors.New("token serial exhausted")
+	}
 	switch grantValues[0] {
 	case "authorization_code":
 		expected := []string{"grant_type", "code", "redirect_uri", "client_id", "client_secret", "code_verifier"}

@@ -115,6 +115,71 @@ func Run(t *testing.T, factory Factory) {
 		}
 	})
 
+	t.Run("flow and session IDs are trim-validated opaque values", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+
+		invalid := backend.PutFlow(ctx, fullFlow(" \t\n", clock.Now().Add(time.Minute)))
+		if invalid == nil {
+			t.Fatal("PutFlow accepted a whitespace-only ID")
+		}
+		assertInvalidClass := func(operation string, err error) {
+			t.Helper()
+			if err == nil {
+				t.Fatalf("%s accepted a whitespace-only ID", operation)
+			}
+			if err != invalid {
+				t.Fatalf("%s returned a different invalid-input class", operation)
+			}
+		}
+		_, err := backend.ConsumeFlow(ctx, " \t\n")
+		assertInvalidClass("ConsumeFlow", err)
+		assertInvalidClass("Create", backend.Create(ctx, fullSession(" \t\n", clock.Now())))
+		_, err = backend.Get(ctx, " \t\n")
+		assertInvalidClass("Get", err)
+		next := fullSession(" \t\n", clock.Now())
+		next.Version = 2
+		assertInvalidClass("CompareAndSwap", backend.CompareAndSwap(ctx, " \t\n", 1, next))
+		assertInvalidClass("Delete", backend.Delete(ctx, " \t\n"))
+		_, err = backend.AcquireRefreshLease(ctx, " \t\n", time.Minute)
+		assertInvalidClass("AcquireRefreshLease", err)
+		assertInvalidClass("CompareAndSwapWithLease", backend.CompareAndSwapWithLease(ctx, nil, " \t\n", 1, next))
+		assertInvalidClass("DeleteWithLease", backend.DeleteWithLease(ctx, nil, " \t\n", 1))
+
+		opaqueID := " opaque-flow-id "
+		flow := fullFlow(opaqueID, clock.Now().Add(time.Minute))
+		mustNoError(t, backend.PutFlow(ctx, flow))
+		consumed, err := backend.ConsumeFlow(ctx, opaqueID)
+		mustNoError(t, err)
+		if consumed.ID != opaqueID {
+			t.Fatal("Flow ID was trimmed instead of preserved as opaque")
+		}
+		opaqueID = " opaque-session-id "
+		item := fullSession(opaqueID, clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		stored, err := backend.Get(ctx, opaqueID)
+		mustNoError(t, err)
+		if stored.ID != opaqueID {
+			t.Fatal("Session ID was trimmed instead of preserved as opaque")
+		}
+	})
+
+	t.Run("zero Flow expiry is invalid input", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		invalid := backend.PutFlow(ctx, fullFlow(" \t\n", clock.Now().Add(time.Minute)))
+		if invalid == nil {
+			t.Fatal("whitespace-only Flow ID was accepted")
+		}
+		zeroExpiry := fullFlow("flow-zero-expiry", time.Time{})
+		if err := backend.PutFlow(ctx, zeroExpiry); err != invalid {
+			t.Fatal("zero Flow expiry did not use the invalid-input error class")
+		}
+		if _, err := backend.ConsumeFlow(ctx, zeroExpiry.ID); !errors.Is(err, session.ErrNotFound) {
+			t.Fatal("zero-expiry Flow mutated backend state")
+		}
+	})
+
 	t.Run("session create and get make deep defensive copies", func(t *testing.T) {
 		backend, clock := newBackend(t, factory)
 		ctx := context.Background()
@@ -130,6 +195,29 @@ func Run(t *testing.T, factory Factory) {
 		second, err := backend.Get(ctx, item.ID)
 		mustNoError(t, err)
 		assertOriginalSession(t, second, 1)
+	})
+
+	t.Run("session copies preserve initialized empty Groups", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-empty-groups", clock.Now())
+		item.Auth.Groups = []string{}
+		mustNoError(t, backend.Create(ctx, item))
+
+		stored, err := backend.Get(ctx, item.ID)
+		mustNoError(t, err)
+		if stored.Auth.Groups == nil || len(stored.Auth.Groups) != 0 {
+			t.Fatal("stored Groups was not preserved as an initialized empty slice")
+		}
+		next := fullSession(item.ID, clock.Now())
+		next.Version = 2
+		next.Auth.Groups = []string{}
+		mustNoError(t, backend.CompareAndSwap(ctx, item.ID, item.Version, next))
+		stored, err = backend.Get(ctx, item.ID)
+		mustNoError(t, err)
+		if stored.Auth.Groups == nil || len(stored.Auth.Groups) != 0 {
+			t.Fatal("updated Groups was not preserved as an initialized empty slice")
+		}
 	})
 
 	t.Run("session create rejects duplicate and expired state", func(t *testing.T) {

@@ -230,8 +230,8 @@ func (c *Client) exchangeRefresh(
 		return exchangedTokens{}, contextErr
 	}
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return exchangedTokens{}, err
+		if contextErr := normalizedContextError(err); contextErr != nil {
+			return exchangedTokens{}, contextErr
 		}
 		return exchangedTokens{}, bffError(core.KindInvalidConfig, operation, 0, false)
 	}
@@ -424,7 +424,7 @@ func cloneSessionState(item *session.Session) *session.Session {
 		return nil
 	}
 	cloned := *item
-	cloned.Tokens.GrantedScopes = append([]string(nil), item.Tokens.GrantedScopes...)
+	cloned.Tokens.GrantedScopes = slices.Clone(item.Tokens.GrantedScopes)
 	cloned.Auth = cloneAuthContext(item.Auth)
 	return &cloned
 }

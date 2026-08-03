@@ -27,3 +27,21 @@ func TestAuthContextFromContextReturnsDefensiveCopy(t *testing.T) {
 		t.Fatalf("stored context was aliased: %#v", again)
 	}
 }
+
+func TestAuthContextFromContextPreservesInitializedEmptyGroups(t *testing.T) {
+	original := core.AuthContext{Subject: "op_usr_1", Groups: []string{}}
+	ctx := core.ContextWithAuthContext(context.Background(), original)
+
+	got, ok := core.AuthContextFromContext(ctx)
+	if !ok {
+		t.Fatal("AuthContextFromContext() ok = false")
+	}
+	if got.Groups == nil || len(got.Groups) != 0 {
+		t.Fatal("Groups was not preserved as an initialized empty slice")
+	}
+
+	again, ok := core.AuthContextFromContext(ctx)
+	if !ok || again.Groups == nil || len(again.Groups) != 0 {
+		t.Fatal("second Groups copy was not preserved as an initialized empty slice")
+	}
+}

@@ -275,6 +275,36 @@ func TestAuthenticateBearerOnlyInjectsDefensiveAuthAndSource(t *testing.T) {
 	}
 }
 
+func TestAuthenticatePreservesInitializedEmptyGroups(t *testing.T) {
+	auth := validAuth()
+	auth.Groups = []string{}
+	verifier := &fakeVerifier{auth: auth}
+	service, err := httpauthz.New(httpauthz.Config{Verifier: verifier, PDP: &fakeAuthorizer{}})
+	if err != nil {
+		t.Fatal("construct middleware service")
+	}
+	handler, err := service.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		got, ok := core.AuthContextFromContext(request.Context())
+		if !ok || got.Groups == nil || len(got.Groups) != 0 {
+			t.Fatal("middleware did not preserve Groups as an initialized empty slice")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if err != nil {
+		t.Fatal("construct authentication middleware")
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "Bearer bearer-secret")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	if verifier.auth.Groups == nil {
+		t.Fatal("middleware mutated verifier Groups presence")
+	}
+}
+
 func TestAuthenticateSessionOnlyResolvesOnceWithoutVerifyingOrLoadingToken(t *testing.T) {
 	var tokenCalls int
 	credential := credentialWithToken("session-secret")

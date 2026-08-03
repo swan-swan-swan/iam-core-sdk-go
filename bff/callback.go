@@ -226,8 +226,8 @@ func verifiedClaimSources(raw string, verified core.AuthContext) (scope, groups 
 }
 
 func cloneAuthContext(auth core.AuthContext) core.AuthContext {
-	auth.Audience = append([]string(nil), auth.Audience...)
-	auth.Scopes = append([]string(nil), auth.Scopes...)
-	auth.Groups = append([]string(nil), auth.Groups...)
+	auth.Audience = slices.Clone(auth.Audience)
+	auth.Scopes = slices.Clone(auth.Scopes)
+	auth.Groups = slices.Clone(auth.Groups)
 	return auth
 }

@@ -16,6 +16,23 @@ import (
 
 var _ httpauthz.SessionResolver = (*Client)(nil)
 
+func TestBFFSessionClonePreservesInitializedEmptyGroups(t *testing.T) {
+	item := &session.Session{
+		Tokens: session.TokenSet{GrantedScopes: []string{}},
+		Auth:   core.AuthContext{Audience: []string{}, Scopes: []string{}, Groups: []string{}},
+	}
+
+	cloned := cloneSessionState(item)
+	if cloned == nil || cloned.Tokens.GrantedScopes == nil || cloned.Auth.Audience == nil ||
+		cloned.Auth.Scopes == nil || cloned.Auth.Groups == nil {
+		t.Fatal("BFF Session clone collapsed an initialized empty slice to nil")
+	}
+	credential := credentialFromSession(cloned)
+	if credential.Auth.Groups == nil {
+		t.Fatal("credential clone collapsed initialized empty Groups to nil")
+	}
+}
+
 type countingSessionBackend struct {
 	session.Backend
 	getCalls atomic.Int32

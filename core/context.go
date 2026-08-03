@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"slices"
 	"time"
 )
 
@@ -68,8 +69,8 @@ func AuthContextFromContext(ctx context.Context) (AuthContext, bool) {
 }
 
 func cloneAuthContext(auth AuthContext) AuthContext {
-	auth.Audience = append([]string(nil), auth.Audience...)
-	auth.Scopes = append([]string(nil), auth.Scopes...)
-	auth.Groups = append([]string(nil), auth.Groups...)
+	auth.Audience = slices.Clone(auth.Audience)
+	auth.Scopes = slices.Clone(auth.Scopes)
+	auth.Groups = slices.Clone(auth.Groups)
 	return auth
 }

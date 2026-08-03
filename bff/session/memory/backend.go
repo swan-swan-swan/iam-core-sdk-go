@@ -6,6 +6,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"io"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -30,6 +32,7 @@ type Options struct {
 
 type Backend struct {
 	mu        sync.Mutex
+	randomMu  sync.Mutex
 	clock     core.Clock
 	random    io.Reader
 	flows     map[string]*session.Flow
@@ -78,7 +81,7 @@ func (b *Backend) PutFlow(ctx context.Context, flow *session.Flow) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	if flow == nil || flow.ID == "" {
+	if flow == nil || !validID(flow.ID) || flow.ExpiresAt.IsZero() {
 		return errInvalidInput
 	}
 	copied := cloneFlow(flow)
@@ -106,7 +109,7 @@ func (b *Backend) ConsumeFlow(ctx context.Context, id string) (*session.Flow, er
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	if id == "" {
+	if !validID(id) {
 		return nil, errInvalidInput
 	}
 	b.mu.Lock()
@@ -157,7 +160,7 @@ func (b *Backend) Get(ctx context.Context, id string) (*session.Session, error) 
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	if id == "" {
+	if !validID(id) {
 		return nil, errInvalidInput
 	}
 	b.mu.Lock()
@@ -205,7 +208,7 @@ func (b *Backend) Delete(ctx context.Context, id string) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	if id == "" {
+	if !validID(id) {
 		return errInvalidInput
 	}
 	b.mu.Lock()
@@ -225,38 +228,43 @@ func (b *Backend) AcquireRefreshLease(
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	if sessionID == "" || duration <= 0 {
+	if !validID(sessionID) || duration <= 0 {
 		return nil, errInvalidInput
 	}
+	b.mu.Lock()
+	if err := contextError(ctx); err != nil {
+		b.mu.Unlock()
+		return nil, err
+	}
+	now := b.clock.Now()
+	if err := b.validateRefreshLeaseAcquisitionLocked(sessionID, now); err != nil {
+		b.mu.Unlock()
+		return nil, err
+	}
+	b.mu.Unlock()
+
+	owner, err := b.randomOwner()
+	if err != nil {
+		return nil, err
+	}
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
+
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	now := b.clock.Now()
-	item, ok := b.sessions[sessionID]
-	if !ok {
-		return nil, session.ErrNotFound
-	}
-	if sessionExpired(item, now) {
-		b.deleteSessionLocked(sessionID)
-		return nil, session.ErrExpired
-	}
-	if current, ok := b.leases[sessionID]; ok && current.expiresAt.After(now) {
-		return nil, session.ErrConflict
-	}
-	if b.nextFence == ^uint64(0) {
-		return nil, ErrFenceExhausted
-	}
-	ownerBytes := make([]byte, 32)
-	if _, err := io.ReadFull(b.random, ownerBytes); err != nil {
-		return nil, ErrRandomSource
+	now = b.clock.Now()
+	if err := b.validateRefreshLeaseAcquisitionLocked(sessionID, now); err != nil {
+		return nil, err
 	}
 	b.nextFence++
 	record := leaseRecord{
 		fence:     b.nextFence,
 		expiresAt: now.Add(duration),
-		owner:     base64.RawURLEncoding.EncodeToString(ownerBytes),
+		owner:     owner,
 	}
 	b.leases[sessionID] = record
 	return &refreshLease{
@@ -307,7 +315,7 @@ func (b *Backend) DeleteWithLease(
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	if id == "" || expectedVersion == 0 {
+	if !validID(id) || expectedVersion == 0 {
 		return errInvalidInput
 	}
 	b.mu.Lock()
@@ -407,15 +415,46 @@ func (b *Backend) deleteSessionLocked(id string) {
 	delete(b.leases, id)
 }
 
+func (b *Backend) validateRefreshLeaseAcquisitionLocked(sessionID string, now time.Time) error {
+	item, ok := b.sessions[sessionID]
+	if !ok {
+		return session.ErrNotFound
+	}
+	if sessionExpired(item, now) {
+		return session.ErrExpired
+	}
+	if current, ok := b.leases[sessionID]; ok && current.expiresAt.After(now) {
+		return session.ErrConflict
+	}
+	if b.nextFence == ^uint64(0) {
+		return ErrFenceExhausted
+	}
+	return nil
+}
+
+func (b *Backend) randomOwner() (string, error) {
+	ownerBytes := make([]byte, 32)
+	b.randomMu.Lock()
+	_, err := io.ReadFull(b.random, ownerBytes)
+	b.randomMu.Unlock()
+	if err != nil {
+		clear(ownerBytes)
+		return "", ErrRandomSource
+	}
+	owner := base64.RawURLEncoding.EncodeToString(ownerBytes)
+	clear(ownerBytes)
+	return owner, nil
+}
+
 func validateCreatedSession(item *session.Session) error {
-	if item == nil || item.ID == "" || item.Version != 1 || item.ExpiresAt.IsZero() || item.IdleExpiresAt.IsZero() {
+	if item == nil || !validID(item.ID) || item.Version != 1 || item.ExpiresAt.IsZero() || item.IdleExpiresAt.IsZero() {
 		return errInvalidInput
 	}
 	return nil
 }
 
 func validateReplacement(id string, expectedVersion uint64, next *session.Session) error {
-	if id == "" || expectedVersion == 0 || expectedVersion == ^uint64(0) || next == nil ||
+	if !validID(id) || expectedVersion == 0 || expectedVersion == ^uint64(0) || next == nil ||
 		next.ID != id || next.Version != expectedVersion+1 || next.ExpiresAt.IsZero() || next.IdleExpiresAt.IsZero() {
 		return errInvalidInput
 	}
@@ -437,6 +476,10 @@ func contextError(ctx context.Context) error {
 	return ctx.Err()
 }
 
+func validID(id string) bool {
+	return strings.TrimSpace(id) != ""
+}
+
 func cloneFlow(flow *session.Flow) *session.Flow {
 	copied := *flow
 	return &copied
@@ -444,10 +487,10 @@ func cloneFlow(flow *session.Flow) *session.Flow {
 
 func cloneSession(item *session.Session) *session.Session {
 	copied := *item
-	copied.Tokens.GrantedScopes = append([]string(nil), item.Tokens.GrantedScopes...)
-	copied.Auth.Audience = append([]string(nil), item.Auth.Audience...)
-	copied.Auth.Scopes = append([]string(nil), item.Auth.Scopes...)
-	copied.Auth.Groups = append([]string(nil), item.Auth.Groups...)
+	copied.Tokens.GrantedScopes = slices.Clone(item.Tokens.GrantedScopes)
+	copied.Auth.Audience = slices.Clone(item.Auth.Audience)
+	copied.Auth.Scopes = slices.Clone(item.Auth.Scopes)
+	copied.Auth.Groups = slices.Clone(item.Auth.Groups)
 	return &copied
 }
 

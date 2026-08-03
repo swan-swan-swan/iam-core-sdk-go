@@ -67,8 +67,8 @@ func (c *Client) exchange(ctx context.Context, code, verifier string) (tokens ex
 		return exchangedTokens{}, contextErr
 	}
 	if err != nil {
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return exchangedTokens{}, err
+		if contextErr := normalizedContextError(err); contextErr != nil {
+			return exchangedTokens{}, contextErr
 		}
 		return exchangedTokens{}, bffError(core.KindInvalidConfig, operation, 0, false)
 	}

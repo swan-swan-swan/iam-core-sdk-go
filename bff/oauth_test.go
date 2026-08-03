@@ -134,10 +134,12 @@ func TestAuthorizationCodeExchangePreservesSecretProviderContextErrors(t *testin
 	} {
 		t.Run(name, func(t *testing.T) {
 			client, _, issuer := newBFFTestClient(t)
-			client.clientSecret = SecretProviderFunc(func(context.Context) (string, error) { return "", providerErr })
+			secret := "wrapped-provider-secret-" + name
+			wrapped := fmt.Errorf("%s: %w", secret, providerErr)
+			client.clientSecret = SecretProviderFunc(func(context.Context) (string, error) { return "", wrapped })
 			_, err := client.exchange(context.Background(), testCode, strings.Repeat("A", 43))
-			if !errors.Is(err, providerErr) || issuer.TokenCalls.Load() != 0 {
-				t.Fatalf("exchange error/calls = %#v/%d, want exact provider context error and no request", err, issuer.TokenCalls.Load())
+			if err != providerErr || strings.Contains(err.Error(), secret) || issuer.TokenCalls.Load() != 0 {
+				t.Fatalf("exchange did not normalize provider context error or issued a request: calls=%d", issuer.TokenCalls.Load())
 			}
 		})
 	}
@@ -149,6 +151,23 @@ func TestAuthorizationCodeExchangePreservesSecretProviderContextErrors(t *testin
 	var typed *core.Error
 	if !errors.As(err, &typed) || typed.Kind != core.KindInvalidConfig || strings.Contains(err.Error(), secret) || issuer.TokenCalls.Load() != 0 {
 		t.Fatalf("provider failure = %#v calls=%d, want sanitized invalid config", err, issuer.TokenCalls.Load())
+	}
+}
+
+func TestCallbackHandlerDoesNotExposeWrappedSecretProviderContextError(t *testing.T) {
+	config, _, issuer := newBFFTestConfig(t)
+	secret := "callback-provider-wrapper-sensitive"
+	config.ClientSecret = SecretProviderFunc(func(context.Context) (string, error) {
+		return "", fmt.Errorf("%s: %w", secret, context.Canceled)
+	})
+	client, err := New(config)
+	if err != nil {
+		t.Fatal("construct BFF client")
+	}
+	attempt := beginLogin(t, client, issuer, "/")
+	response := serveCallback(t, client, attempt, url.Values{"code": {testCode}, "state": {attempt.State}}.Encode())
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), secret) || issuer.TokenCalls.Load() != 0 {
+		t.Fatalf("callback provider wrapper leaked or issued a request: status=%d calls=%d", response.Code, issuer.TokenCalls.Load())
 	}
 }
 

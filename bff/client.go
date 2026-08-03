@@ -3,6 +3,7 @@ package bff
 import (
 	"context"
 	"crypto/rand"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -217,6 +218,17 @@ func operationContextError(caller, operationCtx context.Context, operation strin
 		return bffError(core.KindIAMUnavailable, operation, status, true)
 	}
 	return nil
+}
+
+func normalizedContextError(err error) error {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
 }
 
 func validateScopes(configured []string) ([]string, error) {

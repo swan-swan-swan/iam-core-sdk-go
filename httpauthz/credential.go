@@ -3,6 +3,7 @@ package httpauthz
 import (
 	"context"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
@@ -102,9 +103,9 @@ func (s *Service) selectCredential(request *http.Request) (core.Credential, erro
 }
 
 func cloneMiddlewareAuthContext(auth core.AuthContext) core.AuthContext {
-	auth.Audience = append([]string(nil), auth.Audience...)
-	auth.Scopes = append([]string(nil), auth.Scopes...)
-	auth.Groups = append([]string(nil), auth.Groups...)
+	auth.Audience = slices.Clone(auth.Audience)
+	auth.Scopes = slices.Clone(auth.Scopes)
+	auth.Groups = slices.Clone(auth.Groups)
 	return auth
 }
 

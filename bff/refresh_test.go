@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"math/big"
 	"net/http"
@@ -706,6 +707,30 @@ func TestRefreshTemporaryFailureReleasesLeaseWithoutMutation(t *testing.T) {
 	}
 	if issuer.RefreshCalls() != 2 {
 		t.Fatalf("refresh calls=%d", issuer.RefreshCalls())
+	}
+}
+
+func TestResolveSessionNormalizesWrappedSecretProviderContextErrors(t *testing.T) {
+	for name, providerErr := range map[string]error{
+		"canceled": context.Canceled,
+		"deadline": context.DeadlineExceeded,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, backend, issuer := newRefreshTestClient(t)
+			before := seedExpiringSession(t, backend, []string{"ops"}, []string{"openid", "groups"})
+			secret := "refresh-provider-wrapper-sensitive-" + name
+			wrapped := fmt.Errorf("%s: %w", secret, providerErr)
+			client.clientSecret = SecretProviderFunc(func(context.Context) (string, error) { return "", wrapped })
+
+			_, present, err := client.ResolveSession(requestWithSessionCookie(before.ID))
+			if !present || err != providerErr || strings.Contains(err.Error(), secret) || issuer.RefreshCalls() != 0 {
+				t.Fatalf("ResolveSession did not normalize provider context error: present=%v calls=%d", present, issuer.RefreshCalls())
+			}
+			after, getErr := backend.Get(t.Context(), before.ID)
+			if getErr != nil || !reflect.DeepEqual(after, before) {
+				t.Fatal("provider context error mutated Session state")
+			}
+		})
 	}
 }
 

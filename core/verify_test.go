@@ -9,12 +9,12 @@ import (
 	"log/slog"
 	"slices"
 	"strconv"
-	"strings"
 	"testing"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/testkit"
 )
 
 func TestVerifyAccessTokenReturnsTypedGroupsAndActualScope(t *testing.T) {
@@ -218,11 +218,7 @@ func TestVerifyAccessTokenRejectsInvalidTokensWithoutLeakingValues(t *testing.T)
 			if !errors.As(err, &typed) || typed.Kind != core.KindUnauthenticated {
 				t.Fatalf("error = %#v", err)
 			}
-			for _, secret := range []string{raw, "token-secret", "audience-secret", "kid-secret", "header-secret"} {
-				if secret != "" && strings.Contains(err.Error(), secret) {
-					t.Fatalf("error leaked %q: %v", secret, err)
-				}
-			}
+			testkit.AssertNoLeak(t, err.Error(), raw, "token-secret", "audience-secret", "kid-secret", "header-secret")
 		})
 	}
 }
@@ -241,8 +237,10 @@ func TestVerifyIDTokenNonceAndRefreshedSemantics(t *testing.T) {
 	if _, err := runtime.VerifyIDToken(t.Context(), raw, ""); err == nil {
 		t.Fatal("empty expected nonce accepted")
 	}
-	if _, err := runtime.VerifyIDToken(t.Context(), raw, "different-secret"); err == nil || strings.Contains(err.Error(), "different-secret") {
-		t.Fatalf("nonce mismatch error = %v", err)
+	if _, err := runtime.VerifyIDToken(t.Context(), raw, "different-secret"); err == nil {
+		t.Fatal("nonce mismatch error = nil")
+	} else {
+		testkit.AssertNoLeak(t, err.Error(), "different-secret")
 	}
 	delete(claims, "nonce")
 	if _, err := runtime.VerifyRefreshedIDToken(t.Context(), signer.AccessToken(t, claims)); err != nil {
@@ -268,9 +266,5 @@ func TestVerificationLogsDoNotContainTokenOrNonce(t *testing.T) {
 	if err == nil {
 		t.Fatal("VerifyIDToken() error = nil")
 	}
-	for _, secret := range []string{raw, "nonce-from-token-secret", "expected-nonce-secret"} {
-		if strings.Contains(output.String(), secret) {
-			t.Fatalf("log output leaked %q: %s", secret, output.String())
-		}
-	}
+	testkit.AssertNoLeak(t, output.String(), raw, "nonce-from-token-secret", "expected-nonce-secret")
 }

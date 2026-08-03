@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/testkit"
 )
 
 func TestNewRequiresS256AndRS256(t *testing.T) {
@@ -91,9 +92,10 @@ func TestNewRejectsIssuerMismatchRedirectAndOversizedDiscovery(t *testing.T) {
 			IDTokenSigningAlgValuesSupported: []string{"RS256"},
 		})
 		_, err := core.New(t.Context(), core.Config{IssuerURL: issuer.Server.URL, Audiences: []string{"portal"}, HTTPClient: issuer.Server.Client()})
-		if err == nil || strings.Contains(err.Error(), "secret") {
-			t.Fatalf("New() error = %v", err)
+		if err == nil {
+			t.Fatal("New() error = nil")
 		}
+		testkit.AssertNoLeak(t, err.Error(), "secret")
 	})
 
 	for name, handler := range map[string]http.HandlerFunc{

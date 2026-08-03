@@ -5,12 +5,12 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
-	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/testkit"
 )
 
 type zeroClock struct{}
@@ -150,9 +150,7 @@ func TestVerifyAccessTokenClassifiesJWKSFetchFailureAsUnavailable(t *testing.T) 
 		if !errors.As(err, &typed) || typed.Kind != core.KindIAMUnavailable || !typed.Retryable || !errors.Is(err, core.ErrUnavailable) {
 			t.Fatalf("attempt %d error = %#v, want retryable IAM unavailable", attempt, err)
 		}
-		if strings.Contains(err.Error(), issuer.Server.URL) {
-			t.Fatalf("attempt %d leaked JWKS endpoint: %v", attempt, err)
-		}
+		testkit.AssertNoLeak(t, err.Error(), issuer.Server.URL)
 	}
 }
 

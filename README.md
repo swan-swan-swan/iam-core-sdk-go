@@ -31,12 +31,16 @@ adapter 也必须使用各自的 module tag，不能只安装根模块后假定�
 再把 Runtime、Confidential Client 配置和 Session Backend 交给 `bff.New`：
 
 ```go
+// Transport 留空会使用 net/http 默认的代理、连接池和 TLS 校验行为；
+// Client Timeout 为所有 IAM 出站请求再加一层总时限。
+iamHTTPClient := &http.Client{Timeout: 15 * time.Second}
 ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
 
 runtime, err := core.New(ctx, core.Config{
     IssuerURL: issuerURL,
     Audiences: []string{clientID},
+    HTTPClient: iamHTTPClient,
 })
 if err != nil {
     return err
@@ -52,6 +56,7 @@ client, err := bff.New(bff.Config{
     RedirectURL: redirectURL,
     Scopes:      bff.DefaultScopes(),
     Backend:     backend,
+    HTTPClient:  iamHTTPClient,
     SessionCookie: http.Cookie{
         Name:        "__Host-example_session",
         Value:       "",
@@ -127,11 +132,18 @@ if err != nil {
     return err
 }
 
-pdp, err := httpauthz.NewPDPClient(httpauthz.PDPConfig{IssuerURL: issuerURL})
+pdp, err := httpauthz.NewPDPClient(httpauthz.PDPConfig{
+    IssuerURL: issuerURL,
+    HTTPClient: iamHTTPClient,
+})
 if err != nil {
     return err
 }
-service, err := httpauthz.New(httpauthz.Config{Verifier: runtime, PDP: pdp})
+service, err := httpauthz.New(httpauthz.Config{
+    Verifier: runtime,
+    PDP:      pdp,
+    Sessions: client,
+})
 if err != nil {
     return err
 }
@@ -149,9 +161,11 @@ if err := binder.Validate(); err != nil {
 deny、401、503、超时、网络错误、审计失败和畸形 envelope 全部失败关闭；不缓存 allow/deny，
 不使用 groups 或本地规则降级。PDP 401 不会刷新凭证或重试 PDP。
 
-Bearer 与 BFF Session Cookie 同时存在会直接返回 credential conflict，不比较两份凭证内容。
-BFF Session resolver 只允许在 PDP 调用之前按本地过期窗口主动 refresh；PDP 返回后授权链路
-不会再改变凭证。
+上例通过 `Sessions: client` 配置了 BFF SessionResolver，因此同时出现 Bearer 与该 resolver
+识别的 BFF Session Cookie 时会直接返回 credential conflict，不比较两份凭证内容。
+Session resolver 只允许在 PDP 调用之前按本地过期窗口主动 refresh；PDP 返回后授权链路
+不会再改变凭证。未配置 SessionResolver 的 Bearer-only Service 只解析 Authorization
+Header，并忽略无关 Cookie；它不会凭 Cookie 自动启用 BFF Session 认证。
 
 ## 入口三：可选 Gin/Redis adapters
 
@@ -171,17 +185,33 @@ payload，并使用 generation-bound、fenced、server-time leases 保护 refres
 `redis.UniversalClient` 生命周期：
 
 ```go
+import (
+    "crypto/rand"
+
+    redisadapter "github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/redis"
+    "github.com/swan-swan-swan/iam-core-client-sdk-go/core"
+)
+
 codec, err := redisadapter.NewAESGCMCodec(
     redisadapter.Key{ID: keyID, Bytes: keyBytes},
     fallbackKeys,
 )
+if err != nil {
+    return err
+}
 backend, err := redisadapter.New(redisClient, redisadapter.Options{
     Prefix: prefix,
     Codec:  codec,
+    Clock:  core.RealClock{},
+    Random: rand.Reader,
 })
+if err != nil {
+    return err
+}
 ```
 
-每个 AES key 必须是 32 字节；新写入只使用 primary，fallback 只用于解密轮换期旧数据。
+以上片段位于一个返回 `error` 的构造函数中，并假定 `redisClient`、prefix 和 keyring 已从
+受控配置构造。每个 AES key 必须是 32 字节；新写入只使用 primary，fallback 只用于解密轮换期旧数据。
 密钥、Token、Cookie、Session/Flow ID 与原始 Redis 错误不得记录。示例位于
 [`adapters/redis/example`](adapters/redis/example)，模块路径为
 `github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/redis`。

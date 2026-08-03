@@ -43,7 +43,8 @@ github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/redis
 
 - OIDC Discovery/JWKS/JWT 验证：构造 `core.Runtime`。
 - 浏览器登录、Callback、Session refresh、Me 和 Logout：构造 `bff.Client`。
-- HTTP Bearer/Session 认证和 PDP：构造 `httpauthz.Service`。
+- HTTP Bearer/Session 认证和 PDP：构造 `httpauthz.Service`；需要 BFF Session 时，把
+  `bff.Client` 作为 `httpauthz.Config.Sessions` 注入。
 - 多副本 Session：单独构造 Redis adapter，并作为 `bff.Config.Backend` 注入。
 
 旧的组合式 Client、Config、Handler helper 和 Context helper 没有兼容别名。新构造器都在
@@ -78,8 +79,9 @@ state、nonce、verifier 和 return target 都绑定到一次性服务端 Flow�
 替换为 `Service.Require(compiledRoute, handler)`。
 
 新的 `Require` 每请求最多进行一次 PDP 调用。删除 PDP 401 后 refresh-and-retry、缓存 allow/
-deny、使用本地 roles/groups 放行以及 Cookie/Bearer 内容相同就接受的逻辑。两种 credential
-同时存在现在总是冲突。
+deny、使用本地 roles/groups 放行以及 Cookie/Bearer 内容相同就接受的逻辑。
+配置 SessionResolver 后，resolver 识别的 Session Cookie 与 Bearer 同时存在会冲突；未配置
+SessionResolver 的 Bearer-only Service 只解析 Authorization Header 并忽略无关 Cookie。
 
 ## 7. 验证与删除旧示例
 

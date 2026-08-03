@@ -118,8 +118,10 @@ HTTP 200 且以下 IAM envelope：
 | 401 | 未认证；不 refresh、不重试 PDP |
 | 503、超时、网络错误 | IAM unavailable；失败关闭 |
 
-SDK 不缓存 allow/deny，不使用陈旧 allow、groups 或本地规则降级。Cookie 与 Bearer 同时
-出现直接视为 credential conflict。
+SDK 不缓存 allow/deny，不使用陈旧 allow、groups 或本地规则降级。配置 SessionResolver 后，
+resolver 识别的 Session Cookie 与 Bearer 同时出现才视为 credential conflict。未配置
+SessionResolver 的 Bearer-only Service 不检查浏览器 Session，只解析 Authorization Header
+并忽略无关 Cookie。
 
 ## 数据与可观测性边界
 

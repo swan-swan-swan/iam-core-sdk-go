@@ -23,6 +23,19 @@ func TestV02DocumentationContract(t *testing.T) {
 			}
 		}
 	}
+	section := func(name, content, start, end string) string {
+		t.Helper()
+		startIndex := strings.Index(content, start)
+		if startIndex < 0 {
+			t.Fatalf("%s missing section start %q", name, start)
+		}
+		remainder := content[startIndex:]
+		endIndex := strings.Index(remainder, end)
+		if endIndex < 0 {
+			t.Fatalf("%s missing section end %q", name, end)
+		}
+		return remainder[:endIndex]
+	}
 	forbidAll := func(name, content string, forbidden ...string) {
 		t.Helper()
 		for _, claim := range forbidden {
@@ -52,6 +65,9 @@ func TestV02DocumentationContract(t *testing.T) {
 		"集中登出",
 		"generation-bound",
 		"server-time",
+		"Sessions: client",
+		"未配置 SessionResolver 的 Bearer-only",
+		"忽略无关 Cookie",
 	)
 	forbidAll("README", readme,
 		"openid profile email roles",
@@ -59,7 +75,19 @@ func TestV02DocumentationContract(t *testing.T) {
 		"PDP 401 时刷新并重试",
 		"仅当 Bearer 与当前 Session Access Token 完全一致才接受",
 		"SDK 不提供 Public Client 或 PKCE",
+		"Bearer 与 BFF Session Cookie 同时存在会直接返回 credential conflict",
 	)
+	redisReadme := section("README", readme, "Redis adapter 实现", "## 安全与错误边界")
+	requireAll("README Redis example", redisReadme,
+		`"crypto/rand"`,
+		`"github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/redis"`,
+		`"github.com/swan-swan-swan/iam-core-client-sdk-go/core"`,
+		"Clock:  core.RealClock{}",
+		"Random: rand.Reader",
+	)
+	if got := strings.Count(redisReadme, "if err != nil {"); got < 2 {
+		t.Errorf("README Redis example error checks = %d, want at least 2", got)
+	}
 
 	compatibility := read("COMPATIBILITY.md")
 	requireAll("COMPATIBILITY", compatibility,
@@ -75,11 +103,15 @@ func TestV02DocumentationContract(t *testing.T) {
 		"github.com/swan-swan-swan/iam-core-client-sdk-go/core",
 		"github.com/swan-swan-swan/iam-core-client-sdk-go/bff",
 		"github.com/swan-swan-swan/iam-core-client-sdk-go/httpauthz",
+		"配置 SessionResolver 后",
+		"Bearer-only",
+		"忽略无关 Cookie",
 	)
 	forbidAll("migration guide", migration,
 		"fallback flag",
 		"compatibility flag",
 		"iamcore.New(",
+		"两种 credential 同时存在现在总是冲突",
 	)
 
 	contract := read("docs/iam-core-v1.8.1-contract.md")
@@ -97,6 +129,12 @@ func TestV02DocumentationContract(t *testing.T) {
 		"decision_id",
 		"reason_code",
 		"RPC 不在本 SDK v0.2 的支持范围内",
+		"配置 SessionResolver 后",
+		"Bearer-only",
+		"忽略无关 Cookie",
+	)
+	forbidAll("v1.8.1 contract", contract,
+		"Cookie 与 Bearer 同时出现直接视为 credential conflict",
 	)
 
 	example := read("examples/bff/main.go")
@@ -121,7 +159,12 @@ func TestV02DocumentationContract(t *testing.T) {
 		"mux.Handle(\"GET /me\"",
 		"mux.Handle(\"POST /auth/logout/local\"",
 		"mux.Handle(\"POST /auth/logout/central\"",
+		"iamHTTPClient := &http.Client{Timeout: 15 * time.Second}",
 	)
+	normalizedExample := strings.Join(strings.Fields(example), " ")
+	if got := strings.Count(normalizedExample, "HTTPClient: iamHTTPClient"); got != 2 {
+		t.Errorf("BFF example outbound HTTP client injections = %d, want 2", got)
+	}
 	if got := strings.Count(example, "mux.Handle("); got != 5 {
 		t.Errorf("BFF example route registrations = %d, want 5", got)
 	}

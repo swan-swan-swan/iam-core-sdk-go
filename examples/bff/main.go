@@ -39,11 +39,14 @@ func run() error {
 		return err
 	}
 
+	// A nil Transport retains net/http's default proxy, connection and TLS behavior.
+	iamHTTPClient := &http.Client{Timeout: 15 * time.Second}
 	ctx, cancel := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancel()
 	runtime, err := core.New(ctx, core.Config{
-		IssuerURL: cfg.issuerURL,
-		Audiences: []string{cfg.clientID},
+		IssuerURL:  cfg.issuerURL,
+		Audiences:  []string{cfg.clientID},
+		HTTPClient: iamHTTPClient,
 	})
 	if err != nil {
 		return errors.New("IAM Core discovery is invalid or unavailable")
@@ -59,6 +62,7 @@ func run() error {
 		RedirectURL: cfg.redirectURL,
 		Scopes:      bff.DefaultScopes(),
 		Backend:     backend,
+		HTTPClient:  iamHTTPClient,
 		SessionCookie: http.Cookie{
 			Name:        "__Host-example_session",
 			Value:       "",

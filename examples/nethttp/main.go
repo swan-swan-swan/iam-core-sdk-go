@@ -1,100 +1,107 @@
-// Command nethttp demonstrates the IAM Core SDK with the net/http adapter.
+// Command nethttp-v2 demonstrates a Bearer-only IAM Core resource server.
 package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
-	iamcore "github.com/swan-swan-swan/iam-core-client-sdk-go"
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/session/memory"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/httpauthz"
 )
 
-const defaultIssuer = "https://iam.wuhl-goose.top"
+const startupTimeout = 10 * time.Second
+
+type configuration struct {
+	issuerURL string
+	audience  string
+	address   string
+}
 
 func main() {
 	if err := run(); err != nil {
-		// SDK errors are redacted. Configuration values and secrets are never logged.
-		slog.Error("IAM Core example stopped")
+		// Do not log configuration values or credential material.
+		slog.Error("IAM Core resource server stopped", slog.String("reason", "startup configuration is missing or invalid, or IAM is unavailable"))
 		os.Exit(1)
 	}
 }
 
 func run() error {
-	clientID, clientSecret, redirectURL, err := requiredConfiguration()
+	cfg, err := loadConfiguration()
 	if err != nil {
 		return err
 	}
 
-	// Memory is intended only for development, tests, and a single process.
-	// It does not share sessions or refresh locks between application replicas.
-	sessionBackend := memory.New(memory.Options{})
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	client, err := iamcore.New(ctx, iamcore.Config{
-		IssuerURL:            envOrDefault("IAMCORE_ISSUER_URL", defaultIssuer),
-		ClientID:             clientID,
-		ClientSecretProvider: iamcore.StaticSecret(clientSecret),
-		RedirectURL:          redirectURL,
-		Session: iamcore.SessionConfig{
-			Backend: sessionBackend,
-		},
-	})
+	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
+		Name: "list_orders", Method: http.MethodGet, ResourceServer: "orders_api", Resource: "orders",
+	}})
 	if err != nil {
-		return err
+		return errors.New("resource server route configuration is invalid")
+	}
+	binder := manifest.NewBinder()
+	route, err := binder.Bind("list_orders")
+	if err != nil {
+		return errors.New("resource server route configuration is invalid")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancel()
+	runtime, err := core.New(ctx, core.Config{IssuerURL: cfg.issuerURL, Audiences: []string{cfg.audience}})
+	if err != nil {
+		return errors.New("IAM Core configuration is invalid or unavailable")
+	}
+	pdp, err := httpauthz.NewPDPClient(httpauthz.PDPConfig{IssuerURL: cfg.issuerURL})
+	if err != nil {
+		return errors.New("IAM authorization configuration is invalid")
+	}
+	service, err := httpauthz.New(httpauthz.Config{Verifier: runtime, PDP: pdp})
+	if err != nil {
+		return errors.New("IAM authorization configuration is invalid")
+	}
+	protected, err := service.Require(route, http.HandlerFunc(listOrders))
+	if err != nil {
+		return errors.New("IAM authorization route configuration is invalid")
+	}
+	if err := binder.Validate(); err != nil {
+		return errors.New("resource server route configuration is incomplete")
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/auth/login", client.LoginHandler())
-	mux.Handle("/auth/callback", client.CallbackHandler())
-	mux.Handle("/auth/logout", client.LogoutHandler())
-	mux.Handle("/profile", client.Authenticate(http.HandlerFunc(profile)))
-	mux.Handle("/assets", client.RequirePermission(iamcore.Permission{
-		ResourceServer: "asset-api",
-		Resource:       "assets",
-	})(http.HandlerFunc(assets)))
-
+	mux.Handle("/orders", protected)
 	server := &http.Server{
-		Addr:              envOrDefault("HTTP_ADDR", ":8080"),
+		Addr:              cfg.address,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       10 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 	return server.ListenAndServe()
 }
 
-func profile(w http.ResponseWriter, request *http.Request) {
-	identity, ok := iamcore.IdentityFromContext(request.Context())
-	if !ok {
-		http.Error(w, http.StatusText(http.StatusUnauthorized), http.StatusUnauthorized)
-		return
+func loadConfiguration() (configuration, error) {
+	cfg := configuration{
+		issuerURL: strings.TrimSpace(os.Getenv("IAMCORE_ISSUER_URL")),
+		audience:  strings.TrimSpace(os.Getenv("IAMCORE_AUDIENCE")),
+		address:   strings.TrimSpace(os.Getenv("HTTP_ADDR")),
 	}
+	if cfg.issuerURL == "" {
+		return configuration{}, errors.New("IAMCORE_ISSUER_URL must be set")
+	}
+	if cfg.audience == "" {
+		return configuration{}, errors.New("IAMCORE_AUDIENCE must be set")
+	}
+	if cfg.address == "" {
+		return configuration{}, errors.New("HTTP_ADDR must be set")
+	}
+	return cfg, nil
+}
+
+func listOrders(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(identity)
-}
-
-func assets(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	_, _ = w.Write([]byte(`{"assets":[]}`))
-}
-
-func requiredConfiguration() (string, string, string, error) {
-	clientID := os.Getenv("IAMCORE_CLIENT_ID")
-	clientSecret := os.Getenv("IAMCORE_CLIENT_SECRET")
-	redirectURL := os.Getenv("IAMCORE_REDIRECT_URL")
-	if clientID == "" || clientSecret == "" || redirectURL == "" {
-		return "", "", "", errors.New("IAM Core environment configuration is incomplete")
-	}
-	return clientID, clientSecret, redirectURL, nil
-}
-
-func envOrDefault(name, fallback string) string {
-	if value := os.Getenv(name); value != "" {
-		return value
-	}
-	return fallback
+	_, _ = w.Write([]byte(`{"orders":[]}`))
 }

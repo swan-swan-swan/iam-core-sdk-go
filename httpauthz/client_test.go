@@ -218,6 +218,99 @@ func TestDecideRejectsInvalidResponseBodies(t *testing.T) {
 	})
 }
 
+func TestDecideClassifiesNon200BeforeReadingBody(t *testing.T) {
+	tests := []struct {
+		name      string
+		status    int
+		body      *observedResponseBody
+		wantKind  core.Kind
+		retryable bool
+	}{
+		{
+			name:     "oversized 401",
+			status:   http.StatusUnauthorized,
+			body:     newObservedResponseBody(strings.NewReader(strings.Repeat("sensitive-401-body", 1<<17))),
+			wantKind: core.KindUnauthenticated,
+		},
+		{
+			name:      "read-failing 503",
+			status:    http.StatusServiceUnavailable,
+			body:      newObservedResponseBody(readerFunc(func([]byte) (int, error) { return 0, errors.New("sensitive-read-failure") })),
+			wantKind:  core.KindIAMUnavailable,
+			retryable: true,
+		},
+		{
+			name:     "read-blocking 400",
+			status:   http.StatusBadRequest,
+			body:     newBlockingResponseBody(),
+			wantKind: core.KindProtocol,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var calls atomic.Int32
+			client, err := NewPDPClient(PDPConfig{
+				IssuerURL: "https://iam.example",
+				HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls.Add(1)
+					return &http.Response{StatusCode: test.status, Header: make(http.Header), Body: test.body}, nil
+				})},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			result := make(chan error, 1)
+			go func() {
+				_, decideErr := client.Decide(t.Context(), staticToken("non-200-token-secret"), compiledRoute())
+				result <- decideErr
+			}()
+			var decideErr error
+			select {
+			case decideErr = <-result:
+			case <-time.After(250 * time.Millisecond):
+				test.body.unblock()
+				decideErr = <-result
+				t.Errorf("Decide() waited for status %d response body", test.status)
+			}
+			assertCoreError(t, decideErr, test.wantKind, test.status, test.retryable)
+			assertNoLeak(t, decideErr, "non-200-token-secret", "sensitive-401-body", "sensitive-read-failure")
+			if got := calls.Load(); got != 1 {
+				t.Fatalf("round trips = %d", got)
+			}
+			if got := test.body.reads.Load(); got != 0 {
+				t.Errorf("response body reads = %d, want 0", got)
+			}
+			if got := test.body.closes.Load(); got != 1 {
+				t.Errorf("response body closes = %d, want 1", got)
+			}
+		})
+	}
+}
+
+func TestDecideKnownNon200StatusWinsWhenTransportReturnsResponse(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	body := newBlockingResponseBody()
+	var calls atomic.Int32
+	client, err := NewPDPClient(PDPConfig{
+		IssuerURL: "https://iam.example",
+		HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls.Add(1)
+			cancel()
+			return &http.Response{StatusCode: http.StatusUnauthorized, Header: make(http.Header), Body: body}, nil
+		})},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, decideErr := client.Decide(ctx, staticToken("known-status-token-secret"), compiledRoute())
+	assertCoreError(t, decideErr, core.KindUnauthenticated, http.StatusUnauthorized, false)
+	assertNoLeak(t, decideErr, "known-status-token-secret")
+	if calls.Load() != 1 || body.reads.Load() != 0 || body.closes.Load() != 1 {
+		t.Fatalf("round trips/body reads/body closes = %d/%d/%d", calls.Load(), body.reads.Load(), body.closes.Load())
+	}
+}
+
 func TestDecideNeverRetries(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -387,9 +480,145 @@ func TestDecideRejectsInvalidInputsBeforeTokenOrNetwork(t *testing.T) {
 			tokenCalls.Add(1)
 			return "token", nil
 		}), compiledRoute())
-		assertCoreError(t, err, core.KindIAMUnavailable, 0, true)
+		assertCanonicalContextError(t, err, context.Canceled)
 		if tokenCalls.Load() != 0 || networkCalls.Load() != 0 {
 			t.Fatalf("token/network calls = %d/%d", tokenCalls.Load(), networkCalls.Load())
+		}
+	})
+}
+
+func TestDecidePreservesCanonicalContextErrors(t *testing.T) {
+	t.Run("caller deadline already exceeded", func(t *testing.T) {
+		var tokenCalls, networkCalls atomic.Int32
+		client := newCountingPDPClient(t, &networkCalls)
+		ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+		defer cancel()
+		_, err := client.Decide(ctx, core.TokenSourceFunc(func(context.Context) (string, error) {
+			tokenCalls.Add(1)
+			return "token", nil
+		}), compiledRoute())
+		assertCanonicalContextError(t, err, context.DeadlineExceeded)
+		if tokenCalls.Load() != 0 || networkCalls.Load() != 0 {
+			t.Fatalf("token/network calls = %d/%d", tokenCalls.Load(), networkCalls.Load())
+		}
+	})
+
+	t.Run("caller cancels during token source", func(t *testing.T) {
+		var networkCalls atomic.Int32
+		client := newCountingPDPClient(t, &networkCalls)
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		_, err := client.Decide(ctx, core.TokenSourceFunc(func(tokenCtx context.Context) (string, error) {
+			cancel()
+			<-tokenCtx.Done()
+			return "", errors.New("hostile-caller-token-source-secret")
+		}), compiledRoute())
+		assertCanonicalContextError(t, err, context.Canceled)
+		assertNoLeak(t, err, "hostile-caller-token-source-secret")
+		if networkCalls.Load() != 0 {
+			t.Fatalf("network calls = %d", networkCalls.Load())
+		}
+	})
+
+	for _, test := range []struct {
+		name string
+		err  error
+		want error
+	}{
+		{
+			name: "token source canceled while caller live",
+			err:  fmt.Errorf("hostile-token-source-canceled-secret: %w", context.Canceled),
+			want: context.Canceled,
+		},
+		{
+			name: "token source deadline while caller live",
+			err:  fmt.Errorf("hostile-token-source-deadline-secret: %w", context.DeadlineExceeded),
+			want: context.DeadlineExceeded,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var networkCalls atomic.Int32
+			client := newCountingPDPClient(t, &networkCalls)
+			_, err := client.Decide(t.Context(), core.TokenSourceFunc(func(context.Context) (string, error) {
+				return "", test.err
+			}), compiledRoute())
+			assertCanonicalContextError(t, err, test.want)
+			assertNoLeak(t, err, "hostile-token-source-canceled-secret", "hostile-token-source-deadline-secret")
+			if networkCalls.Load() != 0 {
+				t.Fatalf("network calls = %d", networkCalls.Load())
+			}
+		})
+	}
+
+	t.Run("SDK timeout during token source", func(t *testing.T) {
+		var networkCalls atomic.Int32
+		client, err := NewPDPClient(PDPConfig{
+			IssuerURL: "https://iam.example",
+			HTTPClient: &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+				networkCalls.Add(1)
+				return nil, errors.New("unexpected network call")
+			})},
+			Timeout: 10 * time.Millisecond,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = client.Decide(t.Context(), core.TokenSourceFunc(func(tokenCtx context.Context) (string, error) {
+			<-tokenCtx.Done()
+			return "", fmt.Errorf("hostile-sdk-timeout-secret: %w", tokenCtx.Err())
+		}), compiledRoute())
+		assertCoreError(t, err, core.KindIAMUnavailable, 0, true)
+		assertNoLeak(t, err, "hostile-sdk-timeout-secret")
+		if networkCalls.Load() != 0 {
+			t.Fatalf("network calls = %d", networkCalls.Load())
+		}
+	})
+
+	t.Run("caller cancels during transport", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var calls atomic.Int32
+		client, err := NewPDPClient(PDPConfig{
+			IssuerURL: "https://iam.example",
+			HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				calls.Add(1)
+				cancel()
+				<-request.Context().Done()
+				return nil, fmt.Errorf("hostile-transport-canceled-secret: %w", request.Context().Err())
+			})},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = client.Decide(ctx, staticToken("transport-token-secret"), compiledRoute())
+		assertCanonicalContextError(t, err, context.Canceled)
+		assertNoLeak(t, err, "hostile-transport-canceled-secret", "transport-token-secret")
+		if calls.Load() != 1 {
+			t.Fatalf("round trips = %d", calls.Load())
+		}
+	})
+
+	t.Run("caller deadline during transport", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
+		defer cancel()
+		var calls atomic.Int32
+		client, err := NewPDPClient(PDPConfig{
+			IssuerURL: "https://iam.example",
+			HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				calls.Add(1)
+				<-request.Context().Done()
+				return nil, fmt.Errorf("hostile-transport-deadline-secret: %w", request.Context().Err())
+			})},
+			Timeout: time.Second,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = client.Decide(ctx, staticToken("transport-token-secret"), compiledRoute())
+		assertCanonicalContextError(t, err, context.DeadlineExceeded)
+		assertNoLeak(t, err, "hostile-transport-deadline-secret", "transport-token-secret")
+		if calls.Load() != 1 {
+			t.Fatalf("round trips = %d", calls.Load())
 		}
 	})
 }
@@ -551,6 +780,20 @@ func assertConfigureError(t *testing.T, err error) {
 	}
 }
 
+func assertCanonicalContextError(t *testing.T, err, want error) {
+	t.Helper()
+	if !errors.Is(err, want) {
+		t.Fatalf("error = %#v, want errors.Is(%v)", err, want)
+	}
+	var typed *core.Error
+	if errors.As(err, &typed) {
+		t.Fatalf("error = %#v, canonical context error became SDK error", typed)
+	}
+	if err.Error() != want.Error() {
+		t.Fatalf("error text = %q, want sanitized %q", err, want)
+	}
+}
+
 func assertNoLeak(t *testing.T, err error, secrets ...string) {
 	t.Helper()
 	if err == nil {
@@ -567,6 +810,46 @@ func assertNoLeak(t *testing.T, err error, secrets ...string) {
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) { return f(request) }
+
+type readerFunc func([]byte) (int, error)
+
+func (f readerFunc) Read(buffer []byte) (int, error) { return f(buffer) }
+
+type observedResponseBody struct {
+	reader io.Reader
+	block  chan struct{}
+	once   sync.Once
+	reads  atomic.Int32
+	closes atomic.Int32
+}
+
+func newObservedResponseBody(reader io.Reader) *observedResponseBody {
+	return &observedResponseBody{reader: reader}
+}
+
+func newBlockingResponseBody() *observedResponseBody {
+	return &observedResponseBody{reader: strings.NewReader(""), block: make(chan struct{})}
+}
+
+func (b *observedResponseBody) Read(buffer []byte) (int, error) {
+	b.reads.Add(1)
+	if b.block != nil {
+		<-b.block
+	}
+	return b.reader.Read(buffer)
+}
+
+func (b *observedResponseBody) Close() error {
+	b.closes.Add(1)
+	b.unblock()
+	return nil
+}
+
+func (b *observedResponseBody) unblock() {
+	if b.block != nil {
+		b.once.Do(func() { close(b.block) })
+	}
+}
 
 type nilTokenSource struct{}
 

@@ -27,6 +27,16 @@ func TestDecodeDecisionAcceptsExactEnvelopeAndAdditiveFields(t *testing.T) {
 			want: Decision{ID: "dec-3", Allowed: true, ReasonCode: "policy_allow", RequestID: "req-3", TraceID: "trace-3"},
 		},
 		{
+			name: "envelope extension high exponent number",
+			body: `{"extension":1e1000,"code":0,"message":"success","data":{"decision_id":"dec-5","allowed":true,"reason_code":"policy_allow"}}`,
+			want: Decision{ID: "dec-5", Allowed: true, ReasonCode: "policy_allow"},
+		},
+		{
+			name: "data extension nested high exponent numbers",
+			body: `{"code":0,"message":"success","data":{"extension":{"levels":[1e1000,{"negative":-1e1000},[3e999]]},"decision_id":"dec-6","allowed":true,"reason_code":"policy_allow"}}`,
+			want: Decision{ID: "dec-6", Allowed: true, ReasonCode: "policy_allow"},
+		},
+		{
 			name: "optional correlation IDs omitted",
 			body: ` { "code" : 0 , "message" : "success" , "data" : { "decision_id" : "dec-4", "allowed" : true, "reason_code" : "policy_allow" } } `,
 			want: Decision{ID: "dec-4", Allowed: true, ReasonCode: "policy_allow"},
@@ -59,6 +69,8 @@ func TestDecodeDecisionRejectsInvalidEnvelope(t *testing.T) {
 		{name: "null code", body: `{"code":null,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow"}}`},
 		{name: "string code", body: `{"code":"0","message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow"}}`},
 		{name: "fraction code", body: `{"code":0.0,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow"}}`},
+		{name: "high exponent required code", body: `{"code":1e1000,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow"}}`},
+		{name: "out of range required code", body: `{"code":9223372036854775808,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow"}}`},
 		{name: "nonzero code", body: `{"code":7,"message":"failure","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow"}}`},
 		{name: "missing message", body: `{"code":0,"data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow"}}`},
 		{name: "null message", body: `{"code":0,"message":null,"data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow"}}`},

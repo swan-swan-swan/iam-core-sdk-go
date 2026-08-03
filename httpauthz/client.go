@@ -78,15 +78,21 @@ func (c *PDPClient) Decide(ctx context.Context, tokens core.TokenSource, route R
 		return Decision{}, newPDPError(core.KindInvalidConfig, decideOperation, 0, false)
 	}
 	if ctx.Err() != nil {
-		return Decision{}, newPDPError(core.KindIAMUnavailable, decideOperation, 0, true)
+		return Decision{}, ctx.Err()
 	}
 	requestCtx, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
 
 	accessToken, err := tokens.AccessToken(requestCtx)
+	if contextErr := decideContextError(ctx, requestCtx, 0); contextErr != nil {
+		return Decision{}, contextErr
+	}
 	if err != nil {
-		if requestCtx.Err() != nil {
-			return Decision{}, newPDPError(core.KindIAMUnavailable, decideOperation, 0, true)
+		if errors.Is(err, context.Canceled) {
+			return Decision{}, context.Canceled
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return Decision{}, context.DeadlineExceeded
 		}
 		return Decision{}, sanitizeTokenSourceError(err)
 	}
@@ -112,18 +118,30 @@ func (c *PDPClient) Decide(ctx context.Context, tokens core.TokenSource, route R
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {
+		if contextErr := decideContextError(ctx, requestCtx, 0); contextErr != nil {
+			return Decision{}, contextErr
+		}
 		return Decision{}, newPDPError(core.KindIAMUnavailable, decideOperation, 0, true)
 	}
 	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return Decision{}, decisionStatusError(response.StatusCode)
+	}
+	if contextErr := decideContextError(ctx, requestCtx, response.StatusCode); contextErr != nil {
+		return Decision{}, contextErr
+	}
 	body, readErr := io.ReadAll(io.LimitReader(response.Body, maxDecisionResponseBytes+1))
 	if readErr != nil {
+		if contextErr := decideContextError(ctx, requestCtx, response.StatusCode); contextErr != nil {
+			return Decision{}, contextErr
+		}
 		return Decision{}, newPDPError(core.KindIAMUnavailable, decideOperation, response.StatusCode, true)
+	}
+	if contextErr := decideContextError(ctx, requestCtx, response.StatusCode); contextErr != nil {
+		return Decision{}, contextErr
 	}
 	if int64(len(body)) > maxDecisionResponseBytes {
 		return Decision{}, newPDPError(core.KindProtocol, decideOperation, response.StatusCode, false)
-	}
-	if response.StatusCode != http.StatusOK {
-		return Decision{}, decisionStatusError(response.StatusCode)
 	}
 	if !isJSONMediaType(response.Header.Get("Content-Type")) {
 		return Decision{}, newPDPError(core.KindProtocol, decideOperation, response.StatusCode, false)
@@ -133,6 +151,16 @@ func (c *PDPClient) Decide(ctx context.Context, tokens core.TokenSource, route R
 		return Decision{}, newPDPError(core.KindProtocol, decideOperation, response.StatusCode, false)
 	}
 	return decision, nil
+}
+
+func decideContextError(callerCtx, operationCtx context.Context, status int) error {
+	if err := callerCtx.Err(); err != nil {
+		return err
+	}
+	if operationCtx.Err() != nil {
+		return newPDPError(core.KindIAMUnavailable, decideOperation, status, true)
+	}
+	return nil
 }
 
 func decisionEndpoint(issuer string) (string, error) {

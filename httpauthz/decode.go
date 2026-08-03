@@ -65,6 +65,7 @@ func decodeDecision(body []byte) (Decision, error) {
 
 func validateDecisionStructure(body []byte) error {
 	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
 	first, err := decoder.Token()
 	if err != nil || first != json.Delim('{') {
 		return errInvalidDecisionResponse

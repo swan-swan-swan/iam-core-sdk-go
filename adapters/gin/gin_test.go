@@ -229,6 +229,193 @@ func TestContextHelpersRejectNilContextAndRequest(t *testing.T) {
 	}
 }
 
+func TestEscapedRequestContextMatchesRootMiddlewareShape(t *testing.T) {
+	directService, directRoute, _ := newService(t, httpauthz.Decision{
+		ID: "decision-allow", Allowed: true, ReasonCode: "policy_allow",
+	}, nil, nil)
+	var directContext context.Context
+	directHandler, err := directService.Require(directRoute, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		directContext = request.Context()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	directHandler.ServeHTTP(httptest.NewRecorder(), signedRequest(http.MethodGet, "/orders"))
+
+	service, route, _ := newService(t, httpauthz.Decision{
+		ID: "decision-allow", Allowed: true, ReasonCode: "policy_allow",
+	}, nil, nil)
+	middleware, err := ginadapter.Require(service, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var escapedRequest *http.Request
+	router := newRouter()
+	router.GET("/orders", middleware, func(c *gin.Context) {
+		escapedRequest = c.Request
+		c.Status(http.StatusNoContent)
+	})
+	router.ServeHTTP(httptest.NewRecorder(), signedRequest(http.MethodGet, "/orders"))
+
+	if escapedRequest == nil || directContext == nil {
+		t.Fatal("middleware did not reach terminal handler")
+	}
+	if got, want := contextShape(escapedRequest.Context()), contextShape(directContext); !reflect.DeepEqual(got, want) {
+		t.Fatalf("adapter added lifecycle state to escaped Request.Context(): shape=%v, root=%v", got, want)
+	}
+}
+
+func TestNestedAdaptersDoNotLayerLifecycleStateInRequestContext(t *testing.T) {
+	directService, directRoute, directPDP := newService(t, httpauthz.Decision{
+		ID: "decision-allow", Allowed: true, ReasonCode: "policy_allow",
+	}, nil, nil)
+	var directContext context.Context
+	required, err := directService.Require(directRoute, http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		directContext = request.Context()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticated, err := directService.Authenticate(required)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authenticated.ServeHTTP(httptest.NewRecorder(), signedRequest(http.MethodGet, "/orders"))
+	if directPDP.calls.Load() != 1 {
+		t.Fatalf("direct PDP calls = %d", directPDP.calls.Load())
+	}
+
+	service, route, pdp := newService(t, httpauthz.Decision{
+		ID: "decision-allow", Allowed: true, ReasonCode: "policy_allow",
+	}, nil, nil)
+	authenticate, err := ginadapter.Authenticate(service)
+	if err != nil {
+		t.Fatal(err)
+	}
+	require, err := ginadapter.Require(service, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var escapedContext context.Context
+	var downstream atomic.Int64
+	router := newRouter()
+	router.GET("/orders", authenticate, require, func(c *gin.Context) {
+		downstream.Add(1)
+		escapedContext = c.Request.Context()
+		c.Status(http.StatusNoContent)
+	})
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, signedRequest(http.MethodGet, "/orders"))
+
+	if response.Code != http.StatusNoContent || downstream.Load() != 1 || pdp.calls.Load() != 1 || escapedContext == nil {
+		t.Fatalf("status/downstream/pdp/context = %d/%d/%d/%v", response.Code, downstream.Load(), pdp.calls.Load(), escapedContext != nil)
+	}
+	if got, want := contextShape(escapedContext), contextShape(directContext); !reflect.DeepEqual(got, want) {
+		t.Fatalf("nested adapters layered lifecycle state: shape=%v, root=%v", got, want)
+	}
+}
+
+func TestAdapterDoesNotRetainLifecycleStateAcrossRequests(t *testing.T) {
+	directService, directRoute, _ := newService(t, httpauthz.Decision{
+		ID: "decision-allow", Allowed: true, ReasonCode: "policy_allow",
+	}, nil, nil)
+	var directContext context.Context
+	directHandler, err := directService.Require(directRoute, http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+		directContext = request.Context()
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	directHandler.ServeHTTP(httptest.NewRecorder(), signedRequest(http.MethodGet, "/orders"))
+	directShape := contextShape(directContext)
+
+	service, route, pdp := newService(t, httpauthz.Decision{
+		ID: "decision-allow", Allowed: true, ReasonCode: "policy_allow",
+	}, nil, nil)
+	middleware, err := ginadapter.Require(service, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const requests = 64
+	escaped := make([]*http.Request, 0, requests)
+	router := newRouter()
+	router.GET("/orders", middleware, func(c *gin.Context) {
+		escaped = append(escaped, c.Request)
+		c.Status(http.StatusNoContent)
+	})
+	for range requests {
+		response := httptest.NewRecorder()
+		router.ServeHTTP(response, signedRequest(http.MethodGet, "/orders"))
+		if response.Code != http.StatusNoContent {
+			t.Fatalf("status = %d", response.Code)
+		}
+	}
+	if len(escaped) != requests || pdp.calls.Load() != requests {
+		t.Fatalf("escaped/PDP = %d/%d", len(escaped), pdp.calls.Load())
+	}
+	for index, request := range escaped {
+		auth, authOK := core.AuthContextFromContext(request.Context())
+		decision, decisionOK := httpauthz.DecisionFromContext(request.Context())
+		if !authOK || auth.Subject != "op_usr_1" || !decisionOK || decision.ID != "decision-allow" {
+			t.Fatalf("request %d lost root contexts", index)
+		}
+		if shape := contextShape(request.Context()); !reflect.DeepEqual(shape, directShape) {
+			t.Fatalf("request %d retained adapter lifecycle state: shape=%v, root=%v", index, shape, directShape)
+		}
+	}
+}
+
+func TestAdmissionWriterDoesNotReplaceGinWriter(t *testing.T) {
+	service, route, _ := newService(t, httpauthz.Decision{
+		ID: "decision-allow", Allowed: true, ReasonCode: "policy_allow",
+	}, nil, nil)
+	middleware, err := ginadapter.Require(service, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var original gin.ResponseWriter
+	router := newRouter()
+	router.GET("/orders",
+		func(c *gin.Context) {
+			original = c.Writer
+			c.Next()
+			if c.Writer != original {
+				t.Error("adapter retained its writer after the synchronous call")
+			}
+		},
+		middleware,
+		func(c *gin.Context) {
+			if c.Writer != original {
+				t.Error("adapter exposed its writer to downstream Gin handlers")
+			}
+			c.String(http.StatusOK, "unchanged")
+		},
+	)
+	response := httptest.NewRecorder()
+	router.ServeHTTP(response, signedRequest(http.MethodGet, "/orders"))
+	if response.Code != http.StatusOK || response.Body.String() != "unchanged" {
+		t.Fatalf("status/body = %d/%q", response.Code, response.Body.String())
+	}
+}
+
+func TestMiddlewareHandlerRejectsNilContextAndRequest(t *testing.T) {
+	service, route, _ := newService(t, httpauthz.Decision{
+		ID: "decision-allow", Allowed: true, ReasonCode: "policy_allow",
+	}, nil, nil)
+	middleware, err := ginadapter.Require(service, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	middleware(nil)
+	empty := &gin.Context{}
+	middleware(empty)
+	if !empty.IsAborted() {
+		t.Fatal("middleware did not abort a nil request")
+	}
+}
+
 func TestConstructorsPropagateTypedSanitizedRootErrors(t *testing.T) {
 	service, _, _ := newService(t, httpauthz.Decision{}, nil, nil)
 	var nilService *httpauthz.Service
@@ -297,4 +484,28 @@ func signedRequest(method, path string) *http.Request {
 	request := httptest.NewRequest(method, path, nil)
 	request.Header.Set("Authorization", "Bearer access-token")
 	return request
+}
+
+func contextShape(ctx context.Context) []string {
+	var shape []string
+	for ctx != nil {
+		value := reflect.ValueOf(ctx)
+		shape = append(shape, value.Type().String())
+		if value.Kind() == reflect.Pointer {
+			if value.IsNil() {
+				break
+			}
+			value = value.Elem()
+		}
+		parent := value.FieldByName("Context")
+		if !parent.IsValid() || !parent.CanInterface() {
+			break
+		}
+		var ok bool
+		ctx, ok = parent.Interface().(context.Context)
+		if !ok {
+			break
+		}
+	}
+	return shape
 }

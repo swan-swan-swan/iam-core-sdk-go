@@ -2,7 +2,6 @@
 package ginadapter
 
 import (
-	"context"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -10,20 +9,21 @@ import (
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/httpauthz"
 )
 
-type admissionKey struct{}
-
-type admission struct {
+type admissionWriter struct {
+	gin.ResponseWriter
 	context *gin.Context
 	reached bool
 }
 
+var _ gin.ResponseWriter = (*admissionWriter)(nil)
+
 type terminalHandler struct{}
 
-func (terminalHandler) ServeHTTP(_ http.ResponseWriter, request *http.Request) {
+func (terminalHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {
 	if request == nil {
 		return
 	}
-	state, ok := request.Context().Value(admissionKey{}).(*admission)
+	state, ok := writer.(*admissionWriter)
 	if !ok || state == nil || state.context == nil {
 		return
 	}
@@ -58,9 +58,8 @@ func bridge(handler http.Handler) gin.HandlerFunc {
 			}
 			return
 		}
-		state := &admission{context: c}
-		request := c.Request.WithContext(context.WithValue(c.Request.Context(), admissionKey{}, state))
-		handler.ServeHTTP(c.Writer, request)
+		state := &admissionWriter{ResponseWriter: c.Writer, context: c}
+		handler.ServeHTTP(state, c.Request)
 		if !state.reached {
 			c.Abort()
 		}

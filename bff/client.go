@@ -22,6 +22,9 @@ const (
 	defaultSessionIdleTTL      = 8 * time.Hour
 	defaultRefreshBeforeExpiry = time.Minute
 	defaultRefreshLeaseTTL     = 15 * time.Second
+	defaultTokenTimeout        = 5 * time.Second
+	defaultUserInfoTimeout     = 5 * time.Second
+	defaultEndSessionTimeout   = 5 * time.Second
 )
 
 var defaultScopes = []string{"openid", "profile", "email", "groups"}
@@ -55,12 +58,18 @@ type Config struct {
 	// restrictions as SessionCookie. SameSite=Lax is required so the cookie is
 	// sent on the OAuth authorization server's top-level callback navigation
 	// while remaining unavailable to ordinary cross-site subrequests.
-	FlowCookie                   http.Cookie
-	FlowTTL                      time.Duration
-	SessionAbsoluteTTL           time.Duration
-	SessionIdleTTL               time.Duration
-	RefreshBeforeExpiry          time.Duration
-	RefreshLeaseTTL              time.Duration
+	FlowCookie          http.Cookie
+	FlowTTL             time.Duration
+	SessionAbsoluteTTL  time.Duration
+	SessionIdleTTL      time.Duration
+	RefreshBeforeExpiry time.Duration
+	RefreshLeaseTTL     time.Duration
+	// TokenTimeout, UserInfoTimeout, and EndSessionTimeout bound individual
+	// remote operations. Zero selects a finite safe default; negative values
+	// are invalid. A shorter caller deadline still wins.
+	TokenTimeout                 time.Duration
+	UserInfoTimeout              time.Duration
+	EndSessionTimeout            time.Duration
 	AllowedReturnToURLs          []string
 	AllowInsecureLoopbackCookies bool
 	HTTPClient                   *http.Client
@@ -84,6 +93,9 @@ type Client struct {
 	sessionIdleTTL      time.Duration
 	refreshBeforeExpiry time.Duration
 	refreshLeaseTTL     time.Duration
+	tokenTimeout        time.Duration
+	userInfoTimeout     time.Duration
+	endSessionTimeout   time.Duration
 	allowedReturnTo     map[string]struct{}
 	httpClient          *http.Client
 	clock               core.Clock
@@ -136,6 +148,18 @@ func New(cfg Config) (*Client, error) {
 	if !ok {
 		return nil, configureError()
 	}
+	tokenTimeout, ok := positiveDurationOrDefault(cfg.TokenTimeout, defaultTokenTimeout)
+	if !ok {
+		return nil, configureError()
+	}
+	userInfoTimeout, ok := positiveDurationOrDefault(cfg.UserInfoTimeout, defaultUserInfoTimeout)
+	if !ok {
+		return nil, configureError()
+	}
+	endSessionTimeout, ok := positiveDurationOrDefault(cfg.EndSessionTimeout, defaultEndSessionTimeout)
+	if !ok {
+		return nil, configureError()
+	}
 	production := redirect.Scheme == "https"
 	sessionCookie, err := validateCookieTemplate(cfg.SessionCookie, production)
 	if err != nil {
@@ -177,9 +201,22 @@ func New(cfg Config) (*Client, error) {
 		sessionCookie: sessionCookie, flowCookie: flowCookie,
 		flowTTL: flowTTL, sessionAbsoluteTTL: absoluteTTL, sessionIdleTTL: idleTTL,
 		refreshBeforeExpiry: refreshBefore, refreshLeaseTTL: refreshLease,
+		tokenTimeout: tokenTimeout, userInfoTimeout: userInfoTimeout, endSessionTimeout: endSessionTimeout,
 		allowedReturnTo: allowed, httpClient: cloneHTTPClient(cfg.HTTPClient), clock: clock,
 		random: randomSource, observer: observer, logger: logger,
 	}, nil
+}
+
+func operationContextError(caller, operationCtx context.Context, operation string, status int) error {
+	if caller != nil {
+		if err := caller.Err(); err != nil {
+			return err
+		}
+	}
+	if operationCtx != nil && operationCtx.Err() != nil {
+		return bffError(core.KindIAMUnavailable, operation, status, true)
+	}
+	return nil
 }
 
 func validateScopes(configured []string) ([]string, error) {

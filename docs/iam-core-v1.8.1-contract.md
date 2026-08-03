@@ -42,6 +42,9 @@ Authorization Code exchange 向 `POST /oidc/token` 发送
 `code_verifier`。Refresh 发送 `grant_type=refresh_token`、`refresh_token`、`client_id` 与
 `client_secret`。两者均不自动重试。
 
+Token、UserInfo 与 End Session 各有独立有限操作超时，默认均为 5 秒；调用方可以配置正值，
+更短的 caller context deadline 优先。SDK 不修改注入的 `http.Client`。
+
 成功 Token Response 必须提供 `access_token`、`token_type=Bearer`、正数 `expires_in`；
 首次 exchange 还必须提供 `id_token`，可提供 `refresh_token` 与 `scope`。Refresh 可轮换
 refresh token、返回新 ID token 和缩减 scope。Token Response `scope` 优先；已验证 Access/
@@ -57,7 +60,7 @@ OAuth 错误采用 `error`（可带 `error_description`，但 SDK 不向业务�
 
 Access Token 和 ID Token 只接受单一 RS256 签名及非空 `kid`。JWKS key 必须有效；`use`
 若存在必须为 `sig`，`alg` 若存在必须为 `RS256`。验证覆盖 `sub`、`iss`、`aud`、`jti`、
-`iat`、`exp`、可选 `nbf`；首次登录 ID Token 还必须精确匹配 nonce。Access Token 和
+`iat`、`exp`、可选 `nbf`；`iat` 不得晚于验证时刻。首次登录 ID Token 还必须精确匹配 nonce。Access Token 和
 ID Token subject 必须一致，并且 audience 必须包含当前 Client ID。
 
 `GET /oidc/userinfo` 使用一个 `Authorization: Bearer <access_token>`。响应必须包含非空
@@ -65,7 +68,8 @@ ID Token subject 必须一致，并且 audience 必须包含当前 Client ID。
 控制 `email`，`groups` 控制规范化后的 `groups`。没有 mapping 时 groups 是空集合，不能
 从 roles 或其他 Client 回填。
 
-完整 Session payload 包含 TokenSet、AuthContext、实际 Granted Scopes 和时效。Refresh
+新 Session 的版本必须精确为 1，绝对过期与 idle 过期均为必填时效。完整 Session payload
+包含 TokenSet、AuthContext、实际 Granted Scopes 和时效。Refresh
 在 generation-bound fencing lease 下重新验证全部 Token/Claim，再以一次 CAS 原子替换；
 lease 失效或 Session 版本变化时不得提交。
 
@@ -119,7 +123,8 @@ HTTP 200 且以下 IAM envelope：
 | 503、超时、网络错误 | IAM unavailable；失败关闭 |
 
 SDK 不缓存 allow/deny，不使用陈旧 allow、groups 或本地规则降级。配置 SessionResolver 后，
-resolver 识别的 Session Cookie 与 Bearer 同时出现才视为 credential conflict。未配置
+原始请求中出现该平台 Session Cookie 名称与 Bearer 即视为 credential conflict，即使 Cookie
+值畸形也由 conflict 先行失败关闭。未配置
 SessionResolver 的 Bearer-only Service 不检查浏览器 Session，只解析 Authorization Header
 并忽略无关 Cookie。
 
@@ -129,6 +134,9 @@ SessionResolver 的 Bearer-only Service 不检查浏览器 Session，只解析 A
 在请求生命周期内使用。Token、Authorization Header、Client Secret、授权码、PKCE
 verifier、Cookie、Session/Flow ID、nonce/state 与完整 URL query 不得进入错误、日志、
 Hook、Trace baggage 或 metrics label。
+
+HTTP Service 只记录稳定的 `httpauthz.service.authenticate` / `httpauthz.service.require`
+操作、终态 outcome、credential source 与 duration；不会记录凭证、标识符、完整错误或 URL。
 
 IAM Application、OIDC Client、Resource Catalog、Policy、用户、组织、角色与审计查询/管理
 接口都不属于本 SDK。SDK 不自动创建、修改或注册任何管理面对象。

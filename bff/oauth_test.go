@@ -12,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
 )
@@ -74,6 +75,80 @@ func TestCallbackDoesNotRetryTokenFailures(t *testing.T) {
 	response := serveCallback(t, client, attempt, url.Values{"code": {testCode}, "state": {attempt.State}}.Encode())
 	if response.Code != http.StatusServiceUnavailable || issuer.TokenCalls.Load() != 1 {
 		t.Fatalf("status=%d calls=%d", response.Code, issuer.TokenCalls.Load())
+	}
+}
+
+func TestBFFRemoteOperationsUseFiniteTimeoutsWithoutCancelingCaller(t *testing.T) {
+	client, _, _ := newBFFTestClient(t)
+	client.tokenTimeout = 10 * time.Millisecond
+	client.userInfoTimeout = 10 * time.Millisecond
+	client.endSessionTimeout = 10 * time.Millisecond
+	var calls int
+	client.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		calls++
+		<-request.Context().Done()
+		return nil, request.Context().Err()
+	})}
+
+	tests := []struct {
+		name string
+		call func(context.Context) error
+	}{
+		{name: "authorization code token exchange", call: func(ctx context.Context) error {
+			_, err := client.exchange(ctx, testCode, strings.Repeat("A", 43))
+			return err
+		}},
+		{name: "userinfo", call: func(ctx context.Context) error {
+			_, err := client.loadUserInfo(ctx, testAccessToken)
+			return err
+		}},
+		{name: "end session", call: func(ctx context.Context) error {
+			return client.endSession(ctx, testAccessToken, "id-token-sensitive")
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			caller := context.Background()
+			started := time.Now()
+			err := test.call(caller)
+			if !errors.Is(err, core.ErrUnavailable) {
+				t.Fatalf("operation error = %#v, want sanitized IAM unavailable", err)
+			}
+			if elapsed := time.Since(started); elapsed > time.Second {
+				t.Fatalf("operation timeout took %s", elapsed)
+			}
+			if caller.Err() != nil {
+				t.Fatalf("operation timeout canceled caller: %v", caller.Err())
+			}
+		})
+	}
+	if calls != len(tests) {
+		t.Fatalf("remote calls = %d, want %d single attempts", calls, len(tests))
+	}
+}
+
+func TestAuthorizationCodeExchangePreservesSecretProviderContextErrors(t *testing.T) {
+	for name, providerErr := range map[string]error{
+		"canceled": context.Canceled,
+		"deadline": context.DeadlineExceeded,
+	} {
+		t.Run(name, func(t *testing.T) {
+			client, _, issuer := newBFFTestClient(t)
+			client.clientSecret = SecretProviderFunc(func(context.Context) (string, error) { return "", providerErr })
+			_, err := client.exchange(context.Background(), testCode, strings.Repeat("A", 43))
+			if !errors.Is(err, providerErr) || issuer.TokenCalls.Load() != 0 {
+				t.Fatalf("exchange error/calls = %#v/%d, want exact provider context error and no request", err, issuer.TokenCalls.Load())
+			}
+		})
+	}
+
+	client, _, issuer := newBFFTestClient(t)
+	secret := "secret-provider-cause-sensitive"
+	client.clientSecret = SecretProviderFunc(func(context.Context) (string, error) { return "", errors.New(secret) })
+	_, err := client.exchange(context.Background(), testCode, strings.Repeat("A", 43))
+	var typed *core.Error
+	if !errors.As(err, &typed) || typed.Kind != core.KindInvalidConfig || strings.Contains(err.Error(), secret) || issuer.TokenCalls.Load() != 0 {
+		t.Fatalf("provider failure = %#v calls=%d, want sanitized invalid config", err, issuer.TokenCalls.Load())
 	}
 }
 

@@ -3,6 +3,7 @@ package sessiontest
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -157,6 +158,53 @@ func Run(t *testing.T, factory Factory) {
 		if err := backend.Create(ctx, idle); !errors.Is(err, session.ErrExpired) {
 			t.Fatal("Create returned the wrong error at idle expiry")
 		}
+	})
+
+	t.Run("session writes require initial version and idle expiry", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		for _, version := range []uint64{0, 2} {
+			item := fullSession(fmt.Sprintf("session-invalid-version-%d", version), clock.Now())
+			item.Version = version
+			if err := backend.Create(ctx, item); err == nil {
+				t.Fatalf("Create accepted initial version %d", version)
+			}
+			if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrNotFound) {
+				t.Fatalf("invalid initial version %d mutated state", version)
+			}
+		}
+
+		missingIdle := fullSession("session-missing-idle", clock.Now())
+		missingIdle.IdleExpiresAt = time.Time{}
+		if err := backend.Create(ctx, missingIdle); err == nil {
+			t.Fatal("Create accepted zero IdleExpiresAt")
+		}
+		if _, err := backend.Get(ctx, missingIdle.ID); !errors.Is(err, session.ErrNotFound) {
+			t.Fatal("zero IdleExpiresAt create mutated state")
+		}
+
+		item := fullSession("session-update-missing-idle", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		next := fullSession(item.ID, clock.Now())
+		next.Version = 2
+		next.IdleExpiresAt = time.Time{}
+		if err := backend.CompareAndSwap(ctx, item.ID, item.Version, next); err == nil {
+			t.Fatal("CompareAndSwap accepted zero IdleExpiresAt")
+		}
+		stored, err := backend.Get(ctx, item.ID)
+		mustNoError(t, err)
+		if stored.Version != 1 {
+			t.Fatal("invalid replacement mutated Session")
+		}
+		lease, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+		mustNoError(t, err)
+		if err := backend.CompareAndSwapWithLease(ctx, lease, item.ID, item.Version, next); err == nil {
+			t.Fatal("CompareAndSwapWithLease accepted zero IdleExpiresAt")
+		}
+		if !lease.Valid(ctx) {
+			t.Fatal("invalid leased replacement changed lease ownership")
+		}
+		mustNoError(t, lease.Release(ctx))
 	})
 
 	t.Run("session compare and swap is versioned and atomic", func(t *testing.T) {
@@ -435,6 +483,91 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatal("AcquireRefreshLease returned the wrong error for an expired Session")
 		}
 	})
+
+	for name, makeContext := range map[string]func() (context.Context, context.CancelFunc){
+		"canceled contexts stop every operation before mutation": func() (context.Context, context.CancelFunc) {
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			return ctx, func() {}
+		},
+		"expired deadlines stop every operation before mutation": func() (context.Context, context.CancelFunc) {
+			return context.WithDeadline(context.Background(), time.Unix(1, 0))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			backend, clock := newBackend(t, factory)
+			ctx, cancel := makeContext()
+			defer cancel()
+			want := ctx.Err()
+			background := context.Background()
+
+			flow := fullFlow("flow-context", clock.Now().Add(time.Minute))
+			if err := backend.PutFlow(ctx, flow); !errors.Is(err, want) {
+				t.Fatalf("PutFlow error = %v, want %v", err, want)
+			}
+			if _, err := backend.ConsumeFlow(background, flow.ID); !errors.Is(err, session.ErrNotFound) {
+				t.Fatal("canceled PutFlow mutated state")
+			}
+			mustNoError(t, backend.PutFlow(background, flow))
+			if _, err := backend.ConsumeFlow(ctx, flow.ID); !errors.Is(err, want) {
+				t.Fatalf("ConsumeFlow error = %v, want %v", err, want)
+			}
+			if _, err := backend.ConsumeFlow(background, flow.ID); err != nil {
+				t.Fatal("canceled ConsumeFlow removed state")
+			}
+
+			item := fullSession("session-context", clock.Now())
+			if err := backend.Create(ctx, item); !errors.Is(err, want) {
+				t.Fatalf("Create error = %v, want %v", err, want)
+			}
+			if _, err := backend.Get(background, item.ID); !errors.Is(err, session.ErrNotFound) {
+				t.Fatal("canceled Create mutated state")
+			}
+			mustNoError(t, backend.Create(background, item))
+			if _, err := backend.Get(ctx, item.ID); !errors.Is(err, want) {
+				t.Fatalf("Get error = %v, want %v", err, want)
+			}
+
+			next := fullSession(item.ID, clock.Now())
+			next.Version = 2
+			if err := backend.CompareAndSwap(ctx, item.ID, item.Version, next); !errors.Is(err, want) {
+				t.Fatalf("CompareAndSwap error = %v, want %v", err, want)
+			}
+			stored, err := backend.Get(background, item.ID)
+			mustNoError(t, err)
+			if stored.Version != 1 {
+				t.Fatal("canceled CompareAndSwap mutated state")
+			}
+			if _, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute); !errors.Is(err, want) {
+				t.Fatalf("AcquireRefreshLease error = %v, want %v", err, want)
+			}
+			lease, err := backend.AcquireRefreshLease(background, item.ID, time.Minute)
+			mustNoError(t, err)
+			if lease.Valid(ctx) {
+				t.Fatal("Lease.Valid returned true after context completion")
+			}
+			if err := backend.CompareAndSwapWithLease(ctx, lease, item.ID, item.Version, next); !errors.Is(err, want) {
+				t.Fatalf("CompareAndSwapWithLease error = %v, want %v", err, want)
+			}
+			if err := backend.DeleteWithLease(ctx, lease, item.ID, item.Version); !errors.Is(err, want) {
+				t.Fatalf("DeleteWithLease error = %v, want %v", err, want)
+			}
+			if err := lease.Release(ctx); !errors.Is(err, want) {
+				t.Fatalf("Lease.Release error = %v, want %v", err, want)
+			}
+			if !lease.Valid(background) {
+				t.Fatal("canceled leased operation changed lease ownership")
+			}
+			mustNoError(t, lease.Release(background))
+
+			if err := backend.Delete(ctx, item.ID); !errors.Is(err, want) {
+				t.Fatalf("Delete error = %v, want %v", err, want)
+			}
+			if _, err := backend.Get(background, item.ID); err != nil {
+				t.Fatal("canceled Delete removed state")
+			}
+		})
+	}
 }
 
 type leaseResult struct {

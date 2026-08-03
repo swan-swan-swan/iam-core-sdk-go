@@ -2,11 +2,13 @@ package core_test
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/json"
 	"errors"
 	"log/slog"
+	"maps"
 	"slices"
 	"strconv"
 	"testing"
@@ -17,11 +19,15 @@ import (
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/testkit"
 )
 
+type fixedVerifyClock struct{ now time.Time }
+
+func (c fixedVerifyClock) Now() time.Time { return c.now }
+
 func TestVerifyAccessTokenReturnsTypedGroupsAndActualScope(t *testing.T) {
 	runtime, signer := newCoreRuntime(t)
 	claims := signer.validClaims()
-	claims["scope"] = "groups openid profile"
-	claims["groups"] = []string{"ops", " ops ", "", "dev"}
+	claims["scope"] = " profile groups openid groups  profile "
+	claims["groups"] = []string{"ops", " ops ", "", "dev", "dev"}
 	claims["username"] = "alice"
 	claims["display_name"] = "Alice"
 	claims["email"] = "hidden@example.test"
@@ -35,6 +41,55 @@ func TestVerifyAccessTokenReturnsTypedGroupsAndActualScope(t *testing.T) {
 	}
 	if got.Username != "alice" || got.DisplayName != "Alice" || got.Email != "" {
 		t.Fatalf("scope-gated profile = %#v", got)
+	}
+}
+
+func TestVerifyAccessTokenInitializesEmptyGroupsWhenMappingIsAbsent(t *testing.T) {
+	runtime, signer := newCoreRuntime(t)
+	claims := signer.validClaims()
+	claims["scope"] = "openid groups openid"
+	delete(claims, "groups")
+
+	got, err := runtime.VerifyAccessToken(t.Context(), signer.AccessToken(t, claims))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Groups == nil || len(got.Groups) != 0 {
+		t.Fatalf("Groups = %#v, want initialized empty slice", got.Groups)
+	}
+	if !slices.Equal(got.Scopes, []string{"groups", "openid"}) {
+		t.Fatalf("Scopes = %#v, want normalized set", got.Scopes)
+	}
+}
+
+func TestVerifyAccessTokenRejectsFutureIssuedAtAtExactBoundary(t *testing.T) {
+	now := time.Unix(1_800_000_000, 125_000_000).UTC()
+	issuer := newCoreIssuer(t, core.Metadata{
+		CodeChallengeMethodsSupported:    []string{"S256"},
+		IDTokenSigningAlgValuesSupported: []string{"RS256"},
+	})
+	runtime, err := core.New(context.Background(), core.Config{
+		IssuerURL: issuer.Server.URL, Audiences: []string{"portal"}, HTTPClient: issuer.Server.Client(),
+		Clock: fixedVerifyClock{now: now},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := &tokenSigner{PrivateKey: issuer.Key, Issuer: issuer.Server.URL, Audience: "portal", KeyID: "test-key"}
+	base := map[string]any{
+		"sub": "op_usr_1", "iss": issuer.Server.URL, "aud": "portal", "jti": "jti-1",
+		"iat": json.Number("1800000000.125"), "exp": json.Number("1800000060.125"),
+	}
+
+	if _, err := runtime.VerifyAccessToken(context.Background(), signer.AccessToken(t, base)); err != nil {
+		t.Fatalf("iat equal to now was rejected: %v", err)
+	}
+	future := maps.Clone(base)
+	future["iat"] = json.Number("1800000000.125000001")
+	_, err = runtime.VerifyAccessToken(context.Background(), signer.AccessToken(t, future))
+	var typed *core.Error
+	if !errors.As(err, &typed) || typed.Kind != core.KindUnauthenticated || typed.Operation != "core.verify_access_token" {
+		t.Fatalf("future iat error = %#v, want canonical unauthenticated verification error", err)
 	}
 }
 

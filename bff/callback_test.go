@@ -29,6 +29,39 @@ func TestCallbackCreatesAuthenticatedServerSessionFromVerifiedAccessToken(t *tes
 	}
 }
 
+func TestCallbackCapsAccessTokenExpiryAtTokenResponseLifetime(t *testing.T) {
+	tests := []struct {
+		name      string
+		expiresIn int64
+		want      time.Duration
+	}{
+		{name: "token response is earlier", expiresIn: 60, want: time.Minute},
+		{name: "jwt is earlier", expiresIn: 600, want: 5 * time.Minute},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, _, issuer := newBFFTestClient(t)
+			receivedAt := issuer.Clock.Now()
+			issuer.ExpiresIn = test.expiresIn
+			created := completeLogin(t, client, issuer)
+			if want := receivedAt.Add(test.want); !created.Tokens.AccessTokenExpiry.Equal(want) {
+				t.Fatalf("AccessTokenExpiry = %s, want %s", created.Tokens.AccessTokenExpiry, want)
+			}
+		})
+	}
+}
+
+func TestCallbackRejectsTokenResponseLifetimeThatExpiresDuringValidation(t *testing.T) {
+	client, _, issuer := newBFFTestClient(t)
+	issuer.ExpiresIn = 1
+	issuer.UserInfoClockAdvance = 2 * time.Second
+	attempt := beginLogin(t, client, issuer, "/")
+	response := serveCallback(t, client, attempt, url.Values{"code": {testCode}, "state": {attempt.State}}.Encode())
+	if response.Code != http.StatusUnauthorized || hasSessionCookie(response, client) {
+		t.Fatalf("callback accepted an already-expired result: status=%d", response.Code)
+	}
+}
+
 func TestCallbackNeverElevatesRequestedScope(t *testing.T) {
 	client, _, issuer := newBFFTestClient(t)
 	issuer.TokenScope = "openid groups"

@@ -146,7 +146,7 @@ func TestIssuerSignedAccessAndIDTokensVerifyWithCore(t *testing.T) {
 		t.Fatal(err)
 	}
 	if auth.Subject != "test-subject" || auth.Issuer != issuer.URL() || !reflect.DeepEqual(auth.Audience, []string{testAudience}) ||
-		!reflect.DeepEqual(auth.Scopes, []string{"openid", "profile", "email", "groups"}) ||
+		!reflect.DeepEqual(auth.Scopes, []string{"email", "groups", "openid", "profile"}) ||
 		!reflect.DeepEqual(auth.Groups, []string{"engineering", "operations"}) {
 		t.Fatal("verified access-token claims differ from the configured fixture")
 	}

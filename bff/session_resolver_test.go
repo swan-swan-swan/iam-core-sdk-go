@@ -53,13 +53,24 @@ func TestResolveSessionPresentOnlyParsesConfiguredCookieShape(t *testing.T) {
 	}
 	malformed := requestWithSessionCookie(item.ID)
 	malformed.Header.Set("Cookie", "__Host-portal_session=bad/value")
-	if present, err := client.SessionPresent(malformed); err == nil || present {
+	if present, err := client.SessionPresent(malformed); err == nil || !present {
 		t.Fatalf("malformed SessionPresent()=%v/%v", present, err)
 	}
 	duplicate := requestWithSessionCookie(item.ID)
 	duplicate.Header.Set("Cookie", "__Host-portal_session=one; __Host-portal_session=two")
-	if present, err := client.SessionPresent(duplicate); err == nil || present {
+	if present, err := client.SessionPresent(duplicate); err == nil || !present {
 		t.Fatalf("duplicate SessionPresent()=%v/%v", present, err)
+	}
+	for _, raw := range []string{
+		"__Host-portal_session=\"unterminated",
+		"__Host-portal_session",
+		"other=value; __Host-portal_session=bad value",
+	} {
+		request := requestWithSessionCookie(item.ID)
+		request.Header["Cookie"] = []string{raw}
+		if present, err := client.SessionPresent(request); err == nil || !present {
+			t.Fatalf("raw malformed credential %q SessionPresent()=%v/%v", raw, present, err)
+		}
 	}
 	if counting.getCalls.Load() != 0 || counting.casCalls.Load() != 0 || issuer.RefreshCalls() != 0 {
 		t.Fatalf("SessionPresent caused stateful work: get=%d cas=%d refresh=%d", counting.getCalls.Load(), counting.casCalls.Load(), issuer.RefreshCalls())

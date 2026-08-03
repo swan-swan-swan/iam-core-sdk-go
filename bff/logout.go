@@ -105,6 +105,8 @@ func (c *Client) endSession(
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	operationCtx, cancel := context.WithTimeout(ctx, c.endSessionTimeout)
+	defer cancel()
 	endpoint, err := url.Parse(c.core.Metadata().EndSessionEndpoint)
 	if err != nil {
 		return bffError(core.KindProtocol, operation, 0, false)
@@ -112,7 +114,7 @@ func (c *Client) endSession(
 	query := endpoint.Query()
 	query.Set("id_token_hint", idToken)
 	endpoint.RawQuery = query.Encode()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	request, err := http.NewRequestWithContext(operationCtx, http.MethodGet, endpoint.String(), nil)
 	if err != nil {
 		return bffError(core.KindProtocol, operation, 0, false)
 	}
@@ -125,15 +127,17 @@ func (c *Client) endSession(
 		if response != nil && response.Body != nil {
 			response.Body.Close()
 		}
-		if ctx.Err() != nil {
-			return ctx.Err()
+		if contextErr := operationContextError(ctx, operationCtx, operation, 0); contextErr != nil {
+			return contextErr
 		}
 		return bffError(core.KindIAMUnavailable, operation, 0, true)
 	}
 	defer response.Body.Close()
 	body, bodyErr := readBoundedEndSessionBody(response.Body)
-	if bodyErr != nil && ctx.Err() != nil {
-		return ctx.Err()
+	if bodyErr != nil {
+		if contextErr := operationContextError(ctx, operationCtx, operation, response.StatusCode); contextErr != nil {
+			return contextErr
+		}
 	}
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
 		return statusOAuthError(operation, response.StatusCode)

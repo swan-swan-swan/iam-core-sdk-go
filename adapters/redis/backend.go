@@ -129,7 +129,7 @@ func (b *Backend) ConsumeFlow(ctx context.Context, id string) (*session.Flow, er
 }
 
 func (b *Backend) Create(ctx context.Context, item *session.Session) error {
-	if item == nil || !validID(item.ID) || item.Version != 1 {
+	if item == nil || !validID(item.ID) || item.Version != 1 || item.ExpiresAt.IsZero() || item.IdleExpiresAt.IsZero() {
 		return ErrInvalidInput
 	}
 	if err := contextError(ctx); err != nil {
@@ -221,7 +221,7 @@ func (b *Backend) getStored(ctx context.Context, id string) (*storedSession, err
 		if err := decodeModel(b.codec, payload, &item); err != nil {
 			return nil, err
 		}
-		if item.ID != id || !validID(item.ID) || item.Version != version || item.ExpiresAt.IsZero() {
+		if item.ID != id || !validID(item.ID) || item.Version != version || item.ExpiresAt.IsZero() || item.IdleExpiresAt.IsZero() {
 			return nil, ErrDecodeFailed
 		}
 		if !sessionExpired(&item, b.clock.Now()) {
@@ -693,18 +693,19 @@ func validOpaqueToken(value string, size int) bool {
 
 func validateReplacement(id string, expectedVersion uint64, next *session.Session) error {
 	if !validID(id) || expectedVersion == 0 || expectedVersion == math.MaxUint64 ||
-		next == nil || next.ID != id || next.Version != expectedVersion+1 {
+		next == nil || next.ID != id || next.Version != expectedVersion+1 ||
+		next.ExpiresAt.IsZero() || next.IdleExpiresAt.IsZero() {
 		return ErrInvalidInput
 	}
 	return nil
 }
 
 func sessionTTL(item *session.Session, now time.Time) (time.Duration, error) {
-	if item == nil || item.ExpiresAt.IsZero() {
+	if item == nil || item.ExpiresAt.IsZero() || item.IdleExpiresAt.IsZero() {
 		return 0, ErrInvalidInput
 	}
 	deadline := item.ExpiresAt
-	if !item.IdleExpiresAt.IsZero() && item.IdleExpiresAt.Before(deadline) {
+	if item.IdleExpiresAt.Before(deadline) {
 		deadline = item.IdleExpiresAt
 	}
 	return deadlineTTL(deadline, now)
@@ -737,8 +738,7 @@ func ceilMillisecond(duration time.Duration) time.Duration {
 }
 
 func sessionExpired(item *session.Session, now time.Time) bool {
-	return !item.ExpiresAt.After(now) ||
-		(!item.IdleExpiresAt.IsZero() && !item.IdleExpiresAt.After(now))
+	return !item.ExpiresAt.After(now) || !item.IdleExpiresAt.After(now)
 }
 
 func encodeModel(codec Codec, value any) ([]byte, error) {

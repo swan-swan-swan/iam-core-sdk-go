@@ -64,42 +64,43 @@ type bffIssuer struct {
 
 	Clock *mutableClock
 
-	mu                  sync.Mutex
-	expectedChallenge   string
-	expectedNonce       string
-	IDTokenNonce        string
-	IDTokenScope        string
-	AccessTokenGroups   optionalStrings
-	AccessAudience      string
-	AccessUsername      string
-	AccessDisplayName   string
-	AccessEmail         string
-	IDTokenGroups       optionalStrings
-	IDAudience          string
-	UserInfoGroups      optionalStrings
-	IDTokenSubject      string
-	UserInfoSubject     string
-	TokenStatus         int
-	TokenError          string
-	TokenResponseError  any
-	TokenErrorPresent   bool
-	TokenType           string
-	ExpiresIn           int64
-	TokenContentType    string
-	TokenBody           string
-	TokenRedirect       bool
-	UserInfoStatus      int
-	UserInfoContentType string
-	UserInfoBody        string
-	UserInfoRedirect    bool
-	UserInfoTargetCalls atomic.Int32
-	lastTokenForm       url.Values
-	lastTokenHeader     http.Header
-	lastUserInfoHeader  http.Header
-	issuedAccessToken   string
-	issuedIDToken       string
-	requestLog          []string
-	userinfoCalls       int
+	mu                   sync.Mutex
+	expectedChallenge    string
+	expectedNonce        string
+	IDTokenNonce         string
+	IDTokenScope         string
+	AccessTokenGroups    optionalStrings
+	AccessAudience       string
+	AccessUsername       string
+	AccessDisplayName    string
+	AccessEmail          string
+	IDTokenGroups        optionalStrings
+	IDAudience           string
+	UserInfoGroups       optionalStrings
+	IDTokenSubject       string
+	UserInfoSubject      string
+	TokenStatus          int
+	TokenError           string
+	TokenResponseError   any
+	TokenErrorPresent    bool
+	TokenType            string
+	ExpiresIn            int64
+	TokenContentType     string
+	TokenBody            string
+	TokenRedirect        bool
+	UserInfoStatus       int
+	UserInfoContentType  string
+	UserInfoBody         string
+	UserInfoClockAdvance time.Duration
+	UserInfoRedirect     bool
+	UserInfoTargetCalls  atomic.Int32
+	lastTokenForm        url.Values
+	lastTokenHeader      http.Header
+	lastUserInfoHeader   http.Header
+	issuedAccessToken    string
+	issuedIDToken        string
+	requestLog           []string
+	userinfoCalls        int
 }
 
 func newBFFIssuer(t *testing.T, clock *mutableClock) *bffIssuer {
@@ -251,6 +252,9 @@ func (i *bffIssuer) writeTokenResponse(w http.ResponseWriter, form url.Values) {
 func (i *bffIssuer) handleUserInfo(w http.ResponseWriter, request *http.Request) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	if i.UserInfoClockAdvance != 0 {
+		i.Clock.Advance(i.UserInfoClockAdvance)
+	}
 	i.userinfoCalls++
 	i.requestLog = append(i.requestLog, request.Method+" "+request.URL.Path)
 	i.lastUserInfoHeader = request.Header.Clone()

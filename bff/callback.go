@@ -149,6 +149,13 @@ func (c *Client) completeCallback(w http.ResponseWriter, request *http.Request) 
 		return bffError(core.KindSessionUnavailable, operation, 0, true)
 	}
 	now := c.clock.Now()
+	accessTokenExpiry := accessAuth.ExpiresAt
+	if tokens.expiresAt.Before(accessTokenExpiry) {
+		accessTokenExpiry = tokens.expiresAt
+	}
+	if !accessTokenExpiry.After(now) {
+		return bffError(core.KindUnauthenticated, operation, 0, false)
+	}
 	expiresAt := now.Add(c.sessionAbsoluteTTL)
 	idleExpiresAt := now.Add(c.sessionIdleTTL)
 	if !expiresAt.After(now) || !idleExpiresAt.After(now) {
@@ -158,7 +165,7 @@ func (c *Client) completeCallback(w http.ResponseWriter, request *http.Request) 
 		ID: sessionID, Version: 1,
 		Tokens: session.TokenSet{
 			AccessToken: tokens.accessToken, TokenType: tokens.tokenType, RefreshToken: tokens.refreshToken,
-			IDToken: tokens.idToken, AccessTokenExpiry: accessAuth.ExpiresAt,
+			IDToken: tokens.idToken, AccessTokenExpiry: accessTokenExpiry,
 			GrantedScopes: append([]string(nil), grantedScopes...),
 		},
 		Auth: auth, CreatedAt: now, UpdatedAt: now, LastSeenAt: now,

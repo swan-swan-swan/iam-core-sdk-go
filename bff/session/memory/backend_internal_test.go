@@ -21,6 +21,28 @@ func (r failingReader) Read([]byte) (int, error) {
 	return 0, r.err
 }
 
+type typedNilClock struct{}
+
+func (*typedNilClock) Now() time.Time { panic("typed-nil clock invoked") }
+
+type typedNilReader struct{}
+
+func (*typedNilReader) Read([]byte) (int, error) { panic("typed-nil reader invoked") }
+
+func TestNewRejectsTypedNilOptionsAndDefaultsAbsentOptions(t *testing.T) {
+	var clock *typedNilClock
+	var random *typedNilReader
+	if backend := New(Options{Clock: clock}); backend != nil {
+		t.Fatal("New accepted a typed-nil Clock")
+	}
+	if backend := New(Options{Random: random}); backend != nil {
+		t.Fatal("New accepted a typed-nil Random")
+	}
+	if backend := New(Options{}); backend == nil {
+		t.Fatal("New rejected absent optional collaborators")
+	}
+}
+
 func TestAcquireRefreshLeaseRandomFailureLeavesNoState(t *testing.T) {
 	now := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
 	clock := &sessiontest.Clock{}

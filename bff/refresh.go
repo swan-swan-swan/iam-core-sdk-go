@@ -223,10 +223,15 @@ func (c *Client) exchangeRefresh(
 	if refreshToken == "" || refreshToken != strings.TrimSpace(refreshToken) {
 		return exchangedTokens{}, bffError(core.KindUnauthenticated, operation, 0, false)
 	}
-	secret, err := c.clientSecret.Secret(ctx)
+	operationCtx, cancel := context.WithTimeout(ctx, c.tokenTimeout)
+	defer cancel()
+	secret, err := c.clientSecret.Secret(operationCtx)
+	if contextErr := operationContextError(ctx, operationCtx, operation, 0); contextErr != nil {
+		return exchangedTokens{}, contextErr
+	}
 	if err != nil {
-		if ctx.Err() != nil {
-			return exchangedTokens{}, ctx.Err()
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return exchangedTokens{}, err
 		}
 		return exchangedTokens{}, bffError(core.KindInvalidConfig, operation, 0, false)
 	}
@@ -238,7 +243,7 @@ func (c *Client) exchangeRefresh(
 		"client_id": {c.clientID}, "client_secret": {secret},
 	}
 	request, err := http.NewRequestWithContext(
-		ctx,
+		operationCtx,
 		http.MethodPost,
 		c.core.Metadata().TokenEndpoint,
 		strings.NewReader(form.Encode()),
@@ -253,16 +258,18 @@ func (c *Client) exchangeRefresh(
 		if response != nil && response.Body != nil {
 			response.Body.Close()
 		}
-		if ctx.Err() != nil {
-			return exchangedTokens{}, ctx.Err()
+		if contextErr := operationContextError(ctx, operationCtx, operation, 0); contextErr != nil {
+			return exchangedTokens{}, contextErr
 		}
 		return exchangedTokens{}, bffError(core.KindIAMUnavailable, operation, 0, true)
 	}
 	receivedAt := c.clock.Now()
 	defer response.Body.Close()
 	body, bodyErr := readOAuthJSON(response)
-	if bodyErr != nil && ctx.Err() != nil {
-		return exchangedTokens{}, ctx.Err()
+	if bodyErr != nil {
+		if contextErr := operationContextError(ctx, operationCtx, operation, response.StatusCode); contextErr != nil {
+			return exchangedTokens{}, contextErr
+		}
 	}
 	if response.StatusCode != http.StatusOK {
 		var endpoint refreshTokenResponse

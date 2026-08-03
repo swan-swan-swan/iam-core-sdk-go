@@ -61,8 +61,11 @@ type AccessTokenVerifier interface {
 
 func New(ctx context.Context, cfg Config) (runtime *Runtime, resultErr error) {
 	const operation = "core.discovery"
-	if ctx == nil || ctx.Err() != nil {
+	if ctx == nil {
 		return nil, coreError(KindInvalidConfig, operation, 0, false)
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	issuerURL, audiences, err := validateRuntimeConfig(cfg)
 	if err != nil {
@@ -111,6 +114,12 @@ func New(ctx context.Context, cfg Config) (runtime *Runtime, resultErr error) {
 	}
 	response, requestErr := runtime.transport.getJSON(request)
 	if requestErr != nil {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if requestCtx.Err() != nil {
+			return nil, coreError(KindIAMUnavailable, operation, response.status, true)
+		}
 		if errors.Is(requestErr, errTransportProtocol) {
 			return nil, coreError(KindProtocol, operation, response.status, false)
 		}

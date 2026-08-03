@@ -3,6 +3,7 @@ package core_test
 import (
 	"context"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -121,4 +122,96 @@ func TestNewRejectsIssuerMismatchRedirectAndOversizedDiscovery(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestNewClassifiesUnavailableStatusBeforeBodyProtocol(t *testing.T) {
+	for name, handler := range map[string]http.HandlerFunc{
+		"html": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = io.WriteString(w, "<html>remote-sensitive-detail</html>")
+		},
+		"oversized": func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.WriteHeader(http.StatusBadGateway)
+			_, _ = io.WriteString(w, strings.Repeat("remote-sensitive-detail", 1<<17))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := httptest.NewServer(handler)
+			defer server.Close()
+			_, err := core.New(t.Context(), core.Config{
+				IssuerURL: server.URL, Audiences: []string{"portal"}, HTTPClient: server.Client(),
+			})
+			var typed *core.Error
+			if !errors.As(err, &typed) || typed.Kind != core.KindIAMUnavailable || !typed.Retryable ||
+				typed.HTTPStatus < http.StatusInternalServerError {
+				t.Fatalf("New() error = %#v, want status-classified unavailable", err)
+			}
+			testkit.AssertNoLeak(t, err.Error(), "remote-sensitive-detail")
+		})
+	}
+}
+
+func TestNewPreservesCallerContextAndSeparatesDiscoveryTimeout(t *testing.T) {
+	for name, makeContext := range map[string]func() (context.Context, context.CancelFunc, error){
+		"pre-canceled": func() (context.Context, context.CancelFunc, error) {
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+			return ctx, func() {}, context.Canceled
+		},
+		"expired caller deadline": func() (context.Context, context.CancelFunc, error) {
+			ctx, cancel := context.WithDeadline(t.Context(), time.Unix(1, 0))
+			return ctx, cancel, context.DeadlineExceeded
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx, cancel, want := makeContext()
+			defer cancel()
+			_, err := core.New(ctx, core.Config{IssuerURL: "https://iam.example", Audiences: []string{"portal"}})
+			if !errors.Is(err, want) {
+				t.Fatalf("New() error = %v, want %v", err, want)
+			}
+		})
+	}
+
+	t.Run("caller canceled in flight", func(t *testing.T) {
+		started := make(chan struct{})
+		server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			close(started)
+			<-request.Context().Done()
+		}))
+		defer server.Close()
+		ctx, cancel := context.WithCancel(t.Context())
+		result := make(chan error, 1)
+		go func() {
+			_, err := core.New(ctx, core.Config{
+				IssuerURL: server.URL, Audiences: []string{"portal"}, HTTPClient: server.Client(), DiscoveryTimeout: time.Second,
+			})
+			result <- err
+		}()
+		<-started
+		cancel()
+		if err := <-result; !errors.Is(err, context.Canceled) {
+			t.Fatalf("New() error = %v, want caller context.Canceled", err)
+		}
+	})
+
+	t.Run("internal timeout", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			<-request.Context().Done()
+		}))
+		defer server.Close()
+		caller := t.Context()
+		_, err := core.New(caller, core.Config{
+			IssuerURL: server.URL, Audiences: []string{"portal"}, HTTPClient: server.Client(), DiscoveryTimeout: 10 * time.Millisecond,
+		})
+		var typed *core.Error
+		if !errors.As(err, &typed) || typed.Kind != core.KindIAMUnavailable || !typed.Retryable || errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("New() error = %#v, want sanitized internal-timeout unavailable", err)
+		}
+		if caller.Err() != nil {
+			t.Fatalf("internal timeout canceled caller: %v", caller.Err())
+		}
+	})
 }

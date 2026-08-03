@@ -55,8 +55,11 @@ client, err := bff.New(bff.Config{
     }),
     RedirectURL: redirectURL,
     Scopes:      bff.DefaultScopes(),
-    Backend:     backend,
-    HTTPClient:  iamHTTPClient,
+	Backend:     backend,
+	HTTPClient:  iamHTTPClient,
+	TokenTimeout:      5 * time.Second,
+	UserInfoTimeout:   5 * time.Second,
+	EndSessionTimeout: 5 * time.Second,
     SessionCookie: http.Cookie{
         Name:        "__Host-example_session",
         Value:       "",
@@ -83,6 +86,10 @@ client, err := bff.New(bff.Config{
     },
 })
 ```
+
+`TokenTimeout`、`UserInfoTimeout` 和 `EndSessionTimeout` 为零时各自使用 5 秒安全默认值；
+负值会在构造期被拒绝，更短的调用方 context deadline 优先。SDK 会复制而不会修改注入的
+`http.Client`，每个远端操作仍只尝试一次。
 
 Cookie 名称没有平台级默认值，调用方必须显式提供。生产 Cookie 必须是 host-only
 （`Domain` 留空）、`Path=/`、`HttpOnly`、`Secure`、`SameSite=Lax`，且名称使用
@@ -162,7 +169,8 @@ deny、401、503、超时、网络错误、审计失败和畸形 envelope 全部
 不使用 groups 或本地规则降级。PDP 401 不会刷新凭证或重试 PDP。
 
 上例通过 `Sessions: client` 配置了 BFF SessionResolver，因此同时出现 Bearer 与该 resolver
-识别的 BFF Session Cookie 时会直接返回 credential conflict，不比较两份凭证内容。
+平台 Cookie 名称时会直接返回 credential conflict；即使 Cookie 值畸形也不先解析或比较
+两份凭证内容。
 Session resolver 只允许在 PDP 调用之前按本地过期窗口主动 refresh；PDP 返回后授权链路
 不会再改变凭证。未配置 SessionResolver 的 Bearer-only Service 只解析 Authorization
 Header，并忽略无关 Cookie；它不会凭 Cookie 自动启用 BFF Session 认证。

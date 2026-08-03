@@ -1,16 +1,37 @@
 package httpauthz_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/httpauthz"
 )
+
+type serviceEventRecorder struct {
+	mu     sync.Mutex
+	events []core.Event
+}
+
+func (r *serviceEventRecorder) Observe(_ context.Context, event core.Event) {
+	r.mu.Lock()
+	r.events = append(r.events, event)
+	r.mu.Unlock()
+}
+
+func (r *serviceEventRecorder) snapshot() []core.Event {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]core.Event(nil), r.events...)
+}
 
 func TestRequirePermissionCallCounts(t *testing.T) {
 	tests := []struct {
@@ -49,6 +70,83 @@ func TestRequirePermissionCallCounts(t *testing.T) {
 				t.Fatalf("status/verifier/pdp/handler=%d/%d/%d/%d", response.Code, verifier.calls, pdp.calls, handlerCalls)
 			}
 		})
+	}
+}
+
+func TestServiceObservesAndLogsSanitizedTerminalOutcomes(t *testing.T) {
+	tests := []struct {
+		name        string
+		decision    httpauthz.Decision
+		verifierErr error
+		pdpErr      error
+		wantStatus  int
+		wantOutcome string
+		wantSource  string
+	}{
+		{name: "allow", decision: httpauthz.Decision{ID: "decision-id-sensitive", Allowed: true, ReasonCode: "policy_allow"}, wantStatus: http.StatusNoContent, wantOutcome: "allowed", wantSource: "bearer"},
+		{name: "deny", decision: httpauthz.Decision{ID: "decision-id-sensitive", Allowed: false, ReasonCode: "default_deny"}, wantStatus: http.StatusForbidden, wantOutcome: "forbidden", wantSource: "bearer"},
+		{name: "unauthenticated", verifierErr: core.NewError(core.KindUnauthenticated, "remote-error-sensitive", 0, false, errors.New("cause-sensitive")), wantStatus: http.StatusUnauthorized, wantOutcome: "unauthenticated"},
+		{name: "unavailable", pdpErr: core.NewError(core.KindIAMUnavailable, "remote-error-sensitive", 503, true, errors.New("cause-sensitive")), wantStatus: http.StatusServiceUnavailable, wantOutcome: "unavailable", wantSource: "bearer"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			observer := &serviceEventRecorder{}
+			var logs bytes.Buffer
+			verifier := &fakeVerifier{auth: validAuth(), err: test.verifierErr}
+			pdp := &fakeAuthorizer{decision: test.decision, err: test.pdpErr}
+			service, err := httpauthz.New(httpauthz.Config{
+				Verifier: verifier, PDP: pdp, Observer: observer,
+				Logger: slog.New(slog.NewJSONHandler(&logs, nil)),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			handler, err := service.Require(boundRoute(t), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				w.WriteHeader(http.StatusNoContent)
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := httptest.NewRequest(http.MethodGet, "/orders?query-secret-sensitive=1", nil)
+			request.Header.Set("Authorization", "Bearer bearer-token-sensitive")
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, request)
+
+			events := observer.snapshot()
+			if response.Code != test.wantStatus || len(events) != 1 || events[0].Operation != "httpauthz.service.require" ||
+				events[0].Outcome != test.wantOutcome || events[0].CredentialSource != test.wantSource || events[0].Duration < 0 {
+				t.Fatalf("status/events = %d/%#v", response.Code, events)
+			}
+			combined := logs.String() + fmt.Sprint(events)
+			for _, secret := range []string{"bearer-token-sensitive", "query-secret-sensitive", "decision-id-sensitive", "remote-error-sensitive", "cause-sensitive"} {
+				if strings.Contains(combined, secret) {
+					t.Fatalf("service observability leaked %q", secret)
+				}
+			}
+		})
+	}
+}
+
+func TestAuthenticateObservesOneSanitizedSuccess(t *testing.T) {
+	observer := &serviceEventRecorder{}
+	service, err := httpauthz.New(httpauthz.Config{
+		Verifier: &fakeVerifier{auth: validAuth()}, PDP: &fakeAuthorizer{}, Observer: observer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := service.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "Bearer token-sensitive")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	events := observer.snapshot()
+	if response.Code != http.StatusNoContent || len(events) != 1 || events[0].Operation != "httpauthz.service.authenticate" ||
+		events[0].Outcome != "authenticated" || events[0].CredentialSource != "bearer" {
+		t.Fatalf("status/events = %d/%#v", response.Code, events)
 	}
 }
 
@@ -99,6 +197,36 @@ func TestAuthorizationPresenceConflictsBeforeMalformedHeaderParsing(t *testing.T
 	}
 	request := httptest.NewRequest(http.MethodGet, "/", nil)
 	request.Header["Authorization"] = []string{"not bearer", "Bearer second"}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if gotKind != core.KindCredentialConflict || resolver.presentCalls != 1 || resolver.resolveCalls != 0 || verifier.calls != 0 {
+		t.Fatalf("kind/present/resolve/verifier=%q/%d/%d/%d", gotKind, resolver.presentCalls, resolver.resolveCalls, verifier.calls)
+	}
+}
+
+func TestMalformedPresentSessionConflictsBeforeCookieParsingError(t *testing.T) {
+	resolver := &fakeSessionResolver{present: true, presentErr: errors.New("malformed-cookie-sensitive")}
+	verifier := &fakeVerifier{auth: validAuth()}
+	var gotKind core.Kind
+	service, err := httpauthz.New(httpauthz.Config{
+		Verifier: verifier, PDP: &fakeAuthorizer{}, Sessions: resolver,
+		Responder: httpauthz.ErrorResponderFunc(func(w http.ResponseWriter, _ *http.Request, err error) {
+			var typed *core.Error
+			if errors.As(err, &typed) && typed != nil {
+				gotKind = typed.Kind
+			}
+			w.WriteHeader(http.StatusUnauthorized)
+		}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler, err := service.Authenticate(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { t.Fatal("handler called") }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "malformed-bearer-sensitive")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if gotKind != core.KindCredentialConflict || resolver.presentCalls != 1 || resolver.resolveCalls != 0 || verifier.calls != 0 {

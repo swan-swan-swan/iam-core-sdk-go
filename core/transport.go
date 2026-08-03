@@ -64,6 +64,9 @@ func (c transportClient) getJSON(ctxRequest *http.Request) (transportResponse, e
 		return transportResponse{}, errTransportUnavailable
 	}
 	defer raw.Body.Close()
+	if raw.StatusCode != http.StatusOK {
+		return transportResponse{status: raw.StatusCode}, nil
+	}
 	body, err := io.ReadAll(io.LimitReader(raw.Body, maxResponseBodyBytes+1))
 	if err != nil {
 		return transportResponse{status: raw.StatusCode}, errTransportUnavailable

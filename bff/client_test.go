@@ -32,36 +32,39 @@ func (*typedNilSecretProvider) Secret(context.Context) (string, error) { return 
 
 func TestNewRejectsInvalidBFFConfiguration(t *testing.T) {
 	tests := map[string]func(*Config){
-		"missing core":                func(config *Config) { config.Core = nil },
-		"missing client id":           func(config *Config) { config.ClientID = "" },
-		"unaccepted client id":        func(config *Config) { config.ClientID = "different" },
-		"missing secret provider":     func(config *Config) { config.ClientSecret = nil },
-		"typed nil secret provider":   func(config *Config) { config.ClientSecret = (*typedNilSecretProvider)(nil) },
-		"missing backend":             func(config *Config) { config.Backend = nil },
-		"redirect whitespace":         func(config *Config) { config.RedirectURL = " " + config.RedirectURL },
-		"redirect query":              func(config *Config) { config.RedirectURL += "?secret=value" },
-		"redirect fragment":           func(config *Config) { config.RedirectURL += "#fragment" },
-		"redirect user info":          func(config *Config) { config.RedirectURL = "https://user@example.test/callback" },
-		"non-loopback http redirect":  func(config *Config) { config.RedirectURL = "http://example.test/callback" },
-		"missing openid":              func(config *Config) { config.Scopes = []string{"profile"} },
-		"roles scope":                 func(config *Config) { config.Scopes = []string{"openid", "roles"} },
-		"duplicate scope":             func(config *Config) { config.Scopes = []string{"openid", "openid"} },
-		"whitespace scope":            func(config *Config) { config.Scopes = []string{"openid", " profile"} },
-		"missing session cookie name": func(config *Config) { config.SessionCookie.Name = "" },
-		"same cookie names":           func(config *Config) { config.FlowCookie.Name = config.SessionCookie.Name },
-		"cookie domain":               func(config *Config) { config.FlowCookie.Domain = "example.test" },
-		"cookie path":                 func(config *Config) { config.FlowCookie.Path = "/auth" },
-		"cookie not httponly":         func(config *Config) { config.FlowCookie.HttpOnly = false },
-		"cookie wrong samesite":       func(config *Config) { config.FlowCookie.SameSite = http.SameSiteNoneMode },
-		"cookie configured value":     func(config *Config) { config.FlowCookie.Value = "secret" },
-		"cookie max age":              func(config *Config) { config.FlowCookie.MaxAge = 60 },
-		"cookie expiry":               func(config *Config) { config.FlowCookie.Expires = time.Unix(1_900_000_000, 0) },
-		"partitioned cookie":          func(config *Config) { config.FlowCookie.Partitioned = true },
-		"negative flow ttl":           func(config *Config) { config.FlowTTL = -time.Second },
-		"negative absolute ttl":       func(config *Config) { config.SessionAbsoluteTTL = -time.Second },
-		"negative idle ttl":           func(config *Config) { config.SessionIdleTTL = -time.Second },
-		"negative refresh window":     func(config *Config) { config.RefreshBeforeExpiry = -time.Second },
-		"negative refresh lease":      func(config *Config) { config.RefreshLeaseTTL = -time.Second },
+		"missing core":                 func(config *Config) { config.Core = nil },
+		"missing client id":            func(config *Config) { config.ClientID = "" },
+		"unaccepted client id":         func(config *Config) { config.ClientID = "different" },
+		"missing secret provider":      func(config *Config) { config.ClientSecret = nil },
+		"typed nil secret provider":    func(config *Config) { config.ClientSecret = (*typedNilSecretProvider)(nil) },
+		"missing backend":              func(config *Config) { config.Backend = nil },
+		"redirect whitespace":          func(config *Config) { config.RedirectURL = " " + config.RedirectURL },
+		"redirect query":               func(config *Config) { config.RedirectURL += "?secret=value" },
+		"redirect fragment":            func(config *Config) { config.RedirectURL += "#fragment" },
+		"redirect user info":           func(config *Config) { config.RedirectURL = "https://user@example.test/callback" },
+		"non-loopback http redirect":   func(config *Config) { config.RedirectURL = "http://example.test/callback" },
+		"missing openid":               func(config *Config) { config.Scopes = []string{"profile"} },
+		"roles scope":                  func(config *Config) { config.Scopes = []string{"openid", "roles"} },
+		"duplicate scope":              func(config *Config) { config.Scopes = []string{"openid", "openid"} },
+		"whitespace scope":             func(config *Config) { config.Scopes = []string{"openid", " profile"} },
+		"missing session cookie name":  func(config *Config) { config.SessionCookie.Name = "" },
+		"same cookie names":            func(config *Config) { config.FlowCookie.Name = config.SessionCookie.Name },
+		"cookie domain":                func(config *Config) { config.FlowCookie.Domain = "example.test" },
+		"cookie path":                  func(config *Config) { config.FlowCookie.Path = "/auth" },
+		"cookie not httponly":          func(config *Config) { config.FlowCookie.HttpOnly = false },
+		"cookie wrong samesite":        func(config *Config) { config.FlowCookie.SameSite = http.SameSiteNoneMode },
+		"cookie configured value":      func(config *Config) { config.FlowCookie.Value = "secret" },
+		"cookie max age":               func(config *Config) { config.FlowCookie.MaxAge = 60 },
+		"cookie expiry":                func(config *Config) { config.FlowCookie.Expires = time.Unix(1_900_000_000, 0) },
+		"partitioned cookie":           func(config *Config) { config.FlowCookie.Partitioned = true },
+		"negative flow ttl":            func(config *Config) { config.FlowTTL = -time.Second },
+		"negative absolute ttl":        func(config *Config) { config.SessionAbsoluteTTL = -time.Second },
+		"negative idle ttl":            func(config *Config) { config.SessionIdleTTL = -time.Second },
+		"negative refresh window":      func(config *Config) { config.RefreshBeforeExpiry = -time.Second },
+		"negative refresh lease":       func(config *Config) { config.RefreshLeaseTTL = -time.Second },
+		"negative token timeout":       func(config *Config) { config.TokenTimeout = -time.Second },
+		"negative userinfo timeout":    func(config *Config) { config.UserInfoTimeout = -time.Second },
+		"negative end session timeout": func(config *Config) { config.EndSessionTimeout = -time.Second },
 		"duplicate allowed return": func(config *Config) {
 			config.AllowedReturnToURLs = []string{"https://app.example.test/done", "https://app.example.test/done"}
 		},
@@ -159,6 +162,7 @@ func TestNewClonesInjectedHTTPClientAndConfiguredSlices(t *testing.T) {
 		t.Fatal(err)
 	}
 	injected := issuer.Server.Client()
+	injected.Timeout = 37 * time.Second
 	injected.Jar = jar
 	originalRedirect := func(*http.Request, []*http.Request) error { return nil }
 	injected.CheckRedirect = originalRedirect
@@ -176,8 +180,30 @@ func TestNewClonesInjectedHTTPClientAndConfiguredSlices(t *testing.T) {
 	if injected.Jar != jar || injected.CheckRedirect == nil {
 		t.Fatal("New mutated injected HTTP client")
 	}
-	if client.httpClient == injected || client.httpClient.Jar != nil {
+	if client.httpClient == injected || client.httpClient.Jar != nil || injected.Timeout != 37*time.Second || client.httpClient.Timeout != injected.Timeout {
 		t.Fatal("Client did not isolate injected HTTP state")
+	}
+}
+
+func TestNewAppliesFiniteOperationTimeoutDefaults(t *testing.T) {
+	config, _, _ := newBFFTestConfig(t)
+	client, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.tokenTimeout <= 0 || client.userInfoTimeout <= 0 || client.endSessionTimeout <= 0 {
+		t.Fatalf("operation timeouts = %s/%s/%s, want finite positive defaults", client.tokenTimeout, client.userInfoTimeout, client.endSessionTimeout)
+	}
+
+	config.TokenTimeout = 11 * time.Second
+	config.UserInfoTimeout = 12 * time.Second
+	config.EndSessionTimeout = 13 * time.Second
+	client, err = New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.tokenTimeout != 11*time.Second || client.userInfoTimeout != 12*time.Second || client.endSessionTimeout != 13*time.Second {
+		t.Fatalf("configured operation timeouts = %s/%s/%s", client.tokenTimeout, client.userInfoTimeout, client.endSessionTimeout)
 	}
 }
 

@@ -57,8 +57,22 @@ func (c *Client) exchange(ctx context.Context, code, verifier string) (tokens ex
 	if ctx == nil || code == "" || code != strings.TrimSpace(code) || !validPKCEVerifier(verifier) {
 		return exchangedTokens{}, bffError(core.KindProtocol, operation, 0, false)
 	}
-	secret, err := c.clientSecret.Secret(ctx)
-	if err != nil || secret == "" || secret != strings.TrimSpace(secret) {
+	if err := ctx.Err(); err != nil {
+		return exchangedTokens{}, err
+	}
+	operationCtx, cancel := context.WithTimeout(ctx, c.tokenTimeout)
+	defer cancel()
+	secret, err := c.clientSecret.Secret(operationCtx)
+	if contextErr := operationContextError(ctx, operationCtx, operation, 0); contextErr != nil {
+		return exchangedTokens{}, contextErr
+	}
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return exchangedTokens{}, err
+		}
+		return exchangedTokens{}, bffError(core.KindInvalidConfig, operation, 0, false)
+	}
+	if secret == "" || secret != strings.TrimSpace(secret) {
 		return exchangedTokens{}, bffError(core.KindInvalidConfig, operation, 0, false)
 	}
 	form := url.Values{
@@ -69,7 +83,7 @@ func (c *Client) exchange(ctx context.Context, code, verifier string) (tokens ex
 		"client_secret": {secret},
 		"code_verifier": {verifier},
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.core.Metadata().TokenEndpoint, strings.NewReader(form.Encode()))
+	request, err := http.NewRequestWithContext(operationCtx, http.MethodPost, c.core.Metadata().TokenEndpoint, strings.NewReader(form.Encode()))
 	if err != nil {
 		return exchangedTokens{}, bffError(core.KindProtocol, operation, 0, false)
 	}
@@ -80,15 +94,18 @@ func (c *Client) exchange(ctx context.Context, code, verifier string) (tokens ex
 		if response != nil && response.Body != nil {
 			response.Body.Close()
 		}
-		if ctx.Err() != nil {
-			return exchangedTokens{}, ctx.Err()
+		if contextErr := operationContextError(ctx, operationCtx, operation, 0); contextErr != nil {
+			return exchangedTokens{}, contextErr
 		}
 		return exchangedTokens{}, bffError(core.KindIAMUnavailable, operation, 0, true)
 	}
+	receivedAt := c.clock.Now()
 	defer response.Body.Close()
 	body, err := readOAuthJSON(response)
-	if err != nil && ctx.Err() != nil {
-		return exchangedTokens{}, ctx.Err()
+	if err != nil {
+		if contextErr := operationContextError(ctx, operationCtx, operation, response.StatusCode); contextErr != nil {
+			return exchangedTokens{}, contextErr
+		}
 	}
 	if response.StatusCode != http.StatusOK {
 		var endpoint tokenResponse
@@ -127,7 +144,8 @@ func (c *Client) exchange(ctx context.Context, code, verifier string) (tokens ex
 	}
 	return exchangedTokens{
 		accessToken: decoded.AccessToken, tokenType: decoded.TokenType, refreshToken: refreshToken,
-		idToken: decoded.IDToken, expiresIn: decoded.ExpiresIn, scope: scope,
+		idToken: decoded.IDToken, expiresIn: decoded.ExpiresIn,
+		expiresAt: receivedAt.Add(time.Duration(decoded.ExpiresIn) * time.Second), scope: scope,
 	}, nil
 }
 
@@ -149,7 +167,12 @@ func (c *Client) loadUserInfo(ctx context.Context, accessToken string) (identity
 	if ctx == nil || accessToken == "" || accessToken != strings.TrimSpace(accessToken) {
 		return userInfo{}, bffError(core.KindProtocol, operation, 0, false)
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, c.core.Metadata().UserInfoEndpoint, nil)
+	if err := ctx.Err(); err != nil {
+		return userInfo{}, err
+	}
+	operationCtx, cancel := context.WithTimeout(ctx, c.userInfoTimeout)
+	defer cancel()
+	request, err := http.NewRequestWithContext(operationCtx, http.MethodGet, c.core.Metadata().UserInfoEndpoint, nil)
 	if err != nil {
 		return userInfo{}, bffError(core.KindProtocol, operation, 0, false)
 	}
@@ -160,15 +183,17 @@ func (c *Client) loadUserInfo(ctx context.Context, accessToken string) (identity
 		if response != nil && response.Body != nil {
 			response.Body.Close()
 		}
-		if ctx.Err() != nil {
-			return userInfo{}, ctx.Err()
+		if contextErr := operationContextError(ctx, operationCtx, operation, 0); contextErr != nil {
+			return userInfo{}, contextErr
 		}
 		return userInfo{}, bffError(core.KindIAMUnavailable, operation, 0, true)
 	}
 	defer response.Body.Close()
 	body, err := readOAuthJSON(response)
-	if err != nil && ctx.Err() != nil {
-		return userInfo{}, ctx.Err()
+	if err != nil {
+		if contextErr := operationContextError(ctx, operationCtx, operation, response.StatusCode); contextErr != nil {
+			return userInfo{}, contextErr
+		}
 	}
 	if response.StatusCode != http.StatusOK {
 		return userInfo{}, statusOAuthError(operation, response.StatusCode)

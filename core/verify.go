@@ -88,7 +88,7 @@ func (r *Runtime) verifyToken(ctx context.Context, raw, operation, expectedNonce
 	now := numericDateFromTime(r.clock.Now())
 	if strings.TrimSpace(claims.Subject) == "" || strings.TrimSpace(claims.Issuer) == "" ||
 		strings.TrimSpace(claims.TokenID) == "" || normalizeIssuer(claims.Issuer) != normalizeIssuer(r.metadata.Issuer) ||
-		!r.acceptsAnyAudience(audience) || expiresAt.value.Cmp(now) <= 0 ||
+		!r.acceptsAnyAudience(audience) || issuedAt.value.Cmp(now) > 0 || expiresAt.value.Cmp(now) <= 0 ||
 		(notBefore != nil && notBefore.value.Cmp(now) > 0) {
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
 	}
@@ -96,11 +96,11 @@ func (r *Runtime) verifyToken(ctx context.Context, raw, operation, expectedNonce
 		subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(expectedNonce)) != 1) {
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
 	}
-	scopes := strings.Fields(claims.Scope)
+	scopes := normalizeValues(strings.Fields(claims.Scope))
 	auth = AuthContext{
 		Subject: claims.Subject, Issuer: claims.Issuer, Audience: append([]string(nil), audience...),
 		TokenID: claims.TokenID, IssuedAt: issuedAt.asTime(), ExpiresAt: expiresAt.asTime(),
-		Scopes: append([]string(nil), scopes...),
+		Scopes: append([]string(nil), scopes...), Groups: []string{},
 	}
 	if notBefore != nil {
 		auth.NotBefore = notBefore.asTime()
@@ -127,18 +127,19 @@ func (r *Runtime) acceptsAnyAudience(audiences []string) bool {
 }
 
 func normalizeGroups(groups []string) []string {
-	if len(groups) == 0 {
-		return nil
-	}
-	unique := make(map[string]struct{}, len(groups))
-	for _, raw := range groups {
-		if group := strings.TrimSpace(raw); group != "" {
-			unique[group] = struct{}{}
+	return normalizeValues(groups)
+}
+
+func normalizeValues(values []string) []string {
+	unique := make(map[string]struct{}, len(values))
+	for _, raw := range values {
+		if value := strings.TrimSpace(raw); value != "" {
+			unique[value] = struct{}{}
 		}
 	}
 	normalized := make([]string, 0, len(unique))
-	for group := range unique {
-		normalized = append(normalized, group)
+	for value := range unique {
+		normalized = append(normalized, value)
 	}
 	slices.Sort(normalized)
 	return normalized

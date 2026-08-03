@@ -11,6 +11,7 @@ import (
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/bff/session"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/internal/nilcheck"
 )
 
 var errInvalidInput = errors.New("session memory: invalid input")
@@ -51,7 +52,13 @@ type refreshLease struct {
 	owner     string
 }
 
+// New constructs a single-process Backend. Absent Clock and Random values use
+// safe defaults; a typed-nil collaborator is invalid and returns nil.
 func New(options Options) *Backend {
+	if (options.Clock != nil && nilcheck.IsNil(options.Clock)) ||
+		(options.Random != nil && nilcheck.IsNil(options.Random)) {
+		return nil
+	}
 	if options.Clock == nil {
 		options.Clock = core.RealClock{}
 	}
@@ -67,7 +74,10 @@ func New(options Options) *Backend {
 	}
 }
 
-func (b *Backend) PutFlow(_ context.Context, flow *session.Flow) error {
+func (b *Backend) PutFlow(ctx context.Context, flow *session.Flow) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if flow == nil || flow.ID == "" {
 		return errInvalidInput
 	}
@@ -75,6 +85,9 @@ func (b *Backend) PutFlow(_ context.Context, flow *session.Flow) error {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	now := b.clock.Now()
 	if flowExpired(copied, now) {
 		return session.ErrExpired
@@ -89,12 +102,18 @@ func (b *Backend) PutFlow(_ context.Context, flow *session.Flow) error {
 	return nil
 }
 
-func (b *Backend) ConsumeFlow(_ context.Context, id string) (*session.Flow, error) {
+func (b *Backend) ConsumeFlow(ctx context.Context, id string) (*session.Flow, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	if id == "" {
 		return nil, errInvalidInput
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	flow, ok := b.flows[id]
 	if !ok {
 		return nil, session.ErrNotFound
@@ -106,7 +125,10 @@ func (b *Backend) ConsumeFlow(_ context.Context, id string) (*session.Flow, erro
 	return cloneFlow(flow), nil
 }
 
-func (b *Backend) Create(_ context.Context, item *session.Session) error {
+func (b *Backend) Create(ctx context.Context, item *session.Session) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if err := validateCreatedSession(item); err != nil {
 		return err
 	}
@@ -114,6 +136,9 @@ func (b *Backend) Create(_ context.Context, item *session.Session) error {
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	now := b.clock.Now()
 	if sessionExpired(copied, now) {
 		return session.ErrExpired
@@ -128,12 +153,18 @@ func (b *Backend) Create(_ context.Context, item *session.Session) error {
 	return nil
 }
 
-func (b *Backend) Get(_ context.Context, id string) (*session.Session, error) {
+func (b *Backend) Get(ctx context.Context, id string) (*session.Session, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	if id == "" {
 		return nil, errInvalidInput
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	item, ok := b.sessions[id]
 	if !ok {
 		return nil, session.ErrNotFound
@@ -146,11 +177,14 @@ func (b *Backend) Get(_ context.Context, id string) (*session.Session, error) {
 }
 
 func (b *Backend) CompareAndSwap(
-	_ context.Context,
+	ctx context.Context,
 	id string,
 	expectedVersion uint64,
 	next *session.Session,
 ) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if next == nil {
 		return errInvalidInput
 	}
@@ -158,32 +192,47 @@ func (b *Backend) CompareAndSwap(
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if err := validateReplacement(id, expectedVersion, copied); err != nil {
 		return err
 	}
 	return b.compareAndSwapLocked(id, expectedVersion, copied, b.clock.Now())
 }
 
-func (b *Backend) Delete(_ context.Context, id string) error {
+func (b *Backend) Delete(ctx context.Context, id string) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if id == "" {
 		return errInvalidInput
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	b.deleteSessionLocked(id)
 	return nil
 }
 
 func (b *Backend) AcquireRefreshLease(
-	_ context.Context,
+	ctx context.Context,
 	sessionID string,
 	duration time.Duration,
 ) (session.Lease, error) {
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	if sessionID == "" || duration <= 0 {
 		return nil, errInvalidInput
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return nil, err
+	}
 	now := b.clock.Now()
 	item, ok := b.sessions[sessionID]
 	if !ok {
@@ -220,12 +269,15 @@ func (b *Backend) AcquireRefreshLease(
 }
 
 func (b *Backend) CompareAndSwapWithLease(
-	_ context.Context,
+	ctx context.Context,
 	lease session.Lease,
 	id string,
 	expectedVersion uint64,
 	next *session.Session,
 ) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if next == nil {
 		return errInvalidInput
 	}
@@ -233,6 +285,9 @@ func (b *Backend) CompareAndSwapWithLease(
 
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if err := validateReplacement(id, expectedVersion, copied); err != nil {
 		return err
 	}
@@ -244,16 +299,22 @@ func (b *Backend) CompareAndSwapWithLease(
 }
 
 func (b *Backend) DeleteWithLease(
-	_ context.Context,
+	ctx context.Context,
 	lease session.Lease,
 	id string,
 	expectedVersion uint64,
 ) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if id == "" || expectedVersion == 0 {
 		return errInvalidInput
 	}
 	b.mu.Lock()
 	defer b.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	now := b.clock.Now()
 	if !b.ownsLeaseLocked(lease, id, now) {
 		return session.ErrLeaseLost
@@ -273,21 +334,30 @@ func (b *Backend) DeleteWithLease(
 	return nil
 }
 
-func (l *refreshLease) Valid(_ context.Context) bool {
-	if l == nil || l.backend == nil {
+func (l *refreshLease) Valid(ctx context.Context) bool {
+	if contextError(ctx) != nil || l == nil || l.backend == nil {
 		return false
 	}
 	l.backend.mu.Lock()
 	defer l.backend.mu.Unlock()
+	if contextError(ctx) != nil {
+		return false
+	}
 	return l.backend.ownsLeaseLocked(l, l.sessionID, l.backend.clock.Now())
 }
 
-func (l *refreshLease) Release(_ context.Context) error {
+func (l *refreshLease) Release(ctx context.Context) error {
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if l == nil || l.backend == nil {
 		return session.ErrLeaseLost
 	}
 	l.backend.mu.Lock()
 	defer l.backend.mu.Unlock()
+	if err := contextError(ctx); err != nil {
+		return err
+	}
 	if !l.backend.ownsLeaseLocked(l, l.sessionID, l.backend.clock.Now()) {
 		return session.ErrLeaseLost
 	}
@@ -338,7 +408,7 @@ func (b *Backend) deleteSessionLocked(id string) {
 }
 
 func validateCreatedSession(item *session.Session) error {
-	if item == nil || item.ID == "" || item.Version == 0 {
+	if item == nil || item.ID == "" || item.Version != 1 || item.ExpiresAt.IsZero() || item.IdleExpiresAt.IsZero() {
 		return errInvalidInput
 	}
 	return nil
@@ -346,7 +416,7 @@ func validateCreatedSession(item *session.Session) error {
 
 func validateReplacement(id string, expectedVersion uint64, next *session.Session) error {
 	if id == "" || expectedVersion == 0 || expectedVersion == ^uint64(0) || next == nil ||
-		next.ID != id || next.Version != expectedVersion+1 {
+		next.ID != id || next.Version != expectedVersion+1 || next.ExpiresAt.IsZero() || next.IdleExpiresAt.IsZero() {
 		return errInvalidInput
 	}
 	return nil
@@ -358,6 +428,13 @@ func flowExpired(flow *session.Flow, now time.Time) bool {
 
 func sessionExpired(item *session.Session, now time.Time) bool {
 	return !item.ExpiresAt.After(now) || !item.IdleExpiresAt.After(now)
+}
+
+func contextError(ctx context.Context) error {
+	if ctx == nil {
+		return errInvalidInput
+	}
+	return ctx.Err()
 }
 
 func cloneFlow(flow *session.Flow) *session.Flow {

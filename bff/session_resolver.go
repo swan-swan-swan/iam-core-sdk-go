@@ -18,14 +18,37 @@ func (c *Client) SessionPresent(request *http.Request) (bool, error) {
 	if request == nil {
 		return false, bffError(core.KindProtocol, operation, 0, false)
 	}
-	cookies := request.CookiesNamed(c.sessionCookie.Name)
-	if len(cookies) == 0 {
+	if !rawCookieNamePresent(request, c.sessionCookie.Name) {
 		return false, nil
 	}
+	cookies := request.CookiesNamed(c.sessionCookie.Name)
 	if len(cookies) != 1 || !validCookieValue(cookies[0].Value) {
-		return false, bffError(core.KindProtocol, operation, 0, false)
+		return true, bffError(core.KindProtocol, operation, 0, false)
 	}
 	return true, nil
+}
+
+func rawCookieNamePresent(request *http.Request, name string) bool {
+	if request == nil || name == "" {
+		return false
+	}
+	for headerName, values := range request.Header {
+		if !strings.EqualFold(headerName, "Cookie") {
+			continue
+		}
+		for _, value := range values {
+			for part := range strings.SplitSeq(value, ";") {
+				candidate := strings.TrimSpace(part)
+				if before, _, found := strings.Cut(candidate, "="); found {
+					candidate = strings.TrimSpace(before)
+				}
+				if candidate == name {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 func (c *Client) ResolveSession(request *http.Request) (core.Credential, bool, error) {

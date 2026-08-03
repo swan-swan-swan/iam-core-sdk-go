@@ -55,6 +55,9 @@ func (s *Service) selectCredential(request *http.Request) (core.Credential, erro
 	if s.sessions != nil {
 		var err error
 		sessionPresent, err = s.sessions.SessionPresent(request)
+		if headerPresent && sessionPresent {
+			return core.Credential{}, credentialError(core.KindCredentialConflict)
+		}
 		if err != nil {
 			return core.Credential{}, err
 		}

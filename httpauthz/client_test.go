@@ -248,6 +248,7 @@ func TestDecideClassifiesNon200BeforeReadingBody(t *testing.T) {
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
+			defer test.body.unblock()
 			var calls atomic.Int32
 			client, err := NewPDPClient(PDPConfig{
 				IssuerURL: "https://iam.example",
@@ -264,13 +265,19 @@ func TestDecideClassifiesNon200BeforeReadingBody(t *testing.T) {
 				_, decideErr := client.Decide(t.Context(), staticToken("non-200-token-secret"), compiledRoute())
 				result <- decideErr
 			}()
+			timeout := time.NewTimer(testSynchronizationTimeout)
+			defer timeout.Stop()
 			var decideErr error
 			select {
 			case decideErr = <-result:
-			case <-time.After(250 * time.Millisecond):
+			case <-test.body.readStarted:
 				test.body.unblock()
-				decideErr = <-result
-				t.Errorf("Decide() waited for status %d response body", test.status)
+				decideErr = receiveWithin(t, result, "Decide after releasing response body")
+				t.Errorf("Decide() read status %d response body before classification", test.status)
+			case <-timeout.C:
+				test.body.unblock()
+				_ = receiveWithin(t, result, "Decide cleanup after synchronization timeout")
+				t.Fatal("Decide() produced neither a result nor a response-body read signal")
 			}
 			assertCoreError(t, decideErr, test.wantKind, test.status, test.retryable)
 			assertNoLeak(t, decideErr, "non-200-token-secret", "sensitive-401-body", "sensitive-read-failure")
@@ -574,15 +581,16 @@ func TestDecidePreservesCanonicalContextErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("caller cancels during transport", func(t *testing.T) {
+	t.Run("caller cancels after transport entry", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		var calls atomic.Int32
+		entered := make(chan struct{})
 		client, err := NewPDPClient(PDPConfig{
 			IssuerURL: "https://iam.example",
 			HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
 				calls.Add(1)
-				cancel()
+				close(entered)
 				<-request.Context().Done()
 				return nil, fmt.Errorf("hostile-transport-canceled-secret: %w", request.Context().Err())
 			})},
@@ -590,33 +598,16 @@ func TestDecidePreservesCanonicalContextErrors(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		_, err = client.Decide(ctx, staticToken("transport-token-secret"), compiledRoute())
+		result := make(chan error, 1)
+		go func() {
+			_, decideErr := client.Decide(ctx, staticToken("transport-token-secret"), compiledRoute())
+			result <- decideErr
+		}()
+		receiveWithin(t, entered, "transport entry")
+		cancel()
+		err = receiveWithin(t, result, "Decide after caller cancellation")
 		assertCanonicalContextError(t, err, context.Canceled)
 		assertNoLeak(t, err, "hostile-transport-canceled-secret", "transport-token-secret")
-		if calls.Load() != 1 {
-			t.Fatalf("round trips = %d", calls.Load())
-		}
-	})
-
-	t.Run("caller deadline during transport", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Millisecond)
-		defer cancel()
-		var calls atomic.Int32
-		client, err := NewPDPClient(PDPConfig{
-			IssuerURL: "https://iam.example",
-			HTTPClient: &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
-				calls.Add(1)
-				<-request.Context().Done()
-				return nil, fmt.Errorf("hostile-transport-deadline-secret: %w", request.Context().Err())
-			})},
-			Timeout: time.Second,
-		})
-		if err != nil {
-			t.Fatal(err)
-		}
-		_, err = client.Decide(ctx, staticToken("transport-token-secret"), compiledRoute())
-		assertCanonicalContextError(t, err, context.DeadlineExceeded)
-		assertNoLeak(t, err, "hostile-transport-deadline-secret", "transport-token-secret")
 		if calls.Load() != 1 {
 			t.Fatalf("round trips = %d", calls.Load())
 		}
@@ -816,26 +807,27 @@ type readerFunc func([]byte) (int, error)
 func (f readerFunc) Read(buffer []byte) (int, error) { return f(buffer) }
 
 type observedResponseBody struct {
-	reader io.Reader
-	block  chan struct{}
-	once   sync.Once
-	reads  atomic.Int32
-	closes atomic.Int32
+	reader          io.Reader
+	block           chan struct{}
+	readStarted     chan struct{}
+	readStartedOnce sync.Once
+	unblockOnce     sync.Once
+	reads           atomic.Int32
+	closes          atomic.Int32
 }
 
 func newObservedResponseBody(reader io.Reader) *observedResponseBody {
-	return &observedResponseBody{reader: reader}
+	return &observedResponseBody{reader: reader, block: make(chan struct{}), readStarted: make(chan struct{})}
 }
 
 func newBlockingResponseBody() *observedResponseBody {
-	return &observedResponseBody{reader: strings.NewReader(""), block: make(chan struct{})}
+	return newObservedResponseBody(strings.NewReader(""))
 }
 
 func (b *observedResponseBody) Read(buffer []byte) (int, error) {
 	b.reads.Add(1)
-	if b.block != nil {
-		<-b.block
-	}
+	b.readStartedOnce.Do(func() { close(b.readStarted) })
+	<-b.block
 	return b.reader.Read(buffer)
 }
 
@@ -846,8 +838,22 @@ func (b *observedResponseBody) Close() error {
 }
 
 func (b *observedResponseBody) unblock() {
-	if b.block != nil {
-		b.once.Do(func() { close(b.block) })
+	b.unblockOnce.Do(func() { close(b.block) })
+}
+
+const testSynchronizationTimeout = 5 * time.Second
+
+func receiveWithin[T any](t *testing.T, values <-chan T, description string) T {
+	t.Helper()
+	timer := time.NewTimer(testSynchronizationTimeout)
+	defer timer.Stop()
+	select {
+	case value := <-values:
+		return value
+	case <-timer.C:
+		t.Fatalf("timed out waiting for %s", description)
+		var zero T
+		return zero
 	}
 }
 

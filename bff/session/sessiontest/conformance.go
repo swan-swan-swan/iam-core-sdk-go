@@ -68,7 +68,7 @@ func Run(t *testing.T, factory Factory) {
 			case errors.Is(err, session.ErrNotFound):
 				missing++
 			default:
-				t.Fatalf("unexpected consume error: %v", err)
+				t.Fatal("ConsumeFlow returned an unexpected error classification")
 			}
 		}
 		if consumed != 1 || missing != contenders-1 {
@@ -82,17 +82,17 @@ func Run(t *testing.T, factory Factory) {
 
 		expired := fullFlow("flow-put-expired", clock.Now())
 		if err := backend.PutFlow(ctx, expired); !errors.Is(err, session.ErrExpired) {
-			t.Fatalf("put expired flow error = %v", err)
+			t.Fatal("PutFlow returned the wrong error for an expired Flow")
 		}
 
 		flow := fullFlow("flow-consume-expired", clock.Now().Add(time.Minute))
 		mustNoError(t, backend.PutFlow(ctx, flow))
 		clock.Advance(time.Minute)
 		if _, err := backend.ConsumeFlow(ctx, flow.ID); !errors.Is(err, session.ErrExpired) {
-			t.Fatalf("consume expired flow error = %v", err)
+			t.Fatal("ConsumeFlow returned the wrong error for an expired Flow")
 		}
 		if _, err := backend.ConsumeFlow(ctx, flow.ID); !errors.Is(err, session.ErrNotFound) {
-			t.Fatalf("consume removed flow error = %v", err)
+			t.Fatal("ConsumeFlow returned the wrong error for a removed Flow")
 		}
 	})
 
@@ -110,7 +110,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatal("ConsumeFlow returned the caller's Flow pointer")
 		}
 		if got.State != "state-original" || got.CodeVerifier != "verifier-original" {
-			t.Fatalf("stored flow was mutated: %#v", got)
+			t.Fatal("stored Flow changed after the caller mutated its input")
 		}
 	})
 
@@ -139,7 +139,7 @@ func Run(t *testing.T, factory Factory) {
 		replacement := fullSession(item.ID, clock.Now())
 		replacement.Tokens.AccessToken = "replacement"
 		if err := backend.Create(ctx, replacement); !errors.Is(err, session.ErrConflict) {
-			t.Fatalf("duplicate create error = %v", err)
+			t.Fatal("Create returned the wrong error for a duplicate Session")
 		}
 		stored, err := backend.Get(ctx, item.ID)
 		mustNoError(t, err)
@@ -150,12 +150,12 @@ func Run(t *testing.T, factory Factory) {
 		absolute := fullSession("session-absolute-expired", clock.Now())
 		absolute.ExpiresAt = clock.Now()
 		if err := backend.Create(ctx, absolute); !errors.Is(err, session.ErrExpired) {
-			t.Fatalf("absolute expiry error = %v", err)
+			t.Fatal("Create returned the wrong error at absolute expiry")
 		}
 		idle := fullSession("session-idle-expired", clock.Now())
 		idle.IdleExpiresAt = clock.Now()
 		if err := backend.Create(ctx, idle); !errors.Is(err, session.ErrExpired) {
-			t.Fatalf("idle expiry error = %v", err)
+			t.Fatal("Create returned the wrong error at idle expiry")
 		}
 	})
 
@@ -189,7 +189,7 @@ func Run(t *testing.T, factory Factory) {
 			case errors.Is(err, session.ErrConflict):
 				conflicts++
 			default:
-				t.Fatalf("unexpected CAS error: %v", err)
+				t.Fatal("CompareAndSwap returned an unexpected error classification")
 			}
 		}
 		if swapped != 1 || conflicts != contenders-1 {
@@ -197,8 +197,11 @@ func Run(t *testing.T, factory Factory) {
 		}
 		stored, err := backend.Get(ctx, item.ID)
 		mustNoError(t, err)
-		if stored.Version != 2 || stored.Tokens.AccessToken != "access-next" {
-			t.Fatalf("stored version/token = %d/%q", stored.Version, stored.Tokens.AccessToken)
+		if stored.Version != 2 {
+			t.Fatalf("stored Session version = %d, want 2", stored.Version)
+		}
+		if stored.Tokens.AccessToken != "access-next" {
+			t.Fatal("stored access token did not match the successful replacement")
 		}
 	})
 
@@ -240,10 +243,10 @@ func Run(t *testing.T, factory Factory) {
 		mustNoError(t, backend.Create(ctx, item))
 		clock.Set(item.IdleExpiresAt)
 		if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrExpired) {
-			t.Fatalf("expired get error = %v", err)
+			t.Fatal("Get returned the wrong error for an expired Session")
 		}
 		if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrNotFound) {
-			t.Fatalf("removed get error = %v", err)
+			t.Fatal("Get returned the wrong error for a removed Session")
 		}
 	})
 
@@ -255,7 +258,7 @@ func Run(t *testing.T, factory Factory) {
 		mustNoError(t, backend.Delete(ctx, item.ID))
 		mustNoError(t, backend.Delete(ctx, item.ID))
 		if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrNotFound) {
-			t.Fatalf("deleted get error = %v", err)
+			t.Fatal("Get returned the wrong error for a deleted Session")
 		}
 	})
 
@@ -270,7 +273,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatal("fresh lease is invalid")
 		}
 		if _, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute); !errors.Is(err, session.ErrConflict) {
-			t.Fatalf("second lease error = %v", err)
+			t.Fatal("AcquireRefreshLease returned the wrong error for live ownership")
 		}
 		mustNoError(t, lease.Release(ctx))
 		if lease.Valid(ctx) {
@@ -295,13 +298,13 @@ func Run(t *testing.T, factory Factory) {
 		next := fullSession(item.ID, clock.Now())
 		next.Version = 2
 		if err := backend.CompareAndSwapWithLease(ctx, lease, item.ID, 1, next); !errors.Is(err, session.ErrLeaseLost) {
-			t.Fatalf("expired leased CAS error = %v", err)
+			t.Fatal("leased CAS returned the wrong error for an expired Lease")
 		}
 		if err := backend.DeleteWithLease(ctx, lease, item.ID, 1); !errors.Is(err, session.ErrLeaseLost) {
-			t.Fatalf("expired leased delete error = %v", err)
+			t.Fatal("leased delete returned the wrong error for an expired Lease")
 		}
 		if err := lease.Release(ctx); !errors.Is(err, session.ErrLeaseLost) {
-			t.Fatalf("expired release error = %v", err)
+			t.Fatal("Release returned the wrong error for an expired Lease")
 		}
 	})
 
@@ -316,7 +319,7 @@ func Run(t *testing.T, factory Factory) {
 		current, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
 		mustNoError(t, err)
 		if err := stale.Release(ctx); !errors.Is(err, session.ErrLeaseLost) {
-			t.Fatalf("stale release error = %v", err)
+			t.Fatal("Release returned the wrong error for a stale Lease")
 		}
 		if !current.Valid(ctx) {
 			t.Fatal("stale release invalidated current lease")
@@ -324,7 +327,7 @@ func Run(t *testing.T, factory Factory) {
 		next := fullSession(item.ID, clock.Now())
 		next.Version = 2
 		if err := backend.CompareAndSwapWithLease(ctx, stale, item.ID, 1, next); !errors.Is(err, session.ErrLeaseLost) {
-			t.Fatalf("stale leased CAS error = %v", err)
+			t.Fatal("leased CAS returned the wrong error for a stale Lease")
 		}
 		mustNoError(t, backend.CompareAndSwapWithLease(ctx, current, item.ID, 1, next))
 		mustNoError(t, current.Release(ctx))
@@ -343,7 +346,7 @@ func Run(t *testing.T, factory Factory) {
 		wrong := fullSession(second.ID, clock.Now())
 		wrong.Version = 2
 		if err := backend.CompareAndSwapWithLease(ctx, lease, second.ID, 1, wrong); !errors.Is(err, session.ErrLeaseLost) {
-			t.Fatalf("cross-session leased CAS error = %v", err)
+			t.Fatal("leased CAS returned the wrong error for a cross-Session Lease")
 		}
 		next := fullSession(first.ID, clock.Now())
 		next.Version = 2
@@ -363,7 +366,7 @@ func Run(t *testing.T, factory Factory) {
 		lease, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
 		mustNoError(t, err)
 		if err := backend.DeleteWithLease(ctx, lease, item.ID, 2); !errors.Is(err, session.ErrConflict) {
-			t.Fatalf("wrong-version delete error = %v", err)
+			t.Fatal("leased delete returned the wrong error for a version conflict")
 		}
 		if !lease.Valid(ctx) {
 			t.Fatal("version conflict invalidated lease")
@@ -373,7 +376,7 @@ func Run(t *testing.T, factory Factory) {
 			t.Fatal("successful delete left lease valid")
 		}
 		if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrNotFound) {
-			t.Fatalf("deleted session get error = %v", err)
+			t.Fatal("Get returned the wrong error after leased deletion")
 		}
 	})
 
@@ -407,7 +410,7 @@ func Run(t *testing.T, factory Factory) {
 			case errors.Is(result.err, session.ErrConflict):
 				conflicts++
 			default:
-				t.Fatalf("unexpected acquire error: %v", result.err)
+				t.Fatal("AcquireRefreshLease returned an unexpected error classification")
 			}
 		}
 		if acquired != 1 || conflicts != contenders-1 {
@@ -423,13 +426,13 @@ func Run(t *testing.T, factory Factory) {
 		backend, clock := newBackend(t, factory)
 		ctx := context.Background()
 		if _, err := backend.AcquireRefreshLease(ctx, "missing", time.Minute); !errors.Is(err, session.ErrNotFound) {
-			t.Fatalf("missing session acquire error = %v", err)
+			t.Fatal("AcquireRefreshLease returned the wrong error for a missing Session")
 		}
 		item := fullSession("session-acquire-expired", clock.Now())
 		mustNoError(t, backend.Create(ctx, item))
 		clock.Set(item.ExpiresAt)
 		if _, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute); !errors.Is(err, session.ErrExpired) {
-			t.Fatalf("expired session acquire error = %v", err)
+			t.Fatal("AcquireRefreshLease returned the wrong error for an expired Session")
 		}
 	})
 }
@@ -510,17 +513,32 @@ func mutateSession(item *session.Session) {
 
 func assertOriginalSession(t testing.TB, item *session.Session, version uint64) {
 	t.Helper()
-	if item.Version != version || item.Tokens.AccessToken != "access-original" ||
-		item.Tokens.GrantedScopes[0] != "openid" || item.Auth.Subject != "subject-original" ||
-		item.Auth.Audience[0] != "client-original" || item.Auth.Scopes[0] != "openid" ||
-		item.Auth.Groups[0] != "group-original" {
-		t.Fatalf("session was not deeply copied: %#v", item)
+	if item.Version != version {
+		t.Fatalf("Session version = %d, want %d", item.Version, version)
+	}
+	if item.Tokens.AccessToken != "access-original" {
+		t.Fatal("Session access token changed through an aliased copy")
+	}
+	if item.Tokens.GrantedScopes[0] != "openid" {
+		t.Fatal("Session granted scopes changed through an aliased copy")
+	}
+	if item.Auth.Subject != "subject-original" {
+		t.Fatal("Session authentication subject changed through an aliased copy")
+	}
+	if item.Auth.Audience[0] != "client-original" {
+		t.Fatal("Session authentication audience changed through an aliased copy")
+	}
+	if item.Auth.Scopes[0] != "openid" {
+		t.Fatal("Session authentication scopes changed through an aliased copy")
+	}
+	if item.Auth.Groups[0] != "group-original" {
+		t.Fatal("Session authentication groups changed through an aliased copy")
 	}
 }
 
 func mustNoError(t testing.TB, err error) {
 	t.Helper()
 	if err != nil {
-		t.Fatal(err)
+		t.Fatal("backend returned an unexpected error")
 	}
 }

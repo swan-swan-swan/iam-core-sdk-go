@@ -13,9 +13,13 @@ import (
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
 )
 
+var errInvalidInput = errors.New("session memory: invalid input")
+
 var (
-	errInvalidInput   = errors.New("session memory: invalid input")
-	errFenceExhausted = errors.New("session memory: fencing numbers exhausted")
+	// ErrRandomSource classifies a failure to obtain refresh lease entropy.
+	ErrRandomSource = errors.New("session memory: random source failed")
+	// ErrFenceExhausted reports that no further fencing number can be issued.
+	ErrFenceExhausted = errors.New("session memory: fencing numbers exhausted")
 )
 
 type Options struct {
@@ -193,11 +197,11 @@ func (b *Backend) AcquireRefreshLease(
 		return nil, session.ErrConflict
 	}
 	if b.nextFence == ^uint64(0) {
-		return nil, errFenceExhausted
+		return nil, ErrFenceExhausted
 	}
 	ownerBytes := make([]byte, 32)
 	if _, err := io.ReadFull(b.random, ownerBytes); err != nil {
-		return nil, err
+		return nil, ErrRandomSource
 	}
 	b.nextFence++
 	record := leaseRecord{

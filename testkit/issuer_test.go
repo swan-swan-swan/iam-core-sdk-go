@@ -2,7 +2,10 @@ package testkit_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -17,6 +20,8 @@ import (
 )
 
 const testAudience = "test-client"
+
+const validVerifier = "abcdefghijklmnopqrstuvwxyz0123456789-._~ABC"
 
 func TestIssuerPublishesS256RS256DiscoveryAndJWKS(t *testing.T) {
 	issuer := testkit.NewIssuer(t)
@@ -62,7 +67,7 @@ func TestIssuerAuthorizeRedirectAndCallCount(t *testing.T) {
 		"scope":                 {"openid groups"},
 		"state":                 {"state-value"},
 		"nonce":                 {"nonce-value"},
-		"code_challenge":        {"challenge-value"},
+		"code_challenge":        {pkceChallenge(validVerifier)},
 		"code_challenge_method": {"S256"},
 	}
 	response, err := client.Get(issuer.URL() + "/authorize?" + query.Encode())
@@ -87,13 +92,14 @@ func TestIssuerTokenAndRefreshRecordExactFormsAndRotateTokens(t *testing.T) {
 	issuer := testkit.NewIssuer(t)
 	defer issuer.Close()
 	issuer.SetTokenResponse(testkit.TokenResponse{Scope: "openid groups", Groups: []string{"engineering"}})
+	code := authorizeCode(t, issuer, "nonce-value", validVerifier)
 	authorizationForm := url.Values{
 		"grant_type":    {"authorization_code"},
-		"code":          {"authorization-code-secret"},
+		"code":          {code},
 		"redirect_uri":  {"http://127.0.0.1/callback"},
 		"client_id":     {testAudience},
 		"client_secret": {"client-secret-value"},
-		"code_verifier": {"verifier-secret-value"},
+		"code_verifier": {validVerifier},
 	}
 	first := postToken(t, issuer, authorizationForm)
 	refreshForm := url.Values{
@@ -128,9 +134,8 @@ func TestIssuerSignedAccessAndIDTokensVerifyWithCore(t *testing.T) {
 	issuer := testkit.NewIssuer(t)
 	defer issuer.Close()
 	issuer.SetTokenResponse(testkit.TokenResponse{Scope: "openid profile email groups", Groups: []string{"engineering", "operations"}})
-	clock := testkit.NewFixedClock(time.Unix(2_000_000_000, 0))
 	runtime, err := core.New(t.Context(), core.Config{
-		IssuerURL: issuer.URL(), Audiences: []string{testAudience}, HTTPClient: issuer.HTTPClient(), Clock: clock,
+		IssuerURL: issuer.URL(), Audiences: []string{testAudience}, HTTPClient: issuer.HTTPClient(),
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -223,8 +228,10 @@ func TestIssuerPreservesPresentEmptyGroupsFixture(t *testing.T) {
 func TestIssuerTokenErrorAndHTTPStatusVariants(t *testing.T) {
 	issuer := testkit.NewIssuer(t)
 	defer issuer.Close()
+	code := authorizeCode(t, issuer, "error-nonce", validVerifier)
+	issued := postToken(t, issuer, authorizationCodeForm(code, validVerifier))
 	issuer.SetTokenResponse(testkit.TokenResponse{OAuthError: "invalid_grant", HTTPStatus: http.StatusUnauthorized})
-	response, err := issuer.HTTPClient().PostForm(issuer.URL()+"/token", url.Values{"grant_type": {"refresh_token"}})
+	response, err := issuer.HTTPClient().PostForm(issuer.URL()+"/token", refreshForm(issued.RefreshToken))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,22 +260,8 @@ func TestIssuerMutableStateIsConcurrentSafe(t *testing.T) {
 		go func() {
 			defer wait.Done()
 			issuer.SetTokenResponse(testkit.TokenResponse{Scope: "openid groups", Groups: []string{"group"}})
-			form := url.Values{"grant_type": {"refresh_token"}, "client_id": {testAudience}}
-			request, err := http.NewRequestWithContext(context.Background(), http.MethodPost, issuer.URL()+"/token", strings.NewReader(form.Encode()))
-			if err != nil {
-				errs <- err
-				return
-			}
-			request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-			response, err := issuer.HTTPClient().Do(request)
-			if err != nil {
-				errs <- err
-				return
-			}
-			_, err = io.Copy(io.Discard, response.Body)
-			response.Body.Close()
-			if err != nil {
-				errs <- err
+			if token := issuer.SignAccessToken(testAudience); token == "" {
+				errs <- fmt.Errorf("empty signed token")
 			}
 			_ = issuer.Calls()
 			_ = index
@@ -279,8 +272,301 @@ func TestIssuerMutableStateIsConcurrentSafe(t *testing.T) {
 	for err := range errs {
 		t.Fatal(err)
 	}
-	if calls := issuer.Calls(); calls.Refresh != workers {
+}
+
+func TestIssuerRejectsInvalidAuthorizeRequestsWithoutCreatingFlow(t *testing.T) {
+	issuer := testkit.NewIssuer(t)
+	defer issuer.Close()
+	tests := []struct {
+		name   string
+		method string
+		mutate func(url.Values)
+	}{
+		{name: "wrong method", method: http.MethodPost},
+		{name: "missing response type", mutate: func(values url.Values) { values.Del("response_type") }},
+		{name: "duplicate state", mutate: func(values url.Values) { values["state"] = []string{"one", "two"} }},
+		{name: "unknown field", mutate: func(values url.Values) { values.Set("subject", "forged") }},
+		{name: "wrong response type", mutate: func(values url.Values) { values.Set("response_type", "token") }},
+		{name: "plain PKCE", mutate: func(values url.Values) { values.Set("code_challenge_method", "plain") }},
+		{name: "empty challenge", mutate: func(values url.Values) { values.Set("code_challenge", "") }},
+		{name: "blank client", mutate: func(values url.Values) { values.Set("client_id", "") }},
+		{name: "padded scope", mutate: func(values url.Values) { values.Set("scope", " openid") }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			query := authorizationQuery("invalid-nonce", validVerifier)
+			if test.mutate != nil {
+				test.mutate(query)
+			}
+			method := test.method
+			if method == "" {
+				method = http.MethodGet
+			}
+			status, _, err := rawAuthorizeRequest(t.Context(), issuer, method, query)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status != http.StatusBadRequest && status != http.StatusMethodNotAllowed {
+				t.Fatalf("invalid authorize status=%d", status)
+			}
+			if calls := issuer.Calls(); calls.Authorize != 0 {
+				t.Fatalf("invalid authorize calls=%d", calls.Authorize)
+			}
+		})
+	}
+}
+
+func TestIssuerFailedAuthorizeCannotMutateExistingFlowNonce(t *testing.T) {
+	issuer := testkit.NewIssuer(t)
+	defer issuer.Close()
+	code := authorizeCode(t, issuer, "preserved-nonce", validVerifier)
+	invalid := authorizationQuery("forged-nonce", strings.Repeat("b", len(validVerifier)))
+	invalid.Del("scope")
+	status, _, err := rawAuthorizeRequest(t.Context(), issuer, http.MethodGet, invalid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("invalid authorize status=%d", status)
+	}
+	issued := postToken(t, issuer, authorizationCodeForm(code, validVerifier))
+	claims := decodeTokenClaims(t, issued.IDToken)
+	if claims.Nonce != "preserved-nonce" {
+		t.Fatal("failed authorize changed an existing flow nonce")
+	}
+	if calls := issuer.Calls(); calls.Authorize != 1 || calls.Token != 1 {
+		t.Fatalf("authorize/token calls=%d/%d", calls.Authorize, calls.Token)
+	}
+}
+
+func TestIssuerInvalidAuthorizationCodeRequestsPreserveOneTimeCode(t *testing.T) {
+	issuer := testkit.NewIssuer(t)
+	defer issuer.Close()
+	tests := []struct {
+		name        string
+		method      string
+		contentType string
+		mutate      func(url.Values)
+	}{
+		{name: "wrong method", method: http.MethodGet, contentType: "application/x-www-form-urlencoded"},
+		{name: "wrong media type", method: http.MethodPost, contentType: "text/plain"},
+		{name: "duplicate", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values["code"] = []string{values.Get("code"), "other"} }},
+		{name: "missing", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Del("client_secret") }},
+		{name: "missing grant", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Del("grant_type") }},
+		{name: "unsupported grant", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Set("grant_type", "client_credentials") }},
+		{name: "wrong code", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Set("code", "unknown-code") }},
+		{name: "short verifier", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Set("code_verifier", "short") }},
+		{name: "PKCE mismatch", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Set("code_verifier", strings.Repeat("b", len(validVerifier))) }},
+		{name: "wrong client", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Set("client_id", "other-client") }},
+		{name: "extra", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Set("subject", "forged") }},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			verifier := fmt.Sprintf("%043d", index+1)
+			code := authorizeCode(t, issuer, fmt.Sprintf("nonce-%d", index), verifier)
+			valid := authorizationCodeForm(code, verifier)
+			invalid := cloneForm(valid)
+			if test.mutate != nil {
+				test.mutate(invalid)
+			}
+			before := issuer.Calls()
+			status, _, err := rawTokenRequest(t.Context(), issuer, test.method, test.contentType, invalid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status != http.StatusBadRequest && status != http.StatusMethodNotAllowed {
+				t.Fatalf("invalid token status=%d", status)
+			}
+			after := issuer.Calls()
+			if after.Token != before.Token || after.Refresh != before.Refresh || !reflect.DeepEqual(after.LastTokenForm, before.LastTokenForm) {
+				t.Fatal("invalid token request mutated call or issuance state")
+			}
+			_ = postToken(t, issuer, valid)
+			if calls := issuer.Calls(); calls.Token != before.Token+1 {
+				t.Fatalf("token calls=%d", calls.Token)
+			}
+		})
+	}
+}
+
+func TestIssuerAuthorizationCodeIsOneTime(t *testing.T) {
+	issuer := testkit.NewIssuer(t)
+	defer issuer.Close()
+	code := authorizeCode(t, issuer, "one-time-nonce", validVerifier)
+	form := authorizationCodeForm(code, validVerifier)
+	_ = postToken(t, issuer, form)
+	status, _, err := rawTokenRequest(t.Context(), issuer, http.MethodPost, "application/x-www-form-urlencoded", form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("replayed code status=%d", status)
+	}
+	if calls := issuer.Calls(); calls.Token != 1 {
+		t.Fatalf("token calls=%d", calls.Token)
+	}
+}
+
+func TestIssuerInvalidRefreshRequestsPreserveBoundRefreshToken(t *testing.T) {
+	issuer := testkit.NewIssuer(t)
+	defer issuer.Close()
+	tests := []struct {
+		name        string
+		method      string
+		contentType string
+		mutate      func(url.Values)
+	}{
+		{name: "wrong method", method: http.MethodGet, contentType: "application/x-www-form-urlencoded"},
+		{name: "wrong media type", method: http.MethodPost, contentType: "application/json"},
+		{name: "duplicate", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values["refresh_token"] = []string{values.Get("refresh_token"), "other"} }},
+		{name: "missing", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Del("client_secret") }},
+		{name: "wrong token", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Set("refresh_token", "unknown-refresh") }},
+		{name: "wrong client", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Set("client_id", "other-client") }},
+		{name: "wrong secret", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Set("client_secret", "other-secret") }},
+		{name: "extra", method: http.MethodPost, contentType: "application/x-www-form-urlencoded", mutate: func(values url.Values) { values.Set("scope", "openid") }},
+	}
+	for index, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			verifier := fmt.Sprintf("%043d", index+100)
+			code := authorizeCode(t, issuer, fmt.Sprintf("refresh-nonce-%d", index), verifier)
+			issued := postToken(t, issuer, authorizationCodeForm(code, verifier))
+			valid := refreshForm(issued.RefreshToken)
+			invalid := cloneForm(valid)
+			if test.mutate != nil {
+				test.mutate(invalid)
+			}
+			before := issuer.Calls()
+			status, _, err := rawTokenRequest(t.Context(), issuer, test.method, test.contentType, invalid)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status != http.StatusBadRequest && status != http.StatusMethodNotAllowed {
+				t.Fatalf("invalid refresh status=%d", status)
+			}
+			after := issuer.Calls()
+			if after.Refresh != before.Refresh || !reflect.DeepEqual(after.LastTokenForm, before.LastTokenForm) {
+				t.Fatal("invalid refresh request mutated call or rotation state")
+			}
+			_ = postToken(t, issuer, valid)
+			if calls := issuer.Calls(); calls.Refresh != before.Refresh+1 {
+				t.Fatalf("refresh calls=%d", calls.Refresh)
+			}
+		})
+	}
+}
+
+func TestIssuerRefreshTokenIsOneTime(t *testing.T) {
+	issuer := testkit.NewIssuer(t)
+	defer issuer.Close()
+	code := authorizeCode(t, issuer, "refresh-once-nonce", validVerifier)
+	issued := postToken(t, issuer, authorizationCodeForm(code, validVerifier))
+	form := refreshForm(issued.RefreshToken)
+	_ = postToken(t, issuer, form)
+	status, _, err := rawTokenRequest(t.Context(), issuer, http.MethodPost, "application/x-www-form-urlencoded", form)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status != http.StatusBadRequest {
+		t.Fatalf("replayed refresh status=%d", status)
+	}
+	if calls := issuer.Calls(); calls.Refresh != 1 {
 		t.Fatalf("refresh calls=%d", calls.Refresh)
+	}
+}
+
+func TestIssuerConcurrentAuthorizationCodesKeepTheirOwnNonce(t *testing.T) {
+	issuer := testkit.NewIssuer(t)
+	defer issuer.Close()
+	const workers = 16
+	fixtures := make([]authorizationFixture, workers)
+	errs := make(chan error, workers)
+	var authorizeWait sync.WaitGroup
+	for index := range workers {
+		authorizeWait.Add(1)
+		go func() {
+			defer authorizeWait.Done()
+			verifier := fmt.Sprintf("%043d", index+1000)
+			nonce := fmt.Sprintf("isolated-nonce-%02d", index)
+			code, err := requestAuthorizationCode(context.Background(), issuer, nonce, verifier)
+			if err != nil {
+				errs <- err
+				return
+			}
+			fixtures[index] = authorizationFixture{code: code, nonce: nonce, verifier: verifier}
+		}()
+	}
+	authorizeWait.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	seenCodes := make(map[string]struct{}, workers)
+	for _, fixture := range fixtures {
+		seenCodes[fixture.code] = struct{}{}
+	}
+	if len(seenCodes) != workers {
+		t.Fatalf("unique authorization codes=%d", len(seenCodes))
+	}
+
+	errs = make(chan error, workers)
+	var tokenWait sync.WaitGroup
+	for index := range workers {
+		tokenWait.Add(1)
+		go func() {
+			defer tokenWait.Done()
+			fixture := fixtures[index]
+			status, raw, err := rawTokenRequest(context.Background(), issuer, http.MethodPost, "application/x-www-form-urlencoded", authorizationCodeForm(fixture.code, fixture.verifier))
+			if err != nil {
+				errs <- err
+				return
+			}
+			if status != http.StatusOK {
+				errs <- fmt.Errorf("token status %d", status)
+				return
+			}
+			var issued tokenWireResponse
+			if json.Unmarshal(raw, &issued) != nil {
+				errs <- fmt.Errorf("invalid token response")
+				return
+			}
+			claims, err := tokenClaims(issued.IDToken)
+			if err != nil || claims.Nonce != fixture.nonce {
+				errs <- fmt.Errorf("nonce isolation failed")
+			}
+		}()
+	}
+	tokenWait.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+	if calls := issuer.Calls(); calls.Authorize != workers || calls.Token != workers {
+		t.Fatalf("authorize/token calls=%d/%d", calls.Authorize, calls.Token)
+	}
+}
+
+func TestIssuerTokenLifetimesUseReceiptTimeAndExpiresIn(t *testing.T) {
+	issuer := testkit.NewIssuer(t)
+	defer issuer.Close()
+	code := authorizeCode(t, issuer, "lifetime-nonce", validVerifier)
+	before := time.Now().Unix()
+	issued := postToken(t, issuer, authorizationCodeForm(code, validVerifier))
+	after := time.Now().Unix()
+	assertCoherentTokenPair(t, issued, before, after)
+
+	refreshBefore := time.Now().Unix()
+	refreshed := postToken(t, issuer, refreshForm(issued.RefreshToken))
+	refreshAfter := time.Now().Unix()
+	assertCoherentTokenPair(t, refreshed, refreshBefore, refreshAfter)
+
+	directBefore := time.Now().Unix()
+	access := decodeTokenClaims(t, issuer.SignAccessToken(testAudience))
+	idToken := decodeTokenClaims(t, issuer.SignIDToken(testAudience, "direct-nonce"))
+	directAfter := time.Now().Unix()
+	for _, claims := range []jwtFixtureClaims{access, idToken} {
+		if claims.IssuedAt < directBefore || claims.IssuedAt > directAfter || claims.ExpiresAt-claims.IssuedAt != 3600 {
+			t.Fatal("direct token lifetime was not based on issuance time")
+		}
 	}
 }
 
@@ -295,6 +581,19 @@ type tokenWireResponse struct {
 	IDToken      string `json:"id_token"`
 	RefreshToken string `json:"refresh_token"`
 	Scope        string `json:"scope"`
+	ExpiresIn    int64  `json:"expires_in"`
+}
+
+type authorizationFixture struct {
+	code     string
+	nonce    string
+	verifier string
+}
+
+type jwtFixtureClaims struct {
+	Nonce     string `json:"nonce"`
+	IssuedAt  int64  `json:"iat"`
+	ExpiresAt int64  `json:"exp"`
 }
 
 func postToken(t *testing.T, issuer *testkit.Issuer, form url.Values) tokenWireResponse {
@@ -312,6 +611,146 @@ func postToken(t *testing.T, issuer *testkit.Issuer, form url.Values) tokenWireR
 		t.Fatal(err)
 	}
 	return decoded
+}
+
+func authorizationQuery(nonce, verifier string) url.Values {
+	return url.Values{
+		"response_type":         {"code"},
+		"client_id":             {testAudience},
+		"redirect_uri":          {"http://127.0.0.1/callback"},
+		"scope":                 {"openid groups"},
+		"state":                 {"state-value"},
+		"nonce":                 {nonce},
+		"code_challenge":        {pkceChallenge(verifier)},
+		"code_challenge_method": {"S256"},
+	}
+}
+
+func authorizationCodeForm(code, verifier string) url.Values {
+	return url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {"http://127.0.0.1/callback"},
+		"client_id":     {testAudience},
+		"client_secret": {"client-secret-value"},
+		"code_verifier": {verifier},
+	}
+}
+
+func refreshForm(refreshToken string) url.Values {
+	return url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {testAudience},
+		"client_secret": {"client-secret-value"},
+	}
+}
+
+func authorizeCode(t *testing.T, issuer *testkit.Issuer, nonce, verifier string) string {
+	t.Helper()
+	code, err := requestAuthorizationCode(t.Context(), issuer, nonce, verifier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return code
+}
+
+func requestAuthorizationCode(ctx context.Context, issuer *testkit.Issuer, nonce, verifier string) (string, error) {
+	status, location, err := rawAuthorizeRequest(ctx, issuer, http.MethodGet, authorizationQuery(nonce, verifier))
+	if err != nil {
+		return "", err
+	}
+	if status != http.StatusFound || location == nil || location.Query().Get("code") == "" {
+		return "", fmt.Errorf("authorize status %d", status)
+	}
+	return location.Query().Get("code"), nil
+}
+
+func rawAuthorizeRequest(ctx context.Context, issuer *testkit.Issuer, method string, query url.Values) (int, *url.URL, error) {
+	request, err := http.NewRequestWithContext(ctx, method, issuer.URL()+"/authorize?"+query.Encode(), nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	client := *issuer.HTTPClient()
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, nil, err
+	}
+	response.Body.Close()
+	location, locationErr := response.Location()
+	if locationErr != nil && response.StatusCode >= 300 && response.StatusCode < 400 {
+		return 0, nil, locationErr
+	}
+	return response.StatusCode, location, nil
+}
+
+func rawTokenRequest(ctx context.Context, issuer *testkit.Issuer, method, contentType string, form url.Values) (int, []byte, error) {
+	request, err := http.NewRequestWithContext(ctx, method, issuer.URL()+"/token", strings.NewReader(form.Encode()))
+	if err != nil {
+		return 0, nil, err
+	}
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
+	response, err := issuer.HTTPClient().Do(request)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer response.Body.Close()
+	body, err := io.ReadAll(response.Body)
+	return response.StatusCode, body, err
+}
+
+func cloneForm(form url.Values) url.Values {
+	cloned := make(url.Values, len(form))
+	for name, values := range form {
+		cloned[name] = append([]string(nil), values...)
+	}
+	return cloned
+}
+
+func pkceChallenge(verifier string) string {
+	digest := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(digest[:])
+}
+
+func decodeTokenClaims(t *testing.T, raw string) jwtFixtureClaims {
+	t.Helper()
+	claims, err := tokenClaims(raw)
+	if err != nil {
+		t.Fatal("decode signed token claims")
+	}
+	return claims
+}
+
+func tokenClaims(raw string) (jwtFixtureClaims, error) {
+	parts := strings.Split(raw, ".")
+	if len(parts) != 3 {
+		return jwtFixtureClaims{}, fmt.Errorf("invalid compact token")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		return jwtFixtureClaims{}, fmt.Errorf("invalid token payload")
+	}
+	var claims jwtFixtureClaims
+	if json.Unmarshal(payload, &claims) != nil {
+		return jwtFixtureClaims{}, fmt.Errorf("invalid token claims")
+	}
+	return claims, nil
+}
+
+func assertCoherentTokenPair(t *testing.T, issued tokenWireResponse, before, after int64) {
+	t.Helper()
+	if issued.ExpiresIn != 3600 {
+		t.Fatalf("expires_in=%d", issued.ExpiresIn)
+	}
+	access := decodeTokenClaims(t, issued.AccessToken)
+	idToken := decodeTokenClaims(t, issued.IDToken)
+	if access.IssuedAt < before || access.IssuedAt > after || idToken.IssuedAt != access.IssuedAt ||
+		access.ExpiresAt != idToken.ExpiresAt || access.ExpiresAt-access.IssuedAt != issued.ExpiresIn {
+		t.Fatal("access/ID token lifetime does not agree with receipt time and expires_in")
+	}
 }
 
 func getJSON(t *testing.T, client *http.Client, endpoint string, target any) {

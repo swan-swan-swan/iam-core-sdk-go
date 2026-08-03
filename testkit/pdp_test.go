@@ -220,11 +220,64 @@ func TestPDPExposesOnlyThePOSTDecisionEndpoint(t *testing.T) {
 		t.Fatal(err)
 	}
 	wrongMethod.Body.Close()
-	if wrongMethod.StatusCode != http.StatusMethodNotAllowed {
+	if wrongMethod.StatusCode != http.StatusBadRequest {
 		t.Fatalf("wrong-method status=%d", wrongMethod.StatusCode)
 	}
 	if len(fake.Calls()) != 0 {
 		t.Fatalf("calls=%d", len(fake.Calls()))
+	}
+}
+
+func TestPDPInvalidRequestsDoNotRecordOrConsumeQueuedDecision(t *testing.T) {
+	valid := `{"resource_server":"orders_api","resource":"orders","http_method":"GET"}`
+	tests := []struct {
+		name        string
+		method      string
+		contentType string
+		body        string
+	}{
+		{name: "wrong HTTP method", method: http.MethodPut, contentType: "application/json", body: valid},
+		{name: "wrong content type", method: http.MethodPost, contentType: "text/plain", body: valid},
+		{name: "parameterized content type", method: http.MethodPost, contentType: "application/json; charset=utf-8", body: valid},
+		{name: "empty", method: http.MethodPost, contentType: "application/json"},
+		{name: "malformed", method: http.MethodPost, contentType: "application/json", body: `{`},
+		{name: "duplicate", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource_server":"other","resource":"orders","http_method":"GET"}`},
+		{name: "trailing", method: http.MethodPost, contentType: "application/json", body: valid + `{}`},
+		{name: "unknown", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource":"orders","http_method":"GET","subject":"forged"}`},
+		{name: "missing", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource":"orders"}`},
+		{name: "wrong type", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource":"orders","http_method":7}`},
+		{name: "blank", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"","resource":"orders","http_method":"GET"}`},
+		{name: "padded", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":" orders_api","resource":"orders","http_method":"GET"}`},
+		{name: "lowercase method", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource":"orders","http_method":"get"}`},
+		{name: "nonstandard method", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource":"orders","http_method":"PROPFIND"}`},
+		{name: "oversized", method: http.MethodPost, contentType: "application/json", body: strings.Repeat("x", (1<<20)+1)},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			fake := testkit.NewPDP(t)
+			defer fake.Close()
+			fake.Enqueue(testkit.HTTPDecision{DecisionID: "preserved-allow", Allowed: true, ReasonCode: "policy_allow"})
+			status, err := rawDecisionRequest(t.Context(), fake, test.method, test.contentType, test.body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if status != http.StatusBadRequest {
+				t.Fatalf("invalid request status=%d", status)
+			}
+			if len(fake.Calls()) != 0 {
+				t.Fatalf("invalid request calls=%d", len(fake.Calls()))
+			}
+			decision, err := requestDecision(t.Context(), fake, "Bearer preserved-secret")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if decision.DecisionID != "preserved-allow" || !decision.Allowed || decision.ReasonCode != "policy_allow" {
+				t.Fatal("invalid request consumed the queued allow")
+			}
+			if len(fake.Calls()) != 1 {
+				t.Fatalf("valid request calls=%d", len(fake.Calls()))
+			}
+		})
 	}
 }
 
@@ -266,4 +319,20 @@ func requestDecision(ctx context.Context, fake *testkit.PDP, authorization strin
 		Status: response.StatusCode, Code: wire.Code, Message: wire.Message,
 		DecisionID: wire.Data.DecisionID, ReasonCode: wire.Data.ReasonCode, Allowed: wire.Data.Allowed,
 	}, nil
+}
+
+func rawDecisionRequest(ctx context.Context, fake *testkit.PDP, method, contentType, body string) (int, error) {
+	request, err := http.NewRequestWithContext(ctx, method, fake.URL()+"/authorization/v1/decisions", strings.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	if contentType != "" {
+		request.Header.Set("Content-Type", contentType)
+	}
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		return 0, err
+	}
+	response.Body.Close()
+	return response.StatusCode, nil
 }

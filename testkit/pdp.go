@@ -1,13 +1,21 @@
 package testkit
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode"
+	"unicode/utf8"
 )
+
+const maxPDPRequestBytes int64 = 1 << 20
 
 // HTTPDecision configures one response from PDP. Zero HTTPStatus means 200.
 type HTTPDecision struct {
@@ -76,24 +84,17 @@ func (p *PDP) Close() {
 
 func (p *PDP) handleDecision(w http.ResponseWriter, request *http.Request) {
 	if request.Method != http.MethodPost {
-		w.Header().Set("Allow", http.MethodPost)
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
 		return
 	}
-	var payload struct {
-		ResourceServer string `json:"resource_server"`
-		Resource       string `json:"resource"`
-		HTTPMethod     string `json:"http_method"`
+	call, err := decodePDPCall(request)
+	if err != nil {
+		http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+		return
 	}
-	_ = json.NewDecoder(request.Body).Decode(&payload)
 
 	p.mu.Lock()
-	p.calls = append(p.calls, PDPCall{
-		Authorization:  request.Header.Get("Authorization"),
-		ResourceServer: payload.ResourceServer,
-		Resource:       payload.Resource,
-		HTTPMethod:     payload.HTTPMethod,
-	})
+	p.calls = append(p.calls, call)
 	decision := HTTPDecision{
 		HTTPStatus: http.StatusOK,
 		Message:    "success",
@@ -142,4 +143,72 @@ func (p *PDP) handleDecision(w http.ResponseWriter, request *http.Request) {
 			"reason_code": decision.ReasonCode,
 		},
 	})
+}
+
+func decodePDPCall(request *http.Request) (PDPCall, error) {
+	contentTypes := request.Header.Values("Content-Type")
+	if len(contentTypes) != 1 || contentTypes[0] != "application/json" {
+		return PDPCall{}, errors.New("invalid content type")
+	}
+	body, err := io.ReadAll(io.LimitReader(request.Body, maxPDPRequestBytes+1))
+	if err != nil || int64(len(body)) > maxPDPRequestBytes {
+		return PDPCall{}, errors.New("invalid body")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	opening, err := decoder.Token()
+	if err != nil || opening != json.Delim('{') {
+		return PDPCall{}, errors.New("invalid body")
+	}
+	values := make(map[string]string, 3)
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		key, ok := keyToken.(string)
+		if err != nil || !ok {
+			return PDPCall{}, errors.New("invalid body")
+		}
+		if _, duplicate := values[key]; duplicate {
+			return PDPCall{}, errors.New("invalid body")
+		}
+		switch key {
+		case "resource_server", "resource", "http_method":
+		default:
+			return PDPCall{}, errors.New("invalid body")
+		}
+		var value string
+		if decoder.Decode(&value) != nil {
+			return PDPCall{}, errors.New("invalid body")
+		}
+		values[key] = value
+	}
+	closing, err := decoder.Token()
+	if err != nil || closing != json.Delim('}') || len(values) != 3 {
+		return PDPCall{}, errors.New("invalid body")
+	}
+	var trailing any
+	if decoder.Decode(&trailing) != io.EOF {
+		return PDPCall{}, errors.New("invalid body")
+	}
+	resourceServer, resource, method := values["resource_server"], values["resource"], values["http_method"]
+	if !validPDPValue(resourceServer) || !validPDPValue(resource) || !validPDPMethod(method) {
+		return PDPCall{}, errors.New("invalid decision coordinates")
+	}
+	return PDPCall{
+		Authorization: request.Header.Get("Authorization"), ResourceServer: resourceServer,
+		Resource: resource, HTTPMethod: method,
+	}, nil
+}
+
+func validPDPValue(value string) bool {
+	return value != "" && value == strings.TrimSpace(value) && utf8.ValidString(value) &&
+		!strings.ContainsFunc(value, unicode.IsControl)
+}
+
+func validPDPMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut, http.MethodPatch,
+		http.MethodDelete, http.MethodConnect, http.MethodOptions, http.MethodTrace:
+		return true
+	default:
+		return false
+	}
 }

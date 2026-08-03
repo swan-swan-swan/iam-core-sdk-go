@@ -34,6 +34,49 @@ type authorizer struct {
 	calls    atomic.Int64
 }
 
+type controllerWriter struct {
+	header                                  http.Header
+	readDeadlines, writeDeadlines, duplexes int
+}
+
+func newControllerWriter() *controllerWriter {
+	return &controllerWriter{header: make(http.Header)}
+}
+
+func (w *controllerWriter) Header() http.Header { return w.header }
+
+func (*controllerWriter) Write(body []byte) (int, error) { return len(body), nil }
+
+func (*controllerWriter) WriteHeader(int) {}
+
+func (w *controllerWriter) SetReadDeadline(time.Time) error {
+	w.readDeadlines++
+	return nil
+}
+
+func (w *controllerWriter) SetWriteDeadline(time.Time) error {
+	w.writeDeadlines++
+	return nil
+}
+
+func (w *controllerWriter) EnableFullDuplex() error {
+	w.duplexes++
+	return nil
+}
+
+type controllerResult struct {
+	read, write, duplex error
+}
+
+func exerciseResponseController(writer http.ResponseWriter) controllerResult {
+	controller := http.NewResponseController(writer)
+	return controllerResult{
+		read:   controller.SetReadDeadline(time.Unix(300, 0)),
+		write:  controller.SetWriteDeadline(time.Unix(400, 0)),
+		duplex: controller.EnableFullDuplex(),
+	}
+}
+
 func (a *authorizer) Decide(context.Context, core.TokenSource, httpauthz.Route) (httpauthz.Decision, error) {
 	a.calls.Add(1)
 	return a.decision, a.err
@@ -397,6 +440,55 @@ func TestAdmissionWriterDoesNotReplaceGinWriter(t *testing.T) {
 	router.ServeHTTP(response, signedRequest(http.MethodGet, "/orders"))
 	if response.Code != http.StatusOK || response.Body.String() != "unchanged" {
 		t.Fatalf("status/body = %d/%q", response.Code, response.Body.String())
+	}
+}
+
+func TestAdmissionWriterPreservesResponseControllerCapabilities(t *testing.T) {
+	directUnderlying := newControllerWriter()
+	var directResult controllerResult
+	directResponder := httpauthz.ErrorResponderFunc(func(w http.ResponseWriter, _ *http.Request, _ error) {
+		directResult = exerciseResponseController(w)
+		w.WriteHeader(http.StatusForbidden)
+	})
+	directService, directRoute, _ := newService(t,
+		httpauthz.Decision{ID: "decision-deny", Allowed: false, ReasonCode: "default_deny"}, nil, directResponder)
+	directHandler, err := directService.Require(directRoute, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		t.Fatal("direct root handler called")
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	gin.SetMode(gin.TestMode)
+	directContext, _ := gin.CreateTestContext(directUnderlying)
+	directContext.Request = signedRequest(http.MethodGet, "/orders")
+	directHandler.ServeHTTP(directContext.Writer, directContext.Request)
+	assertControllerCapabilities(t, "direct Gin writer", directResult, directUnderlying)
+
+	adapterUnderlying := newControllerWriter()
+	var adapterResult controllerResult
+	adapterResponder := httpauthz.ErrorResponderFunc(func(w http.ResponseWriter, _ *http.Request, _ error) {
+		adapterResult = exerciseResponseController(w)
+		w.WriteHeader(http.StatusForbidden)
+	})
+	service, route, _ := newService(t,
+		httpauthz.Decision{ID: "decision-deny", Allowed: false, ReasonCode: "default_deny"}, nil, adapterResponder)
+	middleware, err := ginadapter.Require(service, route)
+	if err != nil {
+		t.Fatal(err)
+	}
+	adapterContext, _ := gin.CreateTestContext(adapterUnderlying)
+	adapterContext.Request = signedRequest(http.MethodGet, "/orders")
+	middleware(adapterContext)
+	assertControllerCapabilities(t, "adapter writer", adapterResult, adapterUnderlying)
+}
+
+func assertControllerCapabilities(t *testing.T, label string, result controllerResult, writer *controllerWriter) {
+	t.Helper()
+	if result.read != nil || result.write != nil || result.duplex != nil {
+		t.Fatalf("%s ResponseController errors: read=%v write=%v duplex=%v", label, result.read, result.write, result.duplex)
+	}
+	if writer.readDeadlines != 1 || writer.writeDeadlines != 1 || writer.duplexes != 1 {
+		t.Fatalf("%s underlying calls: read/write/duplex=%d/%d/%d", label, writer.readDeadlines, writer.writeDeadlines, writer.duplexes)
 	}
 }
 

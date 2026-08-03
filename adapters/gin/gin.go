@@ -17,6 +17,13 @@ type admissionWriter struct {
 
 var _ gin.ResponseWriter = (*admissionWriter)(nil)
 
+func (w *admissionWriter) Unwrap() http.ResponseWriter {
+	if w == nil {
+		return nil
+	}
+	return w.ResponseWriter
+}
+
 type terminalHandler struct{}
 
 func (terminalHandler) ServeHTTP(writer http.ResponseWriter, request *http.Request) {

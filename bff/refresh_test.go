@@ -475,6 +475,18 @@ func closeTestBlock(release chan<- struct{}) func() {
 	return func() { once.Do(func() { close(release) }) }
 }
 
+func receiveTestValue[T any](t *testing.T, values <-chan T, description string) T {
+	t.Helper()
+	select {
+	case value := <-values:
+		return value
+	case <-time.After(2 * time.Second):
+		var zero T
+		t.Fatalf("timed out waiting for %s", description)
+		return zero
+	}
+}
+
 func (i *refreshIssuer) lastRefreshRequest() (url.Values, http.Header) {
 	i.mu.Lock()
 	defer i.mu.Unlock()
@@ -700,7 +712,24 @@ func TestRefreshTemporaryFailureReleasesLeaseWithoutMutation(t *testing.T) {
 type observingBackend struct {
 	session.Backend
 	leaseConflict chan struct{}
-	once          sync.Once
+	waitReload    chan struct{}
+	conflictOnce  sync.Once
+	waitOnce      sync.Once
+	conflicted    atomic.Bool
+}
+
+type signalingGetBackend struct {
+	session.Backend
+	reloaded chan struct{}
+	once     sync.Once
+	getCalls atomic.Int32
+}
+
+func (b *signalingGetBackend) Get(ctx context.Context, id string) (*session.Session, error) {
+	b.getCalls.Add(1)
+	item, err := b.Backend.Get(ctx, id)
+	b.once.Do(func() { close(b.reloaded) })
+	return item, err
 }
 
 type countingLeasedCASBackend struct {
@@ -783,9 +812,57 @@ func (b *observingBackend) AcquireRefreshLease(
 ) (session.Lease, error) {
 	lease, err := b.Backend.AcquireRefreshLease(ctx, id, duration)
 	if errors.Is(err, session.ErrConflict) && b.leaseConflict != nil {
-		b.once.Do(func() { close(b.leaseConflict) })
+		b.conflicted.Store(true)
+		b.conflictOnce.Do(func() { close(b.leaseConflict) })
 	}
 	return lease, err
+}
+
+func (b *observingBackend) Get(ctx context.Context, id string) (*session.Session, error) {
+	if b.conflicted.Load() && b.waitReload != nil {
+		b.waitOnce.Do(func() { close(b.waitReload) })
+	}
+	return b.Backend.Get(ctx, id)
+}
+
+func TestRefreshLeaseLoserReloadsWinnerAtDeadlineBoundary(t *testing.T) {
+	client, backend, issuer := newRefreshTestClient(t)
+	baseline := seedExpiringSession(t, backend, []string{"old"}, []string{"openid", "groups"})
+	reloaded := make(chan struct{})
+	signaling := &signalingGetBackend{Backend: backend, reloaded: reloaded}
+	client.backend = signaling
+	deadline := make(chan time.Time, 1)
+	ticks := make(chan time.Time)
+	type result struct {
+		item *session.Session
+		err  error
+	}
+	resultChannel := make(chan result, 1)
+	go func() {
+		item, err := client.waitForRefreshWinnerUntil(t.Context(), baseline, deadline, ticks)
+		resultChannel <- result{item: item, err: err}
+	}()
+	receiveTestValue(t, reloaded, "lease loser initial reload")
+	winner := cloneSessionForTest(baseline)
+	winner.Version++
+	winner.Tokens.AccessToken = "winner-access-token-sensitive"
+	winner.Tokens.RefreshToken = "winner-refresh-token-sensitive"
+	winner.Tokens.AccessTokenExpiry = refreshTestNow.Add(5 * time.Minute)
+	if err := backend.CompareAndSwap(t.Context(), baseline.ID, baseline.Version, winner); err != nil {
+		t.Fatal(err)
+	}
+	deadline <- time.Now()
+	outcome := receiveTestValue(t, resultChannel, "deadline-boundary lease winner")
+	if outcome.err != nil || outcome.item == nil ||
+		outcome.item.Tokens.AccessToken != winner.Tokens.AccessToken || issuer.RefreshCalls() != 0 ||
+		signaling.getCalls.Load() != 2 {
+		t.Fatalf(
+			"deadline winner error=%v refresh calls=%d reloads=%d",
+			outcome.err,
+			issuer.RefreshCalls(),
+			signaling.getCalls.Load(),
+		)
+	}
 }
 
 func TestConcurrentRefreshLeaseLoserReloadsWinnerWithoutSecondExchange(t *testing.T) {
@@ -819,9 +896,17 @@ func TestConcurrentRefreshLeaseLoserReloadsWinnerWithoutSecondExchange(t *testin
 		t.Fatal("second resolver did not lose the active refresh lease")
 	}
 	releaseRefresh()
-	first, second := <-results, <-results
+	first := receiveTestValue(t, results, "first concurrent refresh result")
+	second := receiveTestValue(t, results, "second concurrent refresh result")
 	if first.err != nil || second.err != nil || !first.present || !second.present || issuer.RefreshCalls() != 1 {
-		t.Fatalf("results=%#v/%#v refresh calls=%d", first, second, issuer.RefreshCalls())
+		t.Fatalf(
+			"concurrent refresh errors=%v/%v present=%v/%v refresh calls=%d",
+			first.err,
+			second.err,
+			first.present,
+			second.present,
+			issuer.RefreshCalls(),
+		)
 	}
 	firstToken, firstErr := first.credential.Tokens.AccessToken(t.Context())
 	secondToken, secondErr := second.credential.Tokens.AccessToken(t.Context())
@@ -1015,9 +1100,16 @@ func TestRefreshLeaseExpiryCannotCommitConsumedTokens(t *testing.T) {
 func TestRefreshLeaseLoserHonorsContextCancellation(t *testing.T) {
 	client, backend, issuer := newRefreshTestClient(t)
 	item := seedExpiringSession(t, backend, []string{"ops"}, []string{"openid", "groups"})
+	before, err := backend.Get(t.Context(), item.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	started, release := issuer.blockRefresh()
 	releaseRefresh := closeTestBlock(release)
 	defer releaseRefresh()
+	conflict := make(chan struct{})
+	waitReload := make(chan struct{})
+	client.backend = &observingBackend{Backend: backend, leaseConflict: conflict, waitReload: waitReload}
 	winnerDone := make(chan error, 1)
 	go func() {
 		_, _, err := client.ResolveSession(requestWithSessionCookie(item.ID))
@@ -1030,13 +1122,24 @@ func TestRefreshLeaseLoserHonorsContextCancellation(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(t.Context())
 	request := requestWithSessionCookie(item.ID).WithContext(ctx)
+	loserDone := make(chan error, 1)
+	go func() {
+		_, _, err := client.ResolveSession(request)
+		loserDone <- err
+	}()
+	receiveTestValue(t, conflict, "losing refresh lease conflict")
+	receiveTestValue(t, waitReload, "lease loser wait reload")
 	cancel()
-	_, _, err := client.ResolveSession(request)
+	err = receiveTestValue(t, loserDone, "canceled lease loser result")
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("lease loser cancellation error=%v", err)
 	}
+	after, getErr := backend.Get(t.Context(), item.ID)
+	if getErr != nil || !reflect.DeepEqual(after, before) {
+		t.Fatal("canceled lease loser mutated session state")
+	}
 	releaseRefresh()
-	if err := <-winnerDone; err != nil {
+	if err := receiveTestValue(t, winnerDone, "winning refresh result"); err != nil {
 		t.Fatalf("winner error=%v", err)
 	}
 	if issuer.RefreshCalls() != 1 {

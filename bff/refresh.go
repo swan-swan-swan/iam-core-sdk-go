@@ -150,7 +150,20 @@ func (c *Client) waitForRefreshWinner(
 	}
 	ticker := time.NewTicker(pollEvery)
 	defer ticker.Stop()
+	return c.waitForRefreshWinnerUntil(ctx, baseline, deadline.C, ticker.C)
+}
+
+func (c *Client) waitForRefreshWinnerUntil(
+	ctx context.Context,
+	baseline *session.Session,
+	deadline <-chan time.Time,
+	ticks <-chan time.Time,
+) (*session.Session, error) {
+	const operation = "bff.refresh_wait"
 	for {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		latest, err := c.backend.Get(ctx, baseline.ID)
 		if err != nil {
 			return nil, c.sessionBackendError(operation, err)
@@ -161,9 +174,23 @@ func (c *Client) waitForRefreshWinner(
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()
-		case <-deadline.C:
+		case <-deadline:
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			latest, err := c.backend.Get(ctx, baseline.ID)
+			if err != nil {
+				return nil, c.sessionBackendError(operation, err)
+			}
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if refreshWinnerChanged(baseline, latest) ||
+				!refreshRequired(latest, c.clock.Now(), c.refreshBeforeExpiry) {
+				return latest, nil
+			}
 			return nil, bffError(core.KindSessionUnavailable, operation, 0, true)
-		case <-ticker.C:
+		case <-ticks:
 		}
 	}
 }

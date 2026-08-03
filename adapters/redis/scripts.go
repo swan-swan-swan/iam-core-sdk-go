@@ -22,8 +22,15 @@ var sessionCreateScript = goredis.NewScript(`
 if redis.call("EXISTS", KEYS[1]) ~= 0 then
 	return 0
 end
-redis.call("HSET", KEYS[1], "version", ARGV[1], "payload", ARGV[2])
-local expiry = redis.pcall("PEXPIRE", KEYS[1], ARGV[3])
+redis.call("DEL", KEYS[2])
+redis.call(
+	"HSET", KEYS[1],
+	"version", ARGV[1],
+	"payload", ARGV[2],
+	"generation", ARGV[3],
+	"last_fence", "0"
+)
+local expiry = redis.pcall("PEXPIRE", KEYS[1], ARGV[4])
 if (type(expiry) == "table" and expiry.err) or expiry ~= 1 then
 	redis.pcall("DEL", KEYS[1])
 	return -2
@@ -57,7 +64,9 @@ var sessionDeleteExpiredScript = goredis.NewScript(`
 -- iam-core:delete-expired
 local currentVersion = redis.call("HGET", KEYS[1], "version")
 local currentPayload = redis.call("HGET", KEYS[1], "payload")
-if currentVersion ~= ARGV[1] or currentPayload ~= ARGV[2] then
+local currentGeneration = redis.call("HGET", KEYS[1], "generation")
+if currentVersion ~= ARGV[1] or currentPayload ~= ARGV[2] or
+   currentGeneration ~= ARGV[3] then
 	return 0
 end
 local deleted = redis.call("DEL", KEYS[1], KEYS[2])
@@ -126,27 +135,98 @@ return nextFence
 
 var leaseAcquireScript = goredis.NewScript(`
 -- iam-core:lease-acquire
-if redis.call("EXISTS", KEYS[1]) == 0 then
+local maxExact = 9007199254740991
+local maxExactText = "9007199254740991"
+
+local function exactPositiveInteger(value)
+	if type(value) ~= "string" or not string.match(value, "^[1-9]%d*$") or
+	   #value > #maxExactText or (#value == #maxExactText and value > maxExactText) then
+		return nil
+	end
+	local number = tonumber(value)
+	if not number or number < 1 or number > maxExact or number ~= math.floor(number) or
+	   string.format("%.0f", number) ~= value then
+		return nil
+	end
+	return number
+end
+
+local function validFence(value)
+	return type(value) == "string" and string.match(value, "^%d+$") and
+	       #value <= 20 and not (#value > 1 and string.sub(value, 1, 1) == "0") and
+	       (#value < 20 or value <= "18446744073709551615")
+end
+
+local function lessOrEqual(left, right)
+	if #left ~= #right then
+		return #left < #right
+	end
+	return left <= right
+end
+
+local sessionTTL = redis.call("PTTL", KEYS[1])
+if sessionTTL == -2 or sessionTTL == 0 then
 	return -1
 end
-if redis.call("EXISTS", KEYS[2]) ~= 0 then
-	local currentExpiry = redis.call("HGET", KEYS[2], "expires_at")
-	if not currentExpiry or not tonumber(currentExpiry) then
-		return -2
-	end
-	if tonumber(currentExpiry) > tonumber(ARGV[5]) then
-		return 0
-	end
-	redis.call("DEL", KEYS[2])
+if sessionTTL < 0 then
+	return -2
 end
+if sessionTTL > maxExact or sessionTTL ~= math.floor(sessionTTL) then
+	return -2
+end
+local generation = redis.call("HGET", KEYS[1], "generation")
+if not generation then
+	return -2
+end
+if generation ~= ARGV[3] then
+	return -5
+end
+local leaseTTL = redis.call("PTTL", KEYS[2])
+if leaseTTL >= 0 then
+	return 0
+end
+if leaseTTL ~= -2 then
+	return -2
+end
+local lastFence = redis.call("HGET", KEYS[1], "last_fence")
+if not validFence(ARGV[2]) or not validFence(lastFence) then
+	return -2
+end
+if lessOrEqual(ARGV[2], lastFence) then
+	return -4
+end
+local requestedTTL = exactPositiveInteger(ARGV[4])
+if not requestedTTL then
+	return -2
+end
+if sessionTTL < requestedTTL then
+	requestedTTL = sessionTTL
+end
+local redisTime = redis.call("TIME")
+local seconds = tonumber(redisTime[1])
+local microseconds = tonumber(redisTime[2])
+if not seconds or not microseconds then
+	return -2
+end
+local now = seconds * 1000 + math.floor(microseconds / 1000)
+if now < 0 or now > maxExact or now ~= math.floor(now) or requestedTTL > maxExact - now then
+	return -2
+end
+local expiresAt = string.format("%.0f", now + requestedTTL)
 redis.call(
 	"HSET", KEYS[2],
 	"owner", ARGV[1],
 	"fence", ARGV[2],
-	"expires_at", ARGV[3]
+	"generation", ARGV[3],
+	"expires_at", expiresAt
 )
-local expiry = redis.pcall("PEXPIRE", KEYS[2], ARGV[4])
+local expiry = redis.pcall("PEXPIRE", KEYS[2], string.format("%.0f", requestedTTL))
 if (type(expiry) == "table" and expiry.err) or expiry ~= 1 then
+	redis.pcall("DEL", KEYS[2])
+	return -2
+end
+local granted = redis.pcall("HSET", KEYS[1], "last_fence", ARGV[2])
+if type(granted) == "table" and granted.err then
 	redis.pcall("DEL", KEYS[2])
 	return -2
 end
@@ -155,52 +235,122 @@ return 1
 
 var leaseValidScript = goredis.NewScript(`
 -- iam-core:lease-valid
-local owner = redis.call("HGET", KEYS[1], "owner")
-local fence = redis.call("HGET", KEYS[1], "fence")
-local expiresAt = redis.call("HGET", KEYS[1], "expires_at")
-if owner == ARGV[1] and fence == ARGV[2] and expiresAt == ARGV[3] and
-   tonumber(expiresAt) and tonumber(expiresAt) > tonumber(ARGV[4]) then
-	return 1
+local maxExact = 9007199254740991
+if redis.call("PTTL", KEYS[1]) <= 0 or redis.call("PTTL", KEYS[2]) <= 0 then
+	return 0
 end
-return 0
+local generation = redis.call("HGET", KEYS[1], "generation")
+local owner = redis.call("HGET", KEYS[2], "owner")
+local fence = redis.call("HGET", KEYS[2], "fence")
+local leaseGeneration = redis.call("HGET", KEYS[2], "generation")
+local expiresAt = redis.call("HGET", KEYS[2], "expires_at")
+if generation ~= ARGV[3] or owner ~= ARGV[1] or fence ~= ARGV[2] or
+   leaseGeneration ~= ARGV[3] or type(expiresAt) ~= "string" or
+   not string.match(expiresAt, "^[1-9]%d*$") or #expiresAt > 16 then
+	return 0
+end
+local expiry = tonumber(expiresAt)
+local redisTime = redis.call("TIME")
+local seconds = tonumber(redisTime[1])
+local microseconds = tonumber(redisTime[2])
+if not expiry or expiry > maxExact or string.format("%.0f", expiry) ~= expiresAt or
+   not seconds or not microseconds then
+	return 0
+end
+local now = seconds * 1000 + math.floor(microseconds / 1000)
+if now < 0 or now > maxExact or now ~= math.floor(now) or expiry <= now then
+	return 0
+end
+return 1
 `)
 
 var leaseReleaseScript = goredis.NewScript(`
 -- iam-core:lease-release
-local owner = redis.call("HGET", KEYS[1], "owner")
-local fence = redis.call("HGET", KEYS[1], "fence")
-local expiresAt = redis.call("HGET", KEYS[1], "expires_at")
-if owner ~= ARGV[1] or fence ~= ARGV[2] or expiresAt ~= ARGV[3] or
-   not tonumber(expiresAt) or tonumber(expiresAt) <= tonumber(ARGV[4]) then
+local maxExact = 9007199254740991
+if redis.call("PTTL", KEYS[1]) <= 0 or redis.call("PTTL", KEYS[2]) <= 0 then
 	return 0
 end
-redis.call("DEL", KEYS[1])
+local generation = redis.call("HGET", KEYS[1], "generation")
+local owner = redis.call("HGET", KEYS[2], "owner")
+local fence = redis.call("HGET", KEYS[2], "fence")
+local leaseGeneration = redis.call("HGET", KEYS[2], "generation")
+local expiresAt = redis.call("HGET", KEYS[2], "expires_at")
+if generation ~= ARGV[3] or owner ~= ARGV[1] or fence ~= ARGV[2] or
+   leaseGeneration ~= ARGV[3] or type(expiresAt) ~= "string" or
+   not string.match(expiresAt, "^[1-9]%d*$") or #expiresAt > 16 then
+	return 0
+end
+local expiry = tonumber(expiresAt)
+local redisTime = redis.call("TIME")
+local seconds = tonumber(redisTime[1])
+local microseconds = tonumber(redisTime[2])
+if not expiry or expiry > maxExact or string.format("%.0f", expiry) ~= expiresAt or
+   not seconds or not microseconds then
+	return 0
+end
+local now = seconds * 1000 + math.floor(microseconds / 1000)
+if now < 0 or now > maxExact or now ~= math.floor(now) or expiry <= now then
+	return 0
+end
+redis.call("DEL", KEYS[2])
 return 1
 `)
 
 var sessionCompareAndSwapWithLeaseScript = goredis.NewScript(`
 -- iam-core:fenced-cas
-local owner = redis.call("HGET", KEYS[2], "owner")
-local fence = redis.call("HGET", KEYS[2], "fence")
-local leaseExpiry = redis.call("HGET", KEYS[2], "expires_at")
-if owner ~= ARGV[1] or fence ~= ARGV[2] or leaseExpiry ~= ARGV[3] or
-   not tonumber(leaseExpiry) or tonumber(leaseExpiry) <= tonumber(ARGV[4]) then
-	return -3
+local maxExact = 9007199254740991
+local maxExactText = "9007199254740991"
+local function exactPositiveInteger(value)
+	if type(value) ~= "string" or not string.match(value, "^[1-9]%d*$") or
+	   #value > #maxExactText or (#value == #maxExactText and value > maxExactText) then
+		return nil
+	end
+	local number = tonumber(value)
+	if not number or number ~= math.floor(number) or string.format("%.0f", number) ~= value then
+		return nil
+	end
+	return number
 end
-if redis.call("EXISTS", KEYS[1]) == 0 then
+if redis.call("PTTL", KEYS[1]) <= 0 then
 	return -1
 end
+if redis.call("PTTL", KEYS[2]) <= 0 then
+	return -3
+end
+local generation = redis.call("HGET", KEYS[1], "generation")
+local owner = redis.call("HGET", KEYS[2], "owner")
+local fence = redis.call("HGET", KEYS[2], "fence")
+local leaseGeneration = redis.call("HGET", KEYS[2], "generation")
+local leaseExpiry = redis.call("HGET", KEYS[2], "expires_at")
+if generation ~= ARGV[3] or owner ~= ARGV[1] or fence ~= ARGV[2] or
+   leaseGeneration ~= ARGV[3] or not exactPositiveInteger(leaseExpiry) then
+	return -3
+end
+local redisTime = redis.call("TIME")
+local seconds = tonumber(redisTime[1])
+local microseconds = tonumber(redisTime[2])
+if not seconds or not microseconds then
+	return -2
+end
+local now = seconds * 1000 + math.floor(microseconds / 1000)
+if now < 0 or now > maxExact or now ~= math.floor(now) or tonumber(leaseExpiry) <= now then
+	return -3
+end
 local current = redis.call("HGET", KEYS[1], "version")
-if current ~= ARGV[5] then
+if current ~= ARGV[4] then
 	return 0
 end
 local oldPayload = redis.call("HGET", KEYS[1], "payload")
 if not oldPayload then
 	return -2
 end
+local nextTTL = exactPositiveInteger(ARGV[7])
+if not nextTTL then
+	return -2
+end
 local oldTTL = redis.call("PTTL", KEYS[1])
-redis.call("HSET", KEYS[1], "version", ARGV[6], "payload", ARGV[7])
-local expiry = redis.pcall("PEXPIRE", KEYS[1], ARGV[8])
+redis.call("HSET", KEYS[1], "version", ARGV[5], "payload", ARGV[6])
+local expiry = redis.pcall("PEXPIRE", KEYS[1], ARGV[7])
 if (type(expiry) == "table" and expiry.err) or expiry ~= 1 then
 	redis.pcall("HSET", KEYS[1], "version", current, "payload", oldPayload)
 	return -2
@@ -220,18 +370,46 @@ return 1
 
 var sessionDeleteWithLeaseScript = goredis.NewScript(`
 -- iam-core:fenced-delete
-local owner = redis.call("HGET", KEYS[2], "owner")
-local fence = redis.call("HGET", KEYS[2], "fence")
-local leaseExpiry = redis.call("HGET", KEYS[2], "expires_at")
-if owner ~= ARGV[1] or fence ~= ARGV[2] or leaseExpiry ~= ARGV[3] or
-   not tonumber(leaseExpiry) or tonumber(leaseExpiry) <= tonumber(ARGV[4]) then
-	return -3
+local maxExact = 9007199254740991
+local maxExactText = "9007199254740991"
+local function exactPositiveInteger(value)
+	if type(value) ~= "string" or not string.match(value, "^[1-9]%d*$") or
+	   #value > #maxExactText or (#value == #maxExactText and value > maxExactText) then
+		return nil
+	end
+	local number = tonumber(value)
+	if not number or number ~= math.floor(number) or string.format("%.0f", number) ~= value then
+		return nil
+	end
+	return number
 end
-if redis.call("EXISTS", KEYS[1]) == 0 then
+if redis.call("PTTL", KEYS[1]) <= 0 then
 	return -1
 end
+if redis.call("PTTL", KEYS[2]) <= 0 then
+	return -3
+end
+local generation = redis.call("HGET", KEYS[1], "generation")
+local owner = redis.call("HGET", KEYS[2], "owner")
+local fence = redis.call("HGET", KEYS[2], "fence")
+local leaseGeneration = redis.call("HGET", KEYS[2], "generation")
+local leaseExpiry = redis.call("HGET", KEYS[2], "expires_at")
+if generation ~= ARGV[3] or owner ~= ARGV[1] or fence ~= ARGV[2] or
+   leaseGeneration ~= ARGV[3] or not exactPositiveInteger(leaseExpiry) then
+	return -3
+end
+local redisTime = redis.call("TIME")
+local seconds = tonumber(redisTime[1])
+local microseconds = tonumber(redisTime[2])
+if not seconds or not microseconds then
+	return -2
+end
+local now = seconds * 1000 + math.floor(microseconds / 1000)
+if now < 0 or now > maxExact or now ~= math.floor(now) or tonumber(leaseExpiry) <= now then
+	return -3
+end
 local current = redis.call("HGET", KEYS[1], "version")
-if current ~= ARGV[5] then
+if current ~= ARGV[4] then
 	return 0
 end
 local deleted = redis.call("DEL", KEYS[1], KEYS[2])

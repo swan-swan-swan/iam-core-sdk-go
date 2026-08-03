@@ -176,6 +176,10 @@ func parseEncryptedEnvelope(encoded []byte) (encryptedEnvelope, error) {
 	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		return encryptedEnvelope{}, ErrOpenFailed
 	}
+	canonical, err := json.Marshal(envelope)
+	if err != nil || !bytes.Equal(canonical, encoded) {
+		return encryptedEnvelope{}, ErrOpenFailed
+	}
 	return envelope, nil
 }
 

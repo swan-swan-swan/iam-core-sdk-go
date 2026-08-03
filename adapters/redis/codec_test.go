@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -157,7 +158,20 @@ func TestCodecRejectsTamperedUnknownMalformedAndTrailingEnvelopes(t *testing.T) 
 
 	tests := map[string][]byte{
 		"not JSON":           []byte("payload-secret"),
+		"leading whitespace": append([]byte(" "), sealed...),
 		"trailing data":      append(append([]byte(nil), sealed...), []byte(` {}`)...),
+		"reordered fields": []byte(fmt.Sprintf(
+			`{"key_id":%q,"version":1,"nonce":%q,"ciphertext":%q}`,
+			valid.KeyID,
+			valid.Nonce,
+			valid.Ciphertext,
+		)),
+		"escaped field spelling": []byte(fmt.Sprintf(
+			`{"versi\u006fn":1,"key_id":%q,"nonce":%q,"ciphertext":%q}`,
+			valid.KeyID,
+			valid.Nonce,
+			valid.Ciphertext,
+		)),
 		"unknown field":      []byte(`{"version":1,"key_id":"primary","nonce":"AA","ciphertext":"AA","extra":true}`),
 		"duplicate field":    []byte(`{"version":1,"version":1,"key_id":"primary","nonce":"AA","ciphertext":"AA"}`),
 		"unknown version":    marshalTestEnvelope(t, testEnvelope{Version: 2, KeyID: valid.KeyID, Nonce: valid.Nonce, Ciphertext: valid.Ciphertext}),

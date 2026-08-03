@@ -3,6 +3,7 @@ package redis
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"errors"
 	"io"
 	"math"
@@ -22,6 +23,7 @@ func TestBackendConformanceAgainstFaithfulStateFake(t *testing.T) {
 	sessiontest.Run(t, func(t testing.TB, clock *sessiontest.Clock) session.Backend {
 		t.Helper()
 		client := newFakeRedisClient(clock.Now)
+		client.followApplicationClockForConformance()
 		backend, err := New(client, validOptions(clock, bytes.NewReader(bytes.Repeat([]byte{1}, 4096))))
 		if err != nil {
 			t.Fatal("construct backend")
@@ -131,9 +133,12 @@ func TestCommandsUseExactKeysTTLsAndFencedArguments(t *testing.T) {
 		t.Fatal(err)
 	}
 	create := client.lastEval(t, scriptMarkerCreate)
-	assertStringSliceEqual(t, create.keys, []string{backend.sessionKey(item.ID)})
+	assertStringSliceEqual(t, create.keys, []string{backend.sessionKey(item.ID), backend.leaseKey(item.ID)})
 	assertArgStrings(t, create.args, 0, "1")
-	assertArgStrings(t, create.args, 2, strconv.FormatInt(time.Hour.Milliseconds(), 10))
+	if !validOpaqueToken(argString(create.args[2]), generationByteLength) {
+		t.Fatal("create did not send a valid Session generation")
+	}
+	assertArgStrings(t, create.args, 3, strconv.FormatInt(time.Hour.Milliseconds(), 10))
 	if payload, ok := create.args[1].([]byte); !ok || bytes.Contains(payload, []byte(item.Tokens.AccessToken)) {
 		t.Fatal("create did not send an encrypted payload")
 	}
@@ -171,9 +176,8 @@ func TestCommandsUseExactKeysTTLsAndFencedArguments(t *testing.T) {
 	assertStringSliceEqual(t, acquire.keys, []string{backend.sessionKey(item.ID), backend.leaseKey(item.ID)})
 	assertArgStrings(t, acquire.args, 0, owned.owner)
 	assertArgStrings(t, acquire.args, 1, "1")
-	assertArgStrings(t, acquire.args, 2, strconv.FormatInt(owned.expiresAt.UnixMilli(), 10))
+	assertArgStrings(t, acquire.args, 2, owned.generation)
 	assertArgStrings(t, acquire.args, 3, "60001")
-	assertArgStrings(t, acquire.args, 4, strconv.FormatInt(clock.Now().UnixMilli(), 10))
 
 	next := testSession(item.ID, clock.Now())
 	next.Version = 2
@@ -186,18 +190,17 @@ func TestCommandsUseExactKeysTTLsAndFencedArguments(t *testing.T) {
 	wantCommitArgs := []string{
 		owned.owner,
 		"1",
-		strconv.FormatInt(owned.expiresAt.UnixMilli(), 10),
-		strconv.FormatInt(clock.Now().UnixMilli(), 10),
+		owned.generation,
 		"1",
 		"2",
 	}
 	for index, want := range wantCommitArgs {
 		assertArgStrings(t, commit.args, index, want)
 	}
-	if payload, ok := commit.args[6].([]byte); !ok || bytes.Contains(payload, []byte(next.Tokens.AccessToken)) {
+	if payload, ok := commit.args[5].([]byte); !ok || bytes.Contains(payload, []byte(next.Tokens.AccessToken)) {
 		t.Fatal("fenced commit exposed token plaintext")
 	}
-	assertArgStrings(t, commit.args, 7, strconv.FormatInt(time.Hour.Milliseconds(), 10))
+	assertArgStrings(t, commit.args, 6, strconv.FormatInt(time.Hour.Milliseconds(), 10))
 	if leaseValue.Valid(ctx) {
 		t.Fatal("successful fenced CAS left the Redis lease valid")
 	}
@@ -323,10 +326,12 @@ func TestExpiredGetCannotDeleteConcurrentReplacement(t *testing.T) {
 		defer baseClient.mu.Unlock()
 		baseClient.values[backend.sessionKey(current.ID)] = &fakeValue{
 			fields: map[string]string{
-				"version": "2",
-				"payload": string(replacementPayload),
+				"version":    "2",
+				"payload":    string(replacementPayload),
+				"generation": base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{31}, generationByteLength)),
+				"last_fence": "0",
 			},
-			expiresAt: time.Now().Add(time.Hour),
+			expiresAt: baseClient.serverTimeLocked().Add(time.Hour),
 		}
 	}
 
@@ -342,9 +347,396 @@ func TestExpiredGetCannotDeleteConcurrentReplacement(t *testing.T) {
 	}
 }
 
+func TestCreateAtomicallyInvalidatesOrphanLeaseAndProtectsSameVersionReplacement(t *testing.T) {
+	for _, operation := range []string{"CAS", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			clock, client, backend := newBackendFixture(t, bytes.NewReader(bytes.Repeat([]byte{21}, 512)))
+			ctx := context.Background()
+			original := testSession("orphan-"+strings.ToLower(operation), clock.Now())
+			if err := backend.Create(ctx, original); err != nil {
+				t.Fatal(err)
+			}
+			oldLease, err := backend.AcquireRefreshLease(ctx, original.ID, 2*time.Hour)
+			if err != nil {
+				t.Fatal(err)
+			}
+			client.advanceServer(time.Hour)
+
+			oldNext := testSession(original.ID, clock.Now())
+			oldNext.Version = 2
+			oldNext.Tokens.AccessToken = "old-owner-write"
+			if operation == "CAS" {
+				err = backend.CompareAndSwapWithLease(ctx, oldLease, original.ID, 1, oldNext)
+			} else {
+				err = backend.DeleteWithLease(ctx, oldLease, original.ID, 1)
+			}
+			if !errors.Is(err, session.ErrNotFound) {
+				t.Fatal("old operation before recreation had the wrong classification")
+			}
+
+			replacement := testSession(original.ID, clock.Now())
+			replacement.Tokens.AccessToken = "replacement-value"
+			if err := backend.Create(ctx, replacement); err != nil {
+				t.Fatal("same-ID Session recreation failed")
+			}
+			if oldLease.Valid(ctx) {
+				t.Fatal("recreation left the orphan lease valid")
+			}
+			if operation == "CAS" {
+				err = backend.CompareAndSwapWithLease(ctx, oldLease, original.ID, 1, oldNext)
+			} else {
+				err = backend.DeleteWithLease(ctx, oldLease, original.ID, 1)
+			}
+			if !errors.Is(err, session.ErrLeaseLost) {
+				t.Fatal("old operation after same-version recreation was not fenced")
+			}
+			stored, err := backend.Get(ctx, original.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if stored.Version != 1 || stored.Tokens.AccessToken != "replacement-value" {
+				t.Fatal("old owner changed the same-version replacement")
+			}
+		})
+	}
+}
+
+func TestLeasePhysicalTTLIsCappedToRemainingSessionPTTL(t *testing.T) {
+	clock, client, backend := newBackendFixture(t, bytes.NewReader(bytes.Repeat([]byte{22}, 256)))
+	item := testSession("lease-ttl-cap", clock.Now())
+	if err := backend.Create(context.Background(), item); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := backend.AcquireRefreshLease(context.Background(), item.ID, 2*time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	client.mu.Lock()
+	serverNow := client.serverTimeLocked()
+	leaseRemaining := client.values[backend.leaseKey(item.ID)].expiresAt.Sub(serverNow)
+	sessionRemaining := client.values[backend.sessionKey(item.ID)].expiresAt.Sub(serverNow)
+	client.mu.Unlock()
+	if leaseRemaining <= 0 || leaseRemaining > sessionRemaining || leaseRemaining > time.Hour {
+		t.Fatalf("lease TTL %s exceeded remaining Session PTTL %s", leaseRemaining, sessionRemaining)
+	}
+}
+
+func TestStalledAcquireCannotBindToRecreatedSessionGeneration(t *testing.T) {
+	clock := newSessionClock()
+	baseClient := newFakeRedisClient(clock.Now)
+	owner := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{23}, ownerByteLength))
+	client := newAcquireGateClient(baseClient, owner)
+	random := bytes.NewReader(bytes.Join([][]byte{
+		bytes.Repeat([]byte{22}, generationByteLength),
+		bytes.Repeat([]byte{23}, ownerByteLength),
+		bytes.Repeat([]byte{24}, generationByteLength),
+	}, nil))
+	backendValue, err := New(client, validOptions(clock, random))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := backendValue.(*Backend)
+	ctx := context.Background()
+	item := testSession("generation-stall", clock.Now())
+	if err := backend.Create(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	result := make(chan leaseResult, 1)
+	go func() {
+		leaseValue, acquireErr := backend.AcquireRefreshLease(ctx, item.ID, 2*time.Hour)
+		result <- leaseResult{lease: leaseValue, err: acquireErr}
+	}()
+	client.waitUntilBlocked(t)
+	baseClient.advanceServer(time.Hour)
+	replacement := testSession(item.ID, clock.Now())
+	replacement.Tokens.AccessToken = "new-generation"
+	if err := backend.Create(ctx, replacement); err != nil {
+		t.Fatal(err)
+	}
+	client.resume()
+	stalled := <-result
+	if stalled.err == nil || stalled.lease != nil {
+		t.Fatal("pre-recreation Acquire bound its lease to the new Session generation")
+	}
+	stored, err := backend.Get(ctx, item.ID)
+	if err != nil || stored.Tokens.AccessToken != "new-generation" || stored.Version != 1 {
+		t.Fatal("stalled old-generation Acquire changed the replacement")
+	}
+}
+
+func TestFenceGrantOrderingRejectsDelayedLowerReservation(t *testing.T) {
+	clock := newSessionClock()
+	baseClient := newFakeRedisClient(clock.Now)
+	ownerA := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{24}, ownerByteLength))
+	client := newAcquireGateClient(baseClient, ownerA)
+	backendAValue, err := New(client, validOptions(clock, bytes.NewReader(bytes.Repeat([]byte{24}, 512))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backendBValue, err := New(client, validOptions(clock, bytes.NewReader(bytes.Repeat([]byte{25}, 512))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backendA := backendAValue.(*Backend)
+	backendB := backendBValue.(*Backend)
+	ctx := context.Background()
+	item := testSession("grant-order", clock.Now())
+	if err := backendA.Create(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	resultA := make(chan leaseResult, 1)
+	go func() {
+		leaseValue, acquireErr := backendA.AcquireRefreshLease(ctx, item.ID, time.Minute)
+		resultA <- leaseResult{lease: leaseValue, err: acquireErr}
+	}()
+	client.waitUntilBlocked(t)
+	leaseB, err := backendB.AcquireRefreshLease(ctx, item.ID, time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if leaseB.(*refreshLease).fence != 2 {
+		t.Fatal("higher reservation did not receive fence 2")
+	}
+	if err := leaseB.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+	client.resume()
+	acquiredA := <-resultA
+	if acquiredA.err != nil || acquiredA.lease == nil {
+		t.Fatal("delayed contender did not retry its stale reservation")
+	}
+	if acquiredA.lease.(*refreshLease).fence <= 2 {
+		t.Fatal("lower reserved fence was granted after the higher fence")
+	}
+}
+
+func TestStaleFenceRetriesAreBoundedAndContextAware(t *testing.T) {
+	t.Run("bounded", func(t *testing.T) {
+		clock, client, backend := newBackendFixture(t, bytes.NewReader(bytes.Repeat([]byte{32}, 512)))
+		item := testSession("stale-fence-bounded", clock.Now())
+		if err := backend.Create(context.Background(), item); err != nil {
+			t.Fatal(err)
+		}
+		client.mu.Lock()
+		client.values[backend.sessionKey(item.ID)].fields["last_fence"] = "100"
+		client.mu.Unlock()
+		leaseValue, err := backend.AcquireRefreshLease(context.Background(), item.ID, time.Minute)
+		if leaseValue != nil || !errors.Is(err, session.ErrConflict) {
+			t.Fatal("stale-fence retry exhaustion returned the wrong result")
+		}
+		client.mu.Lock()
+		fence := client.fences[backend.fenceKey()]
+		client.mu.Unlock()
+		if fence != maxFenceGrantAttempts {
+			t.Fatalf("reserved %d fences, want retry bound %d", fence, maxFenceGrantAttempts)
+		}
+	})
+
+	t.Run("context", func(t *testing.T) {
+		clock := newSessionClock()
+		baseClient := newFakeRedisClient(clock.Now)
+		ctx, cancel := context.WithCancel(context.Background())
+		client := &cancelAfterAcquireClient{fakeRedisClient: baseClient, cancel: cancel}
+		backendValue, err := New(client, validOptions(clock, bytes.NewReader(bytes.Repeat([]byte{33}, 512))))
+		if err != nil {
+			t.Fatal(err)
+		}
+		backend := backendValue.(*Backend)
+		item := testSession("stale-fence-context", clock.Now())
+		if err := backend.Create(context.Background(), item); err != nil {
+			t.Fatal(err)
+		}
+		baseClient.mu.Lock()
+		baseClient.values[backend.sessionKey(item.ID)].fields["last_fence"] = "100"
+		baseClient.mu.Unlock()
+		leaseValue, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+		if leaseValue != nil || !errors.Is(err, context.Canceled) {
+			t.Fatal("canceled stale-fence retry returned the wrong result")
+		}
+		baseClient.mu.Lock()
+		fence := baseClient.fences[backend.fenceKey()]
+		baseClient.mu.Unlock()
+		if fence != 1 {
+			t.Fatal("Acquire reserved another fence after cancellation")
+		}
+	})
+}
+
+func TestAuthoritativeServerExpiryRejectsOperationsWithStaleApplicationClock(t *testing.T) {
+	for _, operation := range []string{"CAS", "delete", "valid", "release"} {
+		t.Run(operation, func(t *testing.T) {
+			clock := newSessionClock()
+			baseClient := newFakeRedisClient(clock.Now)
+			client := newScriptGateClient(baseClient, markerForLeaseOperation(operation))
+			backendValue, err := New(client, validOptions(clock, bytes.NewReader(bytes.Repeat([]byte{26}, 512))))
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := backendValue.(*Backend)
+			ctx := context.Background()
+			item := testSession("server-expiry-"+operation, clock.Now())
+			if err := backend.Create(ctx, item); err != nil {
+				t.Fatal(err)
+			}
+			leaseValue, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			baseClient.mu.Lock()
+			baseClient.values[backend.leaseKey(item.ID)].expiresAt = baseClient.serverTimeLocked().Add(2 * time.Minute)
+			baseClient.mu.Unlock()
+			result := make(chan error, 1)
+			go func() {
+				switch operation {
+				case "CAS":
+					next := testSession(item.ID, clock.Now())
+					next.Version = 2
+					result <- backend.CompareAndSwapWithLease(ctx, leaseValue, item.ID, 1, next)
+				case "delete":
+					result <- backend.DeleteWithLease(ctx, leaseValue, item.ID, 1)
+				case "valid":
+					if leaseValue.Valid(ctx) {
+						result <- nil
+					} else {
+						result <- session.ErrLeaseLost
+					}
+				case "release":
+					result <- leaseValue.Release(ctx)
+				}
+			}()
+			client.waitUntilBlocked(t)
+			baseClient.advanceServer(time.Minute)
+			client.resume()
+			err = <-result
+			if operation == "valid" {
+				if err == nil {
+					t.Fatal("Valid authorized after authoritative server expiry")
+				}
+			} else if !errors.Is(err, session.ErrLeaseLost) {
+				t.Fatal("operation did not reject authoritative server expiry as lease loss")
+			}
+			stored, getErr := backend.Get(ctx, item.ID)
+			if getErr != nil || stored.Version != 1 {
+				t.Fatal("expired lease operation changed the Session")
+			}
+		})
+	}
+}
+
+func TestAcquireRechecksServerAfterEntropyDelay(t *testing.T) {
+	clock := newSessionClock()
+	client := newFakeRedisClient(clock.Now)
+	random := newGatedReader(27)
+	backendValue, err := New(client, validOptions(clock, random))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := backendValue.(*Backend)
+	ctx := context.Background()
+	item := testSession("entropy-delay", clock.Now())
+	if err := backend.Create(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	random.arm()
+	result := make(chan leaseResult, 1)
+	go func() {
+		leaseValue, acquireErr := backend.AcquireRefreshLease(ctx, item.ID, 2*time.Hour)
+		result <- leaseResult{lease: leaseValue, err: acquireErr}
+	}()
+	random.waitUntilBlocked(t)
+	client.advanceServer(time.Hour)
+	random.resume()
+	acquired := <-result
+	if acquired.err == nil || acquired.lease != nil {
+		t.Fatal("Acquire succeeded after Session expired during entropy delay")
+	}
+}
+
+func TestLeaseMutationRechecksServerAfterCodecAndGetDelays(t *testing.T) {
+	for _, stage := range []string{"codec", "Get"} {
+		t.Run(stage, func(t *testing.T) {
+			clock := newSessionClock()
+			baseClient := newFakeRedisClient(clock.Now)
+			options := validOptions(clock, bytes.NewReader(bytes.Repeat([]byte{29}, 512)))
+			var client goredis.UniversalClient = baseClient
+			var arm, wait, resume func()
+			if stage == "codec" {
+				codec := newGatedCodec(options.Codec)
+				options.Codec = codec
+				arm = codec.arm
+				wait = func() { codec.waitUntilBlocked(t) }
+				resume = codec.resume
+			} else {
+				gate := newHMGetGateClient(baseClient)
+				client = gate
+				arm = gate.arm
+				wait = func() { gate.waitUntilBlocked(t) }
+				resume = gate.resume
+			}
+			backendValue, err := New(client, options)
+			if err != nil {
+				t.Fatal(err)
+			}
+			backend := backendValue.(*Backend)
+			ctx := context.Background()
+			item := testSession("mutation-delay-"+strings.ToLower(stage), clock.Now())
+			if err := backend.Create(ctx, item); err != nil {
+				t.Fatal(err)
+			}
+			leaseValue, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+			if err != nil {
+				t.Fatal(err)
+			}
+			next := testSession(item.ID, clock.Now())
+			next.Version = 2
+			arm()
+			result := make(chan error, 1)
+			go func() { result <- backend.CompareAndSwapWithLease(ctx, leaseValue, item.ID, 1, next) }()
+			wait()
+			baseClient.advanceServer(time.Minute)
+			resume()
+			if err := <-result; !errors.Is(err, session.ErrLeaseLost) {
+				t.Fatal("mutation delay did not recheck authoritative server expiry")
+			}
+			stored, err := backend.Get(ctx, item.ID)
+			if err != nil || stored.Version != 1 {
+				t.Fatal("expired delayed mutation changed the Session")
+			}
+		})
+	}
+}
+
+func TestLuaServerTimeExactIntegerBoundary(t *testing.T) {
+	const maxExactMilliseconds int64 = 1<<53 - 1
+	for _, test := range []struct {
+		name      string
+		duration  time.Duration
+		wantError bool
+	}{
+		{name: "exact maximum", duration: 10 * time.Millisecond},
+		{name: "addition overflow", duration: 11 * time.Millisecond, wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			clock, client, backend := newBackendFixture(t, bytes.NewReader(bytes.Repeat([]byte{28}, 512)))
+			client.setServer(time.UnixMilli(maxExactMilliseconds - 10))
+			item := testSession("lua-time-"+strings.ReplaceAll(test.name, " ", "-"), clock.Now())
+			if err := backend.Create(context.Background(), item); err != nil {
+				t.Fatal(err)
+			}
+			leaseValue, err := backend.AcquireRefreshLease(context.Background(), item.ID, test.duration)
+			if test.wantError {
+				if !errors.Is(err, ErrBackendUnavailable) || leaseValue != nil {
+					t.Fatal("inexact Lua timestamp addition was accepted")
+				}
+			} else if err != nil || leaseValue == nil {
+				t.Fatal("exact Lua timestamp boundary was rejected")
+			}
+		})
+	}
+}
+
 func TestFenceExhaustionAndRandomFailureInstallNoLease(t *testing.T) {
 	t.Run("random failure does not consume fence", func(t *testing.T) {
-		clock, client, backend := newBackendFixture(t, io.LimitReader(strings.NewReader("short"), 5))
+		clock, client, backend := newBackendFixture(t, io.LimitReader(strings.NewReader(strings.Repeat("x", generationByteLength+5)), generationByteLength+5))
 		item := testSession("random-no-fence", clock.Now())
 		if err := backend.Create(context.Background(), item); err != nil {
 			t.Fatal(err)
@@ -424,21 +816,24 @@ func TestFencedScriptsValidateBeforeMutationAndDeleteLease(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := client.lastEval(t, scriptMarkerFencedCAS).script
-	validationEnd := strings.Index(script, `if redis.call("EXISTS", KEYS[1])`)
-	mutation := strings.Index(script, `redis.call("HSET", KEYS[1], "version", ARGV[6]`)
+	mutation := strings.Index(script, `redis.call("HSET", KEYS[1], "version", ARGV[5]`)
 	leaseDelete := strings.Index(script, `redis.pcall("DEL", KEYS[2])`)
 	for name, validation := range map[string]string{
-		"owner":        `owner ~= ARGV[1]`,
-		"fence":        `fence ~= ARGV[2]`,
-		"lease expiry": `leaseExpiry ~= ARGV[3]`,
-		"version":      `current ~= ARGV[5]`,
+		"server Session TTL": `redis.call("PTTL", KEYS[1]) <= 0`,
+		"server lease TTL":   `redis.call("PTTL", KEYS[2]) <= 0`,
+		"owner":              `owner ~= ARGV[1]`,
+		"fence":              `fence ~= ARGV[2]`,
+		"generation":         `generation ~= ARGV[3]`,
+		"server time":        `redis.call("TIME")`,
+		"lease expiry":       `tonumber(leaseExpiry) <= now`,
+		"version":            `current ~= ARGV[4]`,
 	} {
 		position := strings.Index(script, validation)
 		if position < 0 || position > mutation {
 			t.Fatalf("%s was not validated before mutation", name)
 		}
 	}
-	if validationEnd < 0 || mutation < 0 || leaseDelete < mutation {
+	if mutation < 0 || leaseDelete < mutation {
 		t.Fatal("fenced CAS script does not validate, mutate, and consume lease in order")
 	}
 }
@@ -466,7 +861,7 @@ func TestDeleteWithLeaseUsesAtomicFencedScriptAndConsumesLease(t *testing.T) {
 	}
 	call := client.lastEval(t, scriptMarkerFencedDelete)
 	assertStringSliceEqual(t, call.keys, []string{backend.sessionKey(item.ID), backend.leaseKey(item.ID)})
-	wants := []string{owned.owner, "1", strconv.FormatInt(owned.expiresAt.UnixMilli(), 10), strconv.FormatInt(clock.Now().UnixMilli(), 10), "1"}
+	wants := []string{owned.owner, "1", owned.generation, "1"}
 	for index, want := range wants {
 		assertArgStrings(t, call.args, index, want)
 	}
@@ -540,7 +935,10 @@ func TestTTLBoundariesAndOverflowAreSafe(t *testing.T) {
 func TestFailuresAreTypedAndSanitized(t *testing.T) {
 	clock := newSessionClock()
 	client := newFakeRedisClient(clock.Now)
-	backendValue, err := New(client, validOptions(clock, io.LimitReader(strings.NewReader("random-source-sensitive"), 5)))
+	backendValue, err := New(client, validOptions(clock, io.LimitReader(
+		strings.NewReader(strings.Repeat("x", generationByteLength)+"random-source-sensitive"),
+		generationByteLength+5,
+	)))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,24 +1042,300 @@ type fakeValue struct {
 	expiresAt time.Time
 }
 
-// fakeRedisClient faithfully models only the commands and script effects used by Backend.
+// fakeRedisClient keeps application and Redis server clocks separate and models
+// only the commands and script effects used by Backend, including TIME/PTTL.
 // It deliberately does not interpret arbitrary Lua; real Redis execution belongs to Task 4.
 type fakeRedisClient struct {
 	goredis.UniversalClient
 
-	mu     sync.Mutex
-	now    func() time.Time
-	values map[string]*fakeValue
-	fences map[string]uint64
-	evals  []recordedEval
-	calls  int
-	err    error
+	mu                  sync.Mutex
+	appNow              func() time.Time
+	serverNow           time.Time
+	serverOffset        time.Duration
+	serverFixed         bool
+	logicalReadBoundary bool
+	values              map[string]*fakeValue
+	fences              map[string]uint64
+	evals               []recordedEval
+	calls               int
+	err                 error
 }
 
 type cleanupRaceClient struct {
 	*fakeRedisClient
 	once                 sync.Once
 	beforeExpiredCleanup func()
+}
+
+type leaseResult struct {
+	lease session.Lease
+	err   error
+}
+
+type acquireGateClient struct {
+	*fakeRedisClient
+	owner   string
+	entered chan struct{}
+	proceed chan struct{}
+	once    sync.Once
+}
+
+func newAcquireGateClient(client *fakeRedisClient, owner string) *acquireGateClient {
+	return &acquireGateClient{
+		fakeRedisClient: client,
+		owner:           owner,
+		entered:         make(chan struct{}),
+		proceed:         make(chan struct{}),
+	}
+}
+
+func (c *acquireGateClient) Eval(ctx context.Context, script string, keys []string, args ...interface{}) *goredis.Cmd {
+	if strings.Contains(script, scriptMarkerLeaseAcquire) && len(args) > 0 && argString(args[0]) == c.owner {
+		c.once.Do(func() {
+			close(c.entered)
+			select {
+			case <-c.proceed:
+			case <-ctx.Done():
+			}
+		})
+	}
+	return c.fakeRedisClient.Eval(ctx, script, keys, args...)
+}
+
+func (c *acquireGateClient) waitUntilBlocked(t testing.TB) {
+	t.Helper()
+	waitForSignal(t, c.entered, "Acquire did not reach its Redis script")
+}
+
+func (c *acquireGateClient) resume() { close(c.proceed) }
+
+type cancelAfterAcquireClient struct {
+	*fakeRedisClient
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (c *cancelAfterAcquireClient) Eval(ctx context.Context, script string, keys []string, args ...interface{}) *goredis.Cmd {
+	result := c.fakeRedisClient.Eval(ctx, script, keys, args...)
+	if strings.Contains(script, scriptMarkerLeaseAcquire) {
+		c.once.Do(c.cancel)
+	}
+	return result
+}
+
+type scriptGateClient struct {
+	*fakeRedisClient
+	marker  string
+	entered chan struct{}
+	proceed chan struct{}
+	once    sync.Once
+}
+
+func newScriptGateClient(client *fakeRedisClient, marker string) *scriptGateClient {
+	return &scriptGateClient{
+		fakeRedisClient: client,
+		marker:          marker,
+		entered:         make(chan struct{}),
+		proceed:         make(chan struct{}),
+	}
+}
+
+func (c *scriptGateClient) Eval(ctx context.Context, script string, keys []string, args ...interface{}) *goredis.Cmd {
+	if strings.Contains(script, c.marker) {
+		c.once.Do(func() {
+			close(c.entered)
+			select {
+			case <-c.proceed:
+			case <-ctx.Done():
+			}
+		})
+	}
+	return c.fakeRedisClient.Eval(ctx, script, keys, args...)
+}
+
+func (c *scriptGateClient) waitUntilBlocked(t testing.TB) {
+	t.Helper()
+	waitForSignal(t, c.entered, "operation did not reach its Redis script")
+}
+
+func (c *scriptGateClient) resume() { close(c.proceed) }
+
+type hmGetGateClient struct {
+	*fakeRedisClient
+	mu      sync.Mutex
+	armed   bool
+	entered chan struct{}
+	proceed chan struct{}
+}
+
+func newHMGetGateClient(client *fakeRedisClient) *hmGetGateClient {
+	return &hmGetGateClient{fakeRedisClient: client}
+}
+
+func (c *hmGetGateClient) arm() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.armed = true
+	c.entered = make(chan struct{})
+	c.proceed = make(chan struct{})
+}
+
+func (c *hmGetGateClient) HMGet(ctx context.Context, key string, fields ...string) *goredis.SliceCmd {
+	c.mu.Lock()
+	if !c.armed {
+		c.mu.Unlock()
+		return c.fakeRedisClient.HMGet(ctx, key, fields...)
+	}
+	c.armed = false
+	entered := c.entered
+	proceed := c.proceed
+	c.mu.Unlock()
+	close(entered)
+	select {
+	case <-proceed:
+	case <-ctx.Done():
+	}
+	return c.fakeRedisClient.HMGet(ctx, key, fields...)
+}
+
+func (c *hmGetGateClient) waitUntilBlocked(t testing.TB) {
+	t.Helper()
+	c.mu.Lock()
+	entered := c.entered
+	c.mu.Unlock()
+	waitForSignal(t, entered, "Get did not reach HMGET")
+}
+
+func (c *hmGetGateClient) resume() {
+	c.mu.Lock()
+	proceed := c.proceed
+	c.mu.Unlock()
+	close(proceed)
+}
+
+type gatedCodec struct {
+	delegate Codec
+	mu       sync.Mutex
+	armed    bool
+	entered  chan struct{}
+	proceed  chan struct{}
+}
+
+func newGatedCodec(delegate Codec) *gatedCodec { return &gatedCodec{delegate: delegate} }
+
+func (c *gatedCodec) arm() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.armed = true
+	c.entered = make(chan struct{})
+	c.proceed = make(chan struct{})
+}
+
+func (c *gatedCodec) Seal(plaintext []byte) ([]byte, error) {
+	c.mu.Lock()
+	if !c.armed {
+		c.mu.Unlock()
+		return c.delegate.Seal(plaintext)
+	}
+	c.armed = false
+	entered := c.entered
+	proceed := c.proceed
+	c.mu.Unlock()
+	close(entered)
+	<-proceed
+	return c.delegate.Seal(plaintext)
+}
+
+func (c *gatedCodec) Open(encoded []byte) ([]byte, error) { return c.delegate.Open(encoded) }
+
+func (c *gatedCodec) waitUntilBlocked(t testing.TB) {
+	t.Helper()
+	c.mu.Lock()
+	entered := c.entered
+	c.mu.Unlock()
+	waitForSignal(t, entered, "codec did not reach Seal")
+}
+
+func (c *gatedCodec) resume() {
+	c.mu.Lock()
+	proceed := c.proceed
+	c.mu.Unlock()
+	close(proceed)
+}
+
+func markerForLeaseOperation(operation string) string {
+	switch operation {
+	case "CAS":
+		return scriptMarkerFencedCAS
+	case "delete":
+		return scriptMarkerFencedDelete
+	case "valid":
+		return scriptMarkerLeaseValid
+	case "release":
+		return scriptMarkerLeaseRelease
+	default:
+		panic("unknown lease operation")
+	}
+}
+
+type gatedReader struct {
+	mu      sync.Mutex
+	value   byte
+	armed   bool
+	entered chan struct{}
+	proceed chan struct{}
+}
+
+func newGatedReader(value byte) *gatedReader { return &gatedReader{value: value} }
+
+func (r *gatedReader) arm() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.armed = true
+	r.entered = make(chan struct{})
+	r.proceed = make(chan struct{})
+}
+
+func (r *gatedReader) Read(destination []byte) (int, error) {
+	r.mu.Lock()
+	for index := range destination {
+		destination[index] = r.value
+	}
+	if !r.armed {
+		r.mu.Unlock()
+		return len(destination), nil
+	}
+	r.armed = false
+	entered := r.entered
+	proceed := r.proceed
+	r.mu.Unlock()
+	close(entered)
+	<-proceed
+	return len(destination), nil
+}
+
+func (r *gatedReader) waitUntilBlocked(t testing.TB) {
+	t.Helper()
+	r.mu.Lock()
+	entered := r.entered
+	r.mu.Unlock()
+	waitForSignal(t, entered, "random reader was not reached")
+}
+
+func (r *gatedReader) resume() {
+	r.mu.Lock()
+	proceed := r.proceed
+	r.mu.Unlock()
+	close(proceed)
+}
+
+func waitForSignal(t testing.TB, signal <-chan struct{}, failure string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(5 * time.Second):
+		t.Fatal(failure)
+	}
 }
 
 func (c *cleanupRaceClient) Eval(ctx context.Context, script string, keys []string, args ...interface{}) *goredis.Cmd {
@@ -672,7 +1346,49 @@ func (c *cleanupRaceClient) Eval(ctx context.Context, script string, keys []stri
 }
 
 func newFakeRedisClient(now func() time.Time) *fakeRedisClient {
-	return &fakeRedisClient{now: now, values: make(map[string]*fakeValue), fences: make(map[string]uint64)}
+	return &fakeRedisClient{
+		appNow:      now,
+		serverNow:   now(),
+		serverFixed: true,
+		values:      make(map[string]*fakeValue),
+		fences:      make(map[string]uint64),
+	}
+}
+
+func (c *fakeRedisClient) followApplicationClockForConformance() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.serverFixed = false
+	c.serverOffset = 0
+	c.logicalReadBoundary = true
+}
+
+func (c *fakeRedisClient) advanceServer(delta time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.serverFixed {
+		c.serverNow = c.serverNow.Add(delta)
+	} else {
+		c.serverOffset += delta
+	}
+}
+
+func (c *fakeRedisClient) setServer(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.serverNow = now
+	c.serverFixed = true
+}
+
+func (c *fakeRedisClient) serverTimeLocked() time.Time {
+	if c.serverFixed {
+		return c.serverNow
+	}
+	return c.appNow().Add(c.serverOffset)
+}
+
+func (c *fakeRedisClient) expiresBeforeLogicalReadLocked() bool {
+	return !c.logicalReadBoundary
 }
 
 func (c *fakeRedisClient) HMGet(ctx context.Context, key string, fields ...string) *goredis.SliceCmd {
@@ -682,7 +1398,12 @@ func (c *fakeRedisClient) HMGet(ctx context.Context, key string, fields ...strin
 	if err := c.commandError(ctx); err != nil {
 		return goredis.NewSliceResult(nil, err)
 	}
-	c.expireLocked(key)
+	// The conformance-only coupled-clock mode retains a just-expired value long
+	// enough for Backend to classify and atomically remove it. Normal fake use
+	// applies the independently controlled Redis server's physical expiration.
+	if c.expiresBeforeLogicalReadLocked() {
+		c.expireLocked(key)
+	}
 	value := c.values[key]
 	result := make([]interface{}, len(fields))
 	if value != nil {
@@ -739,9 +1460,6 @@ func (c *fakeRedisClient) Eval(ctx context.Context, script string, keys []string
 		}
 	}
 	c.evals = append(c.evals, recordedEval{script: script, keys: append([]string(nil), keys...), args: copiedArgs})
-	for _, key := range keys {
-		c.expireLocked(key)
-	}
 	result := c.runScriptLocked(script, keys, args)
 	return goredis.NewCmdResult(result, nil)
 }
@@ -755,12 +1473,23 @@ func (c *fakeRedisClient) runScriptLocked(script string, keys []string, args []i
 		c.fences[keys[0]]++
 		return strconv.FormatUint(c.fences[keys[0]], 10)
 	case strings.Contains(script, scriptMarkerCreate):
+		if c.expiresBeforeLogicalReadLocked() {
+			c.expireLocked(keys[0])
+			c.expireLocked(keys[1])
+		}
 		if c.values[keys[0]] != nil {
 			return int64(0)
 		}
-		c.values[keys[0]] = &fakeValue{fields: map[string]string{"version": argString(args[0]), "payload": argString(args[1])}, expiresAt: time.Now().Add(argDuration(args[2]))}
+		delete(c.values, keys[1])
+		c.values[keys[0]] = &fakeValue{fields: map[string]string{
+			"version": argString(args[0]), "payload": argString(args[1]),
+			"generation": argString(args[2]), "last_fence": "0",
+		}, expiresAt: c.serverTimeLocked().Add(argDuration(args[3]))}
 		return int64(1)
 	case strings.Contains(script, scriptMarkerCAS):
+		if c.expiresBeforeLogicalReadLocked() {
+			c.expireLocked(keys[0])
+		}
 		current := c.values[keys[0]]
 		if current == nil {
 			return int64(-1)
@@ -770,24 +1499,31 @@ func (c *fakeRedisClient) runScriptLocked(script string, keys []string, args []i
 		}
 		current.fields["version"] = argString(args[1])
 		current.fields["payload"] = argString(args[2])
-		current.expiresAt = time.Now().Add(argDuration(args[3]))
+		current.expiresAt = c.serverTimeLocked().Add(argDuration(args[3]))
 		return int64(1)
 	case strings.Contains(script, scriptMarkerDeleteExpired):
 		current := c.values[keys[0]]
 		if current == nil || current.fields["version"] != argString(args[0]) ||
-			current.fields["payload"] != argString(args[1]) {
+			current.fields["payload"] != argString(args[1]) ||
+			current.fields["generation"] != argString(args[2]) {
 			return int64(0)
 		}
 		delete(c.values, keys[0])
 		delete(c.values, keys[1])
 		return int64(1)
 	case strings.Contains(script, scriptMarkerFlowPut):
+		if c.expiresBeforeLogicalReadLocked() {
+			c.expireLocked(keys[0])
+		}
 		if c.values[keys[0]] != nil {
 			return int64(0)
 		}
-		c.values[keys[0]] = &fakeValue{text: argString(args[0]), expiresAt: time.Now().Add(argDuration(args[1]))}
+		c.values[keys[0]] = &fakeValue{text: argString(args[0]), expiresAt: c.serverTimeLocked().Add(argDuration(args[1]))}
 		return int64(1)
 	case strings.Contains(script, scriptMarkerFlowConsume):
+		if c.expiresBeforeLogicalReadLocked() {
+			c.expireLocked(keys[0])
+		}
 		current := c.values[keys[0]]
 		if current == nil {
 			return nil
@@ -795,60 +1531,88 @@ func (c *fakeRedisClient) runScriptLocked(script string, keys []string, args []i
 		delete(c.values, keys[0])
 		return current.text
 	case strings.Contains(script, scriptMarkerLeaseAcquire):
-		if c.values[keys[0]] == nil {
+		sessionTTL := c.pttlLocked(keys[0])
+		if sessionTTL == -2 || sessionTTL == 0 {
 			return int64(-1)
 		}
-		if current := c.values[keys[1]]; current != nil {
-			currentExpiry, expiryErr := strconv.ParseInt(current.fields["expires_at"], 10, 64)
-			now, nowErr := strconv.ParseInt(args[4].(string), 10, 64)
-			if expiryErr != nil || nowErr != nil {
-				return int64(-2)
-			}
-			if currentExpiry > now {
-				return int64(0)
-			}
-			delete(c.values, keys[1])
+		if sessionTTL < 0 {
+			return int64(-2)
+		}
+		currentSession := c.values[keys[0]]
+		if currentSession.fields["generation"] != argString(args[2]) {
+			return int64(-5)
+		}
+		leaseTTL := c.pttlLocked(keys[1])
+		if leaseTTL >= 0 {
+			return int64(0)
+		}
+		if leaseTTL != -2 {
+			return int64(-2)
+		}
+		candidate := argString(args[1])
+		last := currentSession.fields["last_fence"]
+		if !canonicalUint64(candidate) || !canonicalUint64(last) {
+			return int64(-2)
+		}
+		if decimalLessOrEqual(candidate, last) {
+			return int64(-4)
+		}
+		requestedTTL, ok := parseLuaPositiveInteger(argString(args[3]))
+		if !ok {
+			return int64(-2)
+		}
+		if sessionTTL < requestedTTL {
+			requestedTTL = sessionTTL
+		}
+		now, ok := c.luaServerMillisecondsLocked()
+		if !ok || requestedTTL > maxLuaExactInteger-now {
+			return int64(-2)
 		}
 		c.values[keys[1]] = &fakeValue{fields: map[string]string{
-			"owner": args[0].(string), "fence": args[1].(string), "expires_at": args[2].(string),
-		}, expiresAt: time.Now().Add(argDuration(args[3]))}
+			"owner": argString(args[0]), "fence": candidate,
+			"generation": argString(args[2]), "expires_at": strconv.FormatInt(now+requestedTTL, 10),
+		}, expiresAt: c.serverTimeLocked().Add(time.Duration(requestedTTL) * time.Millisecond)}
+		currentSession.fields["last_fence"] = candidate
 		return int64(1)
 	case strings.Contains(script, scriptMarkerLeaseValid):
-		if c.validLeaseLocked(keys[0], args) {
+		if c.validLeaseLocked(keys[0], keys[1], args) {
 			return int64(1)
 		}
 		return int64(0)
 	case strings.Contains(script, scriptMarkerLeaseRelease):
-		if !c.validLeaseLocked(keys[0], args) {
+		if !c.validLeaseLocked(keys[0], keys[1], args) {
 			return int64(0)
 		}
-		delete(c.values, keys[0])
+		delete(c.values, keys[1])
 		return int64(1)
 	case strings.Contains(script, scriptMarkerFencedCAS):
-		if !c.validLeaseLocked(keys[1], args[:4]) {
+		if c.pttlLocked(keys[0]) <= 0 {
+			return int64(-1)
+		}
+		if !c.validLeaseLocked(keys[0], keys[1], args[:3]) {
 			return int64(-3)
 		}
 		current := c.values[keys[0]]
-		if current == nil {
-			return int64(-1)
-		}
-		if current.fields["version"] != args[4].(string) {
+		if current.fields["version"] != argString(args[3]) {
 			return int64(0)
 		}
-		current.fields["version"] = args[5].(string)
-		current.fields["payload"] = argString(args[6])
-		current.expiresAt = time.Now().Add(argDuration(args[7]))
+		if _, ok := parseLuaPositiveInteger(argString(args[6])); !ok {
+			return int64(-2)
+		}
+		current.fields["version"] = argString(args[4])
+		current.fields["payload"] = argString(args[5])
+		current.expiresAt = c.serverTimeLocked().Add(argDuration(args[6]))
 		delete(c.values, keys[1])
 		return int64(1)
 	case strings.Contains(script, scriptMarkerFencedDelete):
-		if !c.validLeaseLocked(keys[1], args[:4]) {
+		if c.pttlLocked(keys[0]) <= 0 {
+			return int64(-1)
+		}
+		if !c.validLeaseLocked(keys[0], keys[1], args[:3]) {
 			return int64(-3)
 		}
 		current := c.values[keys[0]]
-		if current == nil {
-			return int64(-1)
-		}
-		if current.fields["version"] != args[4].(string) {
+		if current.fields["version"] != argString(args[3]) {
 			return int64(0)
 		}
 		delete(c.values, keys[0])
@@ -859,23 +1623,42 @@ func (c *fakeRedisClient) runScriptLocked(script string, keys []string, args []i
 	}
 }
 
-func (c *fakeRedisClient) validLeaseLocked(key string, args []interface{}) bool {
-	value := c.values[key]
-	if value == nil || len(args) < 4 {
+func (c *fakeRedisClient) validLeaseLocked(sessionKey, leaseKey string, args []interface{}) bool {
+	if len(args) < 3 || c.pttlLocked(sessionKey) <= 0 || c.pttlLocked(leaseKey) <= 0 {
 		return false
 	}
+	sessionValue := c.values[sessionKey]
+	value := c.values[leaseKey]
 	expiresAt, expiryErr := strconv.ParseInt(value.fields["expires_at"], 10, 64)
-	now, nowErr := strconv.ParseInt(args[3].(string), 10, 64)
-	return expiryErr == nil && nowErr == nil &&
-		value.fields["owner"] == args[0].(string) &&
-		value.fields["fence"] == args[1].(string) &&
-		value.fields["expires_at"] == args[2].(string) &&
+	now, nowOK := c.luaServerMillisecondsLocked()
+	return expiryErr == nil && expiresAt > 0 && expiresAt <= maxLuaExactInteger && nowOK &&
+		sessionValue.fields["generation"] == argString(args[2]) &&
+		value.fields["owner"] == argString(args[0]) &&
+		value.fields["fence"] == argString(args[1]) &&
+		value.fields["generation"] == argString(args[2]) &&
 		expiresAt > now
+}
+
+func (c *fakeRedisClient) pttlLocked(key string) int64 {
+	c.expireLocked(key)
+	value := c.values[key]
+	if value == nil {
+		return -2
+	}
+	if value.expiresAt.IsZero() {
+		return -1
+	}
+	return value.expiresAt.Sub(c.serverTimeLocked()).Milliseconds()
+}
+
+func (c *fakeRedisClient) luaServerMillisecondsLocked() (int64, bool) {
+	now := c.serverTimeLocked().UnixMilli()
+	return now, now >= 0 && now <= maxLuaExactInteger
 }
 
 func (c *fakeRedisClient) expireLocked(key string) {
 	value := c.values[key]
-	if value != nil && !value.expiresAt.IsZero() && !value.expiresAt.After(time.Now()) {
+	if value != nil && !value.expiresAt.IsZero() && !value.expiresAt.After(c.serverTimeLocked()) {
 		delete(c.values, key)
 	}
 }
@@ -923,6 +1706,26 @@ func argDuration(value interface{}) time.Duration {
 		panic(err)
 	}
 	return time.Duration(milliseconds) * time.Millisecond
+}
+
+func parseLuaPositiveInteger(value string) (int64, bool) {
+	if value == "" || value[0] == '0' {
+		return 0, false
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	return parsed, err == nil && parsed > 0 && parsed <= maxLuaExactInteger && strconv.FormatInt(parsed, 10) == value
+}
+
+func canonicalUint64(value string) bool {
+	parsed, err := strconv.ParseUint(value, 10, 64)
+	return err == nil && strconv.FormatUint(parsed, 10) == value
+}
+
+func decimalLessOrEqual(left, right string) bool {
+	if len(left) != len(right) {
+		return len(left) < len(right)
+	}
+	return left <= right
 }
 
 func assertStringSliceEqual(t testing.TB, got, want []string) {

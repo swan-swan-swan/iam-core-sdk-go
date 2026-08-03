@@ -32,8 +32,11 @@ var (
 )
 
 const (
-	maxPrefixLength = 256
-	ownerByteLength = 32
+	maxPrefixLength       = 256
+	ownerByteLength       = 32
+	generationByteLength  = 32
+	maxFenceGrantAttempts = 16
+	maxLuaExactInteger    = int64(1<<53 - 1)
 )
 
 type Options struct {
@@ -132,10 +135,6 @@ func (b *Backend) Create(ctx context.Context, item *session.Session) error {
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	ttl, err := sessionTTL(item, b.clock.Now())
-	if err != nil {
-		return err
-	}
 	payload, err := encodeModel(b.codec, item)
 	if err != nil {
 		return err
@@ -145,12 +144,21 @@ func (b *Backend) Create(ctx context.Context, item *session.Session) error {
 	} else if !errors.Is(err, session.ErrNotFound) && !errors.Is(err, session.ErrExpired) {
 		return err
 	}
+	generation, err := b.randomToken(generationByteLength)
+	if err != nil {
+		return err
+	}
+	ttl, err := sessionTTL(item, b.clock.Now())
+	if err != nil {
+		return err
+	}
 	status, err := sessionCreateScript.Run(
 		ctx,
 		b.client,
-		[]string{b.sessionKey(item.ID)},
+		[]string{b.sessionKey(item.ID), b.leaseKey(item.ID)},
 		strconv.FormatUint(item.Version, 10),
 		payload,
+		generation,
 		millisecondsText(ttl),
 	).Int64()
 	if err != nil {
@@ -160,6 +168,21 @@ func (b *Backend) Create(ctx context.Context, item *session.Session) error {
 }
 
 func (b *Backend) Get(ctx context.Context, id string) (*session.Session, error) {
+	stored, err := b.getStored(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return stored.item, nil
+}
+
+type storedSession struct {
+	item        *session.Session
+	versionText string
+	payload     []byte
+	generation  string
+}
+
+func (b *Backend) getStored(ctx context.Context, id string) (*storedSession, error) {
 	if !validID(id) {
 		return nil, ErrInvalidInput
 	}
@@ -171,11 +194,11 @@ func (b *Backend) Get(ctx context.Context, id string) (*session.Session, error) 
 		if err := contextError(ctx); err != nil {
 			return nil, err
 		}
-		values, err := b.client.HMGet(ctx, key, "version", "payload").Result()
+		values, err := b.client.HMGet(ctx, key, "version", "payload", "generation").Result()
 		if err != nil {
 			return nil, backendError(err)
 		}
-		if len(values) != 2 || values[0] == nil || values[1] == nil {
+		if len(values) != 3 || values[0] == nil || values[1] == nil || values[2] == nil {
 			return nil, session.ErrNotFound
 		}
 		versionText, ok := redisText(values[0])
@@ -190,6 +213,10 @@ func (b *Backend) Get(ctx context.Context, id string) (*session.Session, error) 
 		if !ok {
 			return nil, ErrDecodeFailed
 		}
+		generation, ok := redisText(values[2])
+		if !ok || !validOpaqueToken(generation, generationByteLength) {
+			return nil, ErrDecodeFailed
+		}
 		var item session.Session
 		if err := decodeModel(b.codec, payload, &item); err != nil {
 			return nil, err
@@ -198,7 +225,12 @@ func (b *Backend) Get(ctx context.Context, id string) (*session.Session, error) 
 			return nil, ErrDecodeFailed
 		}
 		if !sessionExpired(&item, b.clock.Now()) {
-			return &item, nil
+			return &storedSession{
+				item:        &item,
+				versionText: versionText,
+				payload:     append([]byte(nil), payload...),
+				generation:  generation,
+			}, nil
 		}
 		status, err := sessionDeleteExpiredScript.Run(
 			ctx,
@@ -206,6 +238,7 @@ func (b *Backend) Get(ctx context.Context, id string) (*session.Session, error) 
 			[]string{key, b.leaseKey(id)},
 			versionText,
 			payload,
+			generation,
 		).Int64()
 		if err != nil {
 			return nil, backendError(err)
@@ -283,63 +316,74 @@ func (b *Backend) AcquireRefreshLease(
 	if err := contextError(ctx); err != nil {
 		return nil, err
 	}
-	if _, err := b.Get(ctx, sessionID); err != nil {
+	stored, err := b.getStored(ctx, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	owner, err := b.randomToken(ownerByteLength)
+	if err != nil {
 		return nil, err
 	}
 	now := b.clock.Now()
-	ttl := ceilMillisecond(duration)
-	expiresAt := now.Add(ttl)
-	nowText, ok := millisecondInstant(now)
-	if !ok {
-		return nil, ErrInvalidInput
-	}
-	expiresText, ok := millisecondInstant(expiresAt)
-	if !ok || !expiresAt.After(now) {
-		return nil, ErrInvalidInput
-	}
-	b.randomMu.Lock()
-	ownerBytes := make([]byte, ownerByteLength)
-	_, randomErr := io.ReadFull(b.random, ownerBytes)
-	b.randomMu.Unlock()
-	if randomErr != nil {
-		return nil, ErrRandomSource
-	}
-	owner := base64.RawURLEncoding.EncodeToString(ownerBytes)
-	clear(ownerBytes)
-	fence, err := b.nextFence(ctx)
+	remaining, err := sessionTTL(stored.item, now)
 	if err != nil {
 		return nil, err
 	}
-	status, err := leaseAcquireScript.Run(
-		ctx,
-		b.client,
-		[]string{b.sessionKey(sessionID), b.leaseKey(sessionID)},
-		owner,
-		strconv.FormatUint(fence, 10),
-		expiresText,
-		millisecondsText(ttl),
-		nowText,
-	).Int64()
-	if err != nil {
-		return nil, backendError(err)
+	ttl := ceilMillisecond(duration)
+	if remaining < ttl {
+		ttl = remaining
 	}
-	switch status {
-	case 1:
-		return &refreshLease{
-			backend:   b,
-			sessionID: sessionID,
-			key:       b.leaseKey(sessionID),
-			owner:     owner,
-			fence:     fence,
-			expiresAt: expiresAt,
-		}, nil
-	case 0:
-		return nil, session.ErrConflict
-	case -1:
-		return nil, session.ErrNotFound
-	default:
-		return nil, ErrBackendUnavailable
+	if !validLuaTTL(ttl) {
+		return nil, ErrInvalidInput
 	}
+	expiresAt := now.Add(ttl)
+	if !expiresAt.After(now) {
+		return nil, ErrInvalidInput
+	}
+	for range maxFenceGrantAttempts {
+		if err := contextError(ctx); err != nil {
+			return nil, err
+		}
+		fence, err := b.nextFence(ctx)
+		if err != nil {
+			return nil, err
+		}
+		status, err := leaseAcquireScript.Run(
+			ctx,
+			b.client,
+			[]string{b.sessionKey(sessionID), b.leaseKey(sessionID)},
+			owner,
+			strconv.FormatUint(fence, 10),
+			stored.generation,
+			millisecondsText(ttl),
+		).Int64()
+		if err != nil {
+			return nil, backendError(err)
+		}
+		switch status {
+		case 1:
+			return &refreshLease{
+				backend:    b,
+				sessionID:  sessionID,
+				key:        b.leaseKey(sessionID),
+				owner:      owner,
+				fence:      fence,
+				generation: stored.generation,
+				expiresAt:  expiresAt,
+			}, nil
+		case 0:
+			return nil, session.ErrConflict
+		case -1:
+			return nil, session.ErrNotFound
+		case -4:
+			continue
+		case -5:
+			return nil, session.ErrConflict
+		default:
+			return nil, ErrBackendUnavailable
+		}
+	}
+	return nil, session.ErrConflict
 }
 
 func (b *Backend) CompareAndSwapWithLease(
@@ -359,18 +403,6 @@ func (b *Backend) CompareAndSwapWithLease(
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	now := b.clock.Now()
-	nowText, ok := millisecondInstant(now)
-	if !ok {
-		return ErrInvalidInput
-	}
-	if !credentials.expiresAt.After(now) {
-		return session.ErrLeaseLost
-	}
-	ttl, err := sessionTTL(next, now)
-	if err != nil {
-		return err
-	}
 	payload, err := encodeModel(b.codec, next)
 	if err != nil {
 		return err
@@ -378,14 +410,24 @@ func (b *Backend) CompareAndSwapWithLease(
 	if _, err := b.Get(ctx, id); err != nil {
 		return err
 	}
+	now := b.clock.Now()
+	if !credentials.expiresAt.After(now) {
+		return session.ErrLeaseLost
+	}
+	ttl, err := sessionTTL(next, now)
+	if err != nil {
+		return err
+	}
+	if !validLuaTTL(ttl) {
+		return ErrInvalidInput
+	}
 	status, err := sessionCompareAndSwapWithLeaseScript.Run(
 		ctx,
 		b.client,
 		[]string{b.sessionKey(id), b.leaseKey(id)},
 		credentials.owner,
 		strconv.FormatUint(credentials.fence, 10),
-		strconv.FormatInt(credentials.expiresAt.UnixMilli(), 10),
-		nowText,
+		credentials.generation,
 		strconv.FormatUint(expectedVersion, 10),
 		strconv.FormatUint(next.Version, 10),
 		payload,
@@ -417,16 +459,11 @@ func (b *Backend) DeleteWithLease(
 	if err := contextError(ctx); err != nil {
 		return err
 	}
-	now := b.clock.Now()
-	nowText, ok := millisecondInstant(now)
-	if !ok {
-		return ErrInvalidInput
-	}
-	if !credentials.expiresAt.After(now) {
-		return session.ErrLeaseLost
-	}
 	if _, err := b.Get(ctx, id); err != nil {
 		return err
+	}
+	if !credentials.expiresAt.After(b.clock.Now()) {
+		return session.ErrLeaseLost
 	}
 	status, err := sessionDeleteWithLeaseScript.Run(
 		ctx,
@@ -434,8 +471,7 @@ func (b *Backend) DeleteWithLease(
 		[]string{b.sessionKey(id), b.leaseKey(id)},
 		credentials.owner,
 		strconv.FormatUint(credentials.fence, 10),
-		strconv.FormatInt(credentials.expiresAt.UnixMilli(), 10),
-		nowText,
+		credentials.generation,
 		strconv.FormatUint(expectedVersion, 10),
 	).Int64()
 	if err != nil {
@@ -451,20 +487,22 @@ func (b *Backend) DeleteWithLease(
 type refreshLease struct {
 	mu sync.Mutex
 
-	backend   *Backend
-	sessionID string
-	key       string
-	owner     string
-	fence     uint64
-	expiresAt time.Time
-	consumed  bool
-	acked     bool
+	backend    *Backend
+	sessionID  string
+	key        string
+	owner      string
+	fence      uint64
+	generation string
+	expiresAt  time.Time
+	consumed   bool
+	acked      bool
 }
 
 type leaseCredentials struct {
-	owner     string
-	fence     uint64
-	expiresAt time.Time
+	owner      string
+	fence      uint64
+	generation string
+	expiresAt  time.Time
 }
 
 func (l *refreshLease) Valid(ctx context.Context) bool {
@@ -476,25 +514,21 @@ func (l *refreshLease) Valid(ctx context.Context) bool {
 		l.mu.Unlock()
 		return false
 	}
-	credentials := leaseCredentials{owner: l.owner, fence: l.fence, expiresAt: l.expiresAt}
+	credentials := leaseCredentials{owner: l.owner, fence: l.fence, generation: l.generation, expiresAt: l.expiresAt}
+	sessionKey := l.backend.sessionKey(l.sessionID)
 	key := l.key
 	l.mu.Unlock()
 	now := l.backend.clock.Now()
 	if !credentials.expiresAt.After(now) {
 		return false
 	}
-	nowText, ok := millisecondInstant(now)
-	if !ok {
-		return false
-	}
 	status, err := leaseValidScript.Run(
 		ctx,
 		l.backend.client,
-		[]string{key},
+		[]string{sessionKey, key},
 		credentials.owner,
 		strconv.FormatUint(credentials.fence, 10),
-		strconv.FormatInt(credentials.expiresAt.UnixMilli(), 10),
-		nowText,
+		credentials.generation,
 	).Int64()
 	return err == nil && status == 1
 }
@@ -516,25 +550,21 @@ func (l *refreshLease) Release(ctx context.Context) error {
 		l.mu.Unlock()
 		return nil
 	}
-	credentials := leaseCredentials{owner: l.owner, fence: l.fence, expiresAt: l.expiresAt}
+	credentials := leaseCredentials{owner: l.owner, fence: l.fence, generation: l.generation, expiresAt: l.expiresAt}
+	sessionKey := l.backend.sessionKey(l.sessionID)
 	key := l.key
 	l.mu.Unlock()
 	now := l.backend.clock.Now()
 	if !credentials.expiresAt.After(now) {
 		return session.ErrLeaseLost
 	}
-	nowText, ok := millisecondInstant(now)
-	if !ok {
-		return ErrInvalidInput
-	}
 	status, err := leaseReleaseScript.Run(
 		ctx,
 		l.backend.client,
-		[]string{key},
+		[]string{sessionKey, key},
 		credentials.owner,
 		strconv.FormatUint(credentials.fence, 10),
-		strconv.FormatInt(credentials.expiresAt.UnixMilli(), 10),
-		nowText,
+		credentials.generation,
 	).Int64()
 	if err != nil {
 		return backendError(err)
@@ -569,7 +599,9 @@ func (b *Backend) ownedLease(candidate session.Lease, id string) (*refreshLease,
 	if owned.consumed {
 		return nil, leaseCredentials{}, false
 	}
-	return owned, leaseCredentials{owner: owned.owner, fence: owned.fence, expiresAt: owned.expiresAt}, true
+	return owned, leaseCredentials{
+		owner: owned.owner, fence: owned.fence, generation: owned.generation, expiresAt: owned.expiresAt,
+	}, true
 }
 
 func (b *Backend) nextFence(ctx context.Context) (uint64, error) {
@@ -585,6 +617,20 @@ func (b *Backend) nextFence(ctx context.Context) (uint64, error) {
 		return 0, ErrBackendUnavailable
 	}
 	return fence, nil
+}
+
+func (b *Backend) randomToken(size int) (string, error) {
+	b.randomMu.Lock()
+	value := make([]byte, size)
+	_, err := io.ReadFull(b.random, value)
+	b.randomMu.Unlock()
+	if err != nil {
+		clear(value)
+		return "", ErrRandomSource
+	}
+	encoded := base64.RawURLEncoding.EncodeToString(value)
+	clear(value)
+	return encoded, nil
 }
 
 func (b *Backend) sessionKey(id string) string { return b.taggedKey("session", id) }
@@ -632,6 +678,16 @@ func safePrefix(prefix string) bool {
 
 func validID(id string) bool {
 	return strings.TrimSpace(id) != ""
+}
+
+func validOpaqueToken(value string, size int) bool {
+	decoded, err := base64.RawURLEncoding.DecodeString(value)
+	if err != nil || len(decoded) != size || base64.RawURLEncoding.EncodeToString(decoded) != value {
+		clear(decoded)
+		return false
+	}
+	clear(decoded)
+	return true
 }
 
 func validateReplacement(id string, expectedVersion uint64, next *session.Session) error {
@@ -823,10 +879,9 @@ func millisecondsText(duration time.Duration) string {
 	return strconv.FormatInt(duration.Milliseconds(), 10)
 }
 
-func millisecondInstant(value time.Time) (string, bool) {
-	milliseconds := value.UnixMilli()
-	truncated := time.UnixMilli(milliseconds)
-	return strconv.FormatInt(milliseconds, 10), truncated.Equal(value.Truncate(time.Millisecond))
+func validLuaTTL(duration time.Duration) bool {
+	milliseconds := duration.Milliseconds()
+	return duration > 0 && milliseconds > 0 && milliseconds <= maxLuaExactInteger
 }
 
 var _ session.Backend = (*Backend)(nil)

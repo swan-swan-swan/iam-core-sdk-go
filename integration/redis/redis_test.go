@@ -70,11 +70,20 @@ func TestRedisConformance(t *testing.T) {
 					t.Fatal("create Redis backend:", err)
 				}
 				return &logicalLeaseBackend{
-					Backend:   backend,
-					client:    client,
-					prefix:    prefix,
-					clock:     clock,
-					deadlines: make(map[string]time.Time),
+					Backend: backend,
+					prefix:  prefix,
+					clock:   clock,
+					records: make(map[string]logicalLeaseRecord),
+					readIdentity: func(ctx context.Context, key string) (leaseIdentity, error) {
+						return readRedisLeaseIdentity(ctx, client, key)
+					},
+					expireIdentity: func(
+						ctx context.Context,
+						key string,
+						identity leaseIdentity,
+					) (bool, error) {
+						return expireRedisLeaseIdentity(ctx, client, key, identity)
+					},
 				}
 			})
 
@@ -85,28 +94,53 @@ func TestRedisConformance(t *testing.T) {
 	}
 }
 
+type leaseIdentity struct {
+	owner      string
+	fence      string
+	generation string
+	expiresAt  string
+}
+
+func (i leaseIdentity) valid() bool {
+	return i.owner != "" && i.fence != "" && i.generation != "" && i.expiresAt != ""
+}
+
+type logicalLeaseRecord struct {
+	identity leaseIdentity
+	deadline time.Time
+}
+
+type leaseIdentityReader func(context.Context, string) (leaseIdentity, error)
+type leaseConditionalExpirer func(context.Context, string, leaseIdentity) (bool, error)
+
 // logicalLeaseBackend maps the conformance clock's instantaneous Advance onto
-// physical expiry of only the corresponding real Redis lease key. It then
-// delegates acquisition to the published adapter, so Redis executes the real
-// lease Lua against the real Session and metadata.
+// conditional physical expiry of only the exact real Redis lease it recorded.
+// It then delegates acquisition to the published adapter, so Redis executes the
+// real lease Lua against the real Session and metadata.
 type logicalLeaseBackend struct {
 	session.Backend
-	client *goredis.Client
 	prefix string
 	clock  *sessiontest.Clock
 
-	mu        sync.Mutex
-	deadlines map[string]time.Time
+	readIdentity   leaseIdentityReader
+	expireIdentity leaseConditionalExpirer
+
+	mu      sync.Mutex
+	records map[string]logicalLeaseRecord
 }
 
 func TestLogicalLeaseBackendPreservesDelegateConcurrency(t *testing.T) {
 	clock := new(sessiontest.Clock)
 	clock.Set(time.Unix(1, 0))
-	probe := newAcquireProbeBackend()
+	probe := newAcquireProbeBackend(2)
+	identity := testLeaseIdentity("delegate-concurrency")
 	backend := &logicalLeaseBackend{
-		Backend:   probe,
-		clock:     clock,
-		deadlines: make(map[string]time.Time),
+		Backend: probe,
+		clock:   clock,
+		records: make(map[string]logicalLeaseRecord),
+		readIdentity: func(context.Context, string) (leaseIdentity, error) {
+			return identity, nil
+		},
 	}
 	results := make(chan error, 2)
 	for range 2 {
@@ -139,11 +173,15 @@ func TestLogicalLeaseBackendPreservesDelegateConcurrency(t *testing.T) {
 func TestLogicalLeaseBackendDoesNotBlockCanceledDelegate(t *testing.T) {
 	clock := new(sessiontest.Clock)
 	clock.Set(time.Unix(1, 0))
-	probe := newAcquireProbeBackend()
+	probe := newAcquireProbeBackend(2)
+	identity := testLeaseIdentity("delegate-cancel")
 	backend := &logicalLeaseBackend{
-		Backend:   probe,
-		clock:     clock,
-		deadlines: make(map[string]time.Time),
+		Backend: probe,
+		clock:   clock,
+		records: make(map[string]logicalLeaseRecord),
+		readIdentity: func(context.Context, string) (leaseIdentity, error) {
+			return identity, nil
+		},
 	}
 	first := make(chan error, 1)
 	go func() {
@@ -184,6 +222,337 @@ func TestLogicalLeaseBackendDoesNotBlockCanceledDelegate(t *testing.T) {
 	}
 }
 
+func TestLogicalLeaseBackendCannotExpireReplacementLease(t *testing.T) {
+	clock := new(sessiontest.Clock)
+	clock.Set(time.Unix(2, 0))
+	l1 := testLeaseIdentity("l1")
+	l2 := testLeaseIdentity("l2")
+	state := &leaseIdentityState{current: l1}
+	if err := (&stateLease{state: state, identity: l1}).Release(context.Background()); err != nil {
+		t.Fatal("release first lease:", err)
+	}
+
+	expireStarted := make(chan struct{})
+	resumeExpire := make(chan struct{})
+	var expireCalls atomic.Int32
+	backend := &logicalLeaseBackend{
+		Backend: &identityBackend{state: state, next: l2},
+		prefix:  "test",
+		clock:   clock,
+		records: map[string]logicalLeaseRecord{
+			"session": {identity: l1, deadline: time.Unix(1, 0)},
+		},
+		readIdentity: state.read,
+		expireIdentity: func(ctx context.Context, key string, identity leaseIdentity) (bool, error) {
+			if expireCalls.Add(1) == 1 {
+				close(expireStarted)
+				select {
+				case <-resumeExpire:
+				case <-ctx.Done():
+					return false, ctx.Err()
+				}
+			}
+			return state.expire(ctx, key, identity)
+		},
+	}
+
+	first := make(chan error, 1)
+	go func() {
+		_, err := backend.AcquireRefreshLease(context.Background(), "session", time.Minute)
+		first <- err
+	}()
+	<-expireStarted
+
+	current, err := backend.AcquireRefreshLease(context.Background(), "session", time.Minute)
+	if err != nil {
+		t.Fatal("acquire replacement lease:", err)
+	}
+	assertLogicalLeaseRecord(t, backend, "session", l2)
+	close(resumeExpire)
+	if err := <-first; !errors.Is(err, session.ErrConflict) {
+		t.Fatal("resumed stale acquisition returned the wrong error")
+	}
+	if got := state.identity(); got != l2 {
+		t.Fatal("stale logical expiry deleted the replacement lease")
+	}
+	assertLogicalLeaseRecord(t, backend, "session", l2)
+	if !current.Valid(context.Background()) {
+		t.Fatal("replacement lease was invalidated")
+	}
+}
+
+func TestLogicalLeaseBackendRetainsFailedExpiryForRetry(t *testing.T) {
+	clock := new(sessiontest.Clock)
+	clock.Set(time.Unix(2, 0))
+	l1 := testLeaseIdentity("retry-l1")
+	l2 := testLeaseIdentity("retry-l2")
+	state := &leaseIdentityState{current: l1}
+	var expireCalls atomic.Int32
+	delegate := &identityBackend{state: state, next: l2}
+	backend := &logicalLeaseBackend{
+		Backend: delegate,
+		prefix:  "test",
+		clock:   clock,
+		records: map[string]logicalLeaseRecord{
+			"session": {identity: l1, deadline: time.Unix(1, 0)},
+		},
+		readIdentity: state.read,
+		expireIdentity: func(ctx context.Context, key string, identity leaseIdentity) (bool, error) {
+			switch expireCalls.Add(1) {
+			case 1, 2:
+				return false, ctx.Err()
+			case 3:
+				return false, errors.New("conditional-expiry-sensitive-detail")
+			default:
+				return state.expire(ctx, key, identity)
+			}
+		},
+	}
+
+	canceled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := backend.AcquireRefreshLease(canceled, "session", time.Minute); !errors.Is(err, context.Canceled) {
+		t.Fatal("conditional expiry did not preserve cancellation")
+	}
+	assertLogicalLeaseRecord(t, backend, "session", l1)
+
+	deadline, deadlineCancel := context.WithDeadline(context.Background(), time.Unix(0, 0))
+	defer deadlineCancel()
+	if _, err := backend.AcquireRefreshLease(deadline, "session", time.Minute); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal("conditional expiry did not preserve deadline expiry")
+	}
+	assertLogicalLeaseRecord(t, backend, "session", l1)
+
+	if _, err := backend.AcquireRefreshLease(context.Background(), "session", time.Minute); !errors.Is(err, errLogicalLeaseBridge) {
+		t.Fatal("conditional expiry returned the wrong fixed error")
+	} else if strings.Contains(err.Error(), "sensitive-detail") {
+		t.Fatal("conditional expiry error exposed backend detail")
+	}
+	assertLogicalLeaseRecord(t, backend, "session", l1)
+
+	current, err := backend.AcquireRefreshLease(context.Background(), "session", time.Minute)
+	if err != nil {
+		t.Fatal("retry conditional expiry:", err)
+	}
+	if delegate.calls.Load() != 1 {
+		t.Fatalf("delegate acquisition calls = %d, want 1", delegate.calls.Load())
+	}
+	if expireCalls.Load() != 4 {
+		t.Fatalf("conditional expiry calls = %d, want 4", expireCalls.Load())
+	}
+	assertLogicalLeaseRecord(t, backend, "session", l2)
+	if !current.Valid(context.Background()) {
+		t.Fatal("retried acquisition returned an invalid lease")
+	}
+}
+
+func TestLogicalLeaseBackendExpiredCallersRemainConcurrent(t *testing.T) {
+	const contenders = 8
+	clock := new(sessiontest.Clock)
+	clock.Set(time.Unix(2, 0))
+	l1 := testLeaseIdentity("concurrent-l1")
+	l2 := testLeaseIdentity("concurrent-l2")
+	state := &leaseIdentityState{current: l1}
+	probe := newAcquireProbeBackend(contenders)
+	var deletions atomic.Int32
+	backend := &logicalLeaseBackend{
+		Backend: probe,
+		prefix:  "test",
+		clock:   clock,
+		records: map[string]logicalLeaseRecord{
+			"session": {identity: l1, deadline: time.Unix(1, 0)},
+		},
+		readIdentity: func(context.Context, string) (leaseIdentity, error) { return l2, nil },
+		expireIdentity: func(ctx context.Context, key string, identity leaseIdentity) (bool, error) {
+			deleted, err := state.expire(ctx, key, identity)
+			if deleted {
+				deletions.Add(1)
+			}
+			return deleted, err
+		},
+	}
+
+	results := make(chan error, contenders)
+	for range contenders {
+		go func() {
+			_, err := backend.AcquireRefreshLease(context.Background(), "session", time.Minute)
+			results <- err
+		}()
+	}
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for range contenders {
+		select {
+		case <-probe.entered:
+		case <-timer.C:
+			close(probe.release)
+			t.Fatal("expired callers did not enter the delegate concurrently")
+		}
+	}
+	close(probe.release)
+	for range contenders {
+		if err := <-results; err != nil {
+			t.Fatal("expired caller delegate failed:", err)
+		}
+	}
+	if deletions.Load() != 1 {
+		t.Fatalf("conditional lease deletions = %d, want 1", deletions.Load())
+	}
+	if probe.maxInFlight.Load() != contenders {
+		t.Fatalf("maximum delegate acquisitions in flight = %d, want %d", probe.maxInFlight.Load(), contenders)
+	}
+	assertLogicalLeaseRecord(t, backend, "session", l2)
+}
+
+func TestLogicalLeaseBackendCleansGrantWhenIdentityReadFails(t *testing.T) {
+	clock := new(sessiontest.Clock)
+	clock.Set(time.Unix(1, 0))
+	identity := testLeaseIdentity("untracked")
+	state := &leaseIdentityState{}
+	backend := &logicalLeaseBackend{
+		Backend: &identityBackend{state: state, next: identity},
+		prefix:  "test",
+		clock:   clock,
+		records: make(map[string]logicalLeaseRecord),
+		readIdentity: func(context.Context, string) (leaseIdentity, error) {
+			return leaseIdentity{}, errors.New("identity-reader-sensitive-detail")
+		},
+		expireIdentity: state.expire,
+	}
+
+	lease, err := backend.AcquireRefreshLease(context.Background(), "session", time.Minute)
+	if lease != nil {
+		t.Fatal("identity read failure returned an untracked lease")
+	}
+	if !errors.Is(err, errLogicalLeaseBridge) {
+		t.Fatal("identity read failure returned the wrong fixed error")
+	}
+	if strings.Contains(err.Error(), "sensitive-detail") {
+		t.Fatal("identity read failure exposed backend detail")
+	}
+	if state.identity() != (leaseIdentity{}) {
+		t.Fatal("identity read failure left the granted lease live")
+	}
+	if state.releaseCalls.Load() != 1 || !state.releaseHadDeadline.Load() {
+		t.Fatal("identity read failure did not use one bounded cleanup Release")
+	}
+	backend.mu.Lock()
+	tracked := len(backend.records)
+	backend.mu.Unlock()
+	if tracked != 0 {
+		t.Fatal("identity read failure recorded a lease")
+	}
+}
+
+func assertLogicalLeaseRecord(
+	t *testing.T,
+	backend *logicalLeaseBackend,
+	sessionID string,
+	want leaseIdentity,
+) {
+	t.Helper()
+	backend.mu.Lock()
+	record, ok := backend.records[sessionID]
+	backend.mu.Unlock()
+	if !ok || record.identity != want {
+		t.Fatal("logical lease record did not match the expected stable identity")
+	}
+}
+
+func testLeaseIdentity(suffix string) leaseIdentity {
+	return leaseIdentity{
+		owner:      "owner-" + suffix,
+		fence:      "fence-" + suffix,
+		generation: "generation-" + suffix,
+		expiresAt:  "expires-" + suffix,
+	}
+}
+
+type leaseIdentityState struct {
+	mu                 sync.Mutex
+	current            leaseIdentity
+	releaseCalls       atomic.Int32
+	releaseHadDeadline atomic.Bool
+}
+
+func (s *leaseIdentityState) identity() leaseIdentity {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.current
+}
+
+func (s *leaseIdentityState) read(context.Context, string) (leaseIdentity, error) {
+	return s.identity(), nil
+}
+
+func (s *leaseIdentityState) expire(
+	ctx context.Context,
+	_ string,
+	want leaseIdentity,
+) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.current != want {
+		return false, nil
+	}
+	s.current = leaseIdentity{}
+	return true, nil
+}
+
+type identityBackend struct {
+	session.Backend
+	state *leaseIdentityState
+	next  leaseIdentity
+	calls atomic.Int32
+}
+
+func (b *identityBackend) AcquireRefreshLease(
+	ctx context.Context,
+	_ string,
+	_ time.Duration,
+) (session.Lease, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	b.calls.Add(1)
+	b.state.mu.Lock()
+	defer b.state.mu.Unlock()
+	if b.state.current != (leaseIdentity{}) {
+		return nil, session.ErrConflict
+	}
+	b.state.current = b.next
+	return &stateLease{state: b.state, identity: b.next}, nil
+}
+
+type stateLease struct {
+	state    *leaseIdentityState
+	identity leaseIdentity
+}
+
+func (l *stateLease) Valid(context.Context) bool {
+	return l.state.identity() == l.identity
+}
+
+func (l *stateLease) Release(ctx context.Context) error {
+	l.state.releaseCalls.Add(1)
+	if _, ok := ctx.Deadline(); ok {
+		l.state.releaseHadDeadline.Store(true)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	l.state.mu.Lock()
+	defer l.state.mu.Unlock()
+	if l.state.current != l.identity {
+		return session.ErrLeaseLost
+	}
+	l.state.current = leaseIdentity{}
+	return nil
+}
+
 type acquireProbeBackend struct {
 	session.Backend
 	entered     chan struct{}
@@ -192,9 +561,9 @@ type acquireProbeBackend struct {
 	maxInFlight atomic.Int32
 }
 
-func newAcquireProbeBackend() *acquireProbeBackend {
+func newAcquireProbeBackend(capacity int) *acquireProbeBackend {
 	return &acquireProbeBackend{
-		entered: make(chan struct{}, 2),
+		entered: make(chan struct{}, capacity),
 		release: make(chan struct{}),
 	}
 }
@@ -226,32 +595,154 @@ type probeLease struct{}
 func (probeLease) Valid(context.Context) bool    { return true }
 func (probeLease) Release(context.Context) error { return nil }
 
+var errLogicalLeaseBridge = errors.New("Redis integration lease bridge failed")
+
 func (b *logicalLeaseBackend) AcquireRefreshLease(
 	ctx context.Context,
 	sessionID string,
 	duration time.Duration,
 ) (session.Lease, error) {
 	b.mu.Lock()
-	expire := false
-	if deadline, ok := b.deadlines[sessionID]; ok && !b.clock.Now().Before(deadline) {
-		delete(b.deadlines, sessionID)
-		expire = true
-	}
+	record, expire := b.records[sessionID]
+	expire = expire && !b.clock.Now().Before(record.deadline)
 	b.mu.Unlock()
 
 	if expire {
-		if err := b.client.PExpire(ctx, leaseKey(b.prefix, sessionID), 0).Err(); err != nil {
-			return nil, err
+		if b.expireIdentity == nil {
+			return nil, errLogicalLeaseBridge
 		}
+		if _, err := b.expireIdentity(ctx, leaseKey(b.prefix, sessionID), record.identity); err != nil {
+			return nil, logicalLeaseBridgeError(err)
+		}
+		b.mu.Lock()
+		if current, ok := b.records[sessionID]; ok && current.identity == record.identity {
+			delete(b.records, sessionID)
+		}
+		b.mu.Unlock()
 	}
 	lease, err := b.Backend.AcquireRefreshLease(ctx, sessionID, duration)
 	if err != nil {
 		return nil, err
 	}
+	if lease == nil || b.readIdentity == nil {
+		cleanupGrantedLease(lease)
+		return nil, errLogicalLeaseBridge
+	}
+	identity, err := b.readIdentity(ctx, leaseKey(b.prefix, sessionID))
+	if err != nil || !identity.valid() {
+		cleanupGrantedLease(lease)
+		return nil, logicalLeaseBridgeError(err)
+	}
 	b.mu.Lock()
-	b.deadlines[sessionID] = b.clock.Now().Add(duration)
+	if b.records == nil {
+		b.records = make(map[string]logicalLeaseRecord)
+	}
+	b.records[sessionID] = logicalLeaseRecord{
+		identity: identity,
+		deadline: b.clock.Now().Add(duration),
+	}
 	b.mu.Unlock()
 	return lease, nil
+}
+
+func logicalLeaseBridgeError(err error) error {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	case errors.Is(err, context.DeadlineExceeded):
+		return context.DeadlineExceeded
+	default:
+		return errLogicalLeaseBridge
+	}
+}
+
+func cleanupGrantedLease(lease session.Lease) {
+	if lease == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	_ = lease.Release(ctx)
+}
+
+var expireRecordedLeaseScript = goredis.NewScript(`
+-- iam-core-integration:expire-recorded-lease
+local current = redis.call(
+	"HMGET", KEYS[1], "owner", "fence", "generation", "expires_at"
+)
+for index = 1, 4 do
+	if current[index] ~= ARGV[index] then
+		return 0
+	end
+end
+return redis.call("DEL", KEYS[1])
+`)
+
+func readRedisLeaseIdentity(
+	ctx context.Context,
+	client *goredis.Client,
+	key string,
+) (leaseIdentity, error) {
+	values, err := client.HMGet(ctx, key, "owner", "fence", "generation", "expires_at").Result()
+	if err != nil {
+		return leaseIdentity{}, err
+	}
+	if len(values) != 4 {
+		return leaseIdentity{}, errLogicalLeaseBridge
+	}
+	owner, ownerOK := redisLeaseText(values[0])
+	fence, fenceOK := redisLeaseText(values[1])
+	generation, generationOK := redisLeaseText(values[2])
+	expiresAt, expiresAtOK := redisLeaseText(values[3])
+	identity := leaseIdentity{
+		owner:      owner,
+		fence:      fence,
+		generation: generation,
+		expiresAt:  expiresAt,
+	}
+	if !ownerOK || !fenceOK || !generationOK || !expiresAtOK || !identity.valid() {
+		return leaseIdentity{}, errLogicalLeaseBridge
+	}
+	return identity, nil
+}
+
+func expireRedisLeaseIdentity(
+	ctx context.Context,
+	client *goredis.Client,
+	key string,
+	identity leaseIdentity,
+) (bool, error) {
+	status, err := expireRecordedLeaseScript.Run(
+		ctx,
+		client,
+		[]string{key},
+		identity.owner,
+		identity.fence,
+		identity.generation,
+		identity.expiresAt,
+	).Int64()
+	if err != nil {
+		return false, err
+	}
+	switch status {
+	case 0:
+		return false, nil
+	case 1:
+		return true, nil
+	default:
+		return false, errLogicalLeaseBridge
+	}
+}
+
+func redisLeaseText(value any) (string, bool) {
+	switch value := value.(type) {
+	case string:
+		return value, value != ""
+	case []byte:
+		return string(value), len(value) != 0
+	default:
+		return "", false
+	}
 }
 
 func testRawRedisLeaseExpiry(t *testing.T, client *goredis.Client) {

@@ -29,6 +29,35 @@ func reconcileScopes(tokenResponse string, access, id []string) ([]string, error
 	return append([]string(nil), sources[0]...), nil
 }
 
+func validateGrantedScopes(granted, requested []string) error {
+	requestedSet := make(map[string]struct{}, len(requested))
+	for _, scope := range requested {
+		requestedSet[scope] = struct{}{}
+	}
+	for _, scope := range granted {
+		if !validScopeToken(scope) || scope == "roles" {
+			return core.NewError(core.KindProtocol, "bff.scope", 0, false, nil)
+		}
+		if _, requestedByClient := requestedSet[scope]; !requestedByClient {
+			return core.NewError(core.KindProtocol, "bff.scope", 0, false, nil)
+		}
+	}
+	return nil
+}
+
+func validScopeString(value string) bool {
+	parts := strings.Split(value, " ")
+	if len(parts) == 0 {
+		return false
+	}
+	for _, part := range parts {
+		if !validScopeToken(part) {
+			return false
+		}
+	}
+	return true
+}
+
 func normalizeScopes(scopes []string) []string {
 	if scopes == nil {
 		return nil

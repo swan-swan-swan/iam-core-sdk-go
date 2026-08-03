@@ -34,7 +34,7 @@ type tokenResponse struct {
 	IDToken      string          `json:"id_token"`
 	ExpiresIn    int64           `json:"expires_in"`
 	Scope        json.RawMessage `json:"scope"`
-	Error        string          `json:"error"`
+	Error        json.RawMessage `json:"error"`
 }
 
 type userInfo struct {
@@ -86,7 +86,13 @@ func (c *Client) exchange(ctx context.Context, code, verifier string) (tokens ex
 	if response.StatusCode != http.StatusOK {
 		var endpoint tokenResponse
 		if err == nil && decodeUniqueJSON(body, &endpoint) == nil {
-			return exchangedTokens{}, oauthEndpointError(operation, response.StatusCode, endpoint.Error)
+			oauthError, present, fieldErr := decodeOAuthError(endpoint.Error)
+			if fieldErr != nil {
+				return exchangedTokens{}, bffError(core.KindProtocol, operation, response.StatusCode, false)
+			}
+			if present {
+				return exchangedTokens{}, oauthEndpointError(operation, response.StatusCode, oauthError)
+			}
 		}
 		return exchangedTokens{}, statusOAuthError(operation, response.StatusCode)
 	}
@@ -94,10 +100,14 @@ func (c *Client) exchange(ctx context.Context, code, verifier string) (tokens ex
 		return exchangedTokens{}, bffError(core.KindProtocol, operation, response.StatusCode, false)
 	}
 	var decoded tokenResponse
-	if decodeUniqueJSON(body, &decoded) != nil || decoded.Error != "" ||
+	if decodeUniqueJSON(body, &decoded) != nil ||
 		decoded.AccessToken == "" || decoded.AccessToken != strings.TrimSpace(decoded.AccessToken) ||
 		decoded.TokenType != "Bearer" || decoded.IDToken == "" || decoded.IDToken != strings.TrimSpace(decoded.IDToken) ||
 		decoded.ExpiresIn <= 0 || decoded.ExpiresIn > math.MaxInt64/int64(time.Second) {
+		return exchangedTokens{}, bffError(core.KindProtocol, operation, response.StatusCode, false)
+	}
+	_, errorPresent, err := decodeOAuthError(decoded.Error)
+	if err != nil || errorPresent {
 		return exchangedTokens{}, bffError(core.KindProtocol, operation, response.StatusCode, false)
 	}
 	refreshToken, err := optionalNonemptyString(decoded.RefreshToken)
@@ -105,13 +115,24 @@ func (c *Client) exchange(ctx context.Context, code, verifier string) (tokens ex
 		return exchangedTokens{}, bffError(core.KindProtocol, operation, response.StatusCode, false)
 	}
 	scope, err := optionalString(decoded.Scope)
-	if err != nil {
+	if err != nil || (len(decoded.Scope) != 0 && !validScopeString(scope)) {
 		return exchangedTokens{}, bffError(core.KindProtocol, operation, response.StatusCode, false)
 	}
 	return exchangedTokens{
 		accessToken: decoded.AccessToken, tokenType: decoded.TokenType, refreshToken: refreshToken,
 		idToken: decoded.IDToken, expiresIn: decoded.ExpiresIn, scope: scope,
 	}, nil
+}
+
+func decodeOAuthError(raw json.RawMessage) (string, bool, error) {
+	if len(raw) == 0 {
+		return "", false, nil
+	}
+	var value string
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || json.Unmarshal(raw, &value) != nil || value == "" {
+		return "", true, errors.New("invalid OAuth error")
+	}
+	return value, true, nil
 }
 
 func (c *Client) loadUserInfo(ctx context.Context, accessToken string) (identity userInfo, resultErr error) {

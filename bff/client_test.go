@@ -54,6 +54,9 @@ func TestNewRejectsInvalidBFFConfiguration(t *testing.T) {
 		"cookie not httponly":         func(config *Config) { config.FlowCookie.HttpOnly = false },
 		"cookie wrong samesite":       func(config *Config) { config.FlowCookie.SameSite = http.SameSiteNoneMode },
 		"cookie configured value":     func(config *Config) { config.FlowCookie.Value = "secret" },
+		"cookie max age":              func(config *Config) { config.FlowCookie.MaxAge = 60 },
+		"cookie expiry":               func(config *Config) { config.FlowCookie.Expires = time.Unix(1_900_000_000, 0) },
+		"partitioned cookie":          func(config *Config) { config.FlowCookie.Partitioned = true },
 		"negative flow ttl":           func(config *Config) { config.FlowTTL = -time.Second },
 		"negative absolute ttl":       func(config *Config) { config.SessionAbsoluteTTL = -time.Second },
 		"negative idle ttl":           func(config *Config) { config.SessionIdleTTL = -time.Second },
@@ -72,6 +75,36 @@ func TestNewRejectsInvalidBFFConfiguration(t *testing.T) {
 			var typed *core.Error
 			if !errors.As(err, &typed) || typed.Kind != core.KindInvalidConfig || typed.Operation != "bff.configure" {
 				t.Fatalf("New() error = %#v", err)
+			}
+		})
+	}
+}
+
+func TestNewValidatesRFC6749ScopeTokenSyntax(t *testing.T) {
+	tests := []struct {
+		name  string
+		scope string
+		valid bool
+	}{
+		{name: "valid punctuation", scope: "api:read/write~!#$%&'()*+,-.;<=>?@[]^_`{|}", valid: true},
+		{name: "space", scope: "api read"},
+		{name: "tab", scope: "api\tread"},
+		{name: "control", scope: "api\x1fread"},
+		{name: "delete", scope: "api\x7fread"},
+		{name: "quote", scope: `api"read`},
+		{name: "backslash", scope: `api\read`},
+		{name: "non ascii", scope: "api-é"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			config, _, _ := newBFFTestConfig(t)
+			config.Scopes = []string{"openid", test.scope}
+			_, err := New(config)
+			if test.valid && err != nil {
+				t.Fatalf("valid RFC 6749 scope token was rejected: %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatal("invalid RFC 6749 scope token was accepted")
 			}
 		})
 	}

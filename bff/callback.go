@@ -99,6 +99,9 @@ func (c *Client) completeCallback(w http.ResponseWriter, request *http.Request) 
 	if err != nil {
 		return err
 	}
+	if err := validateGrantedScopes(grantedScopes, c.scopes); err != nil {
+		return err
+	}
 	identity, err := c.loadUserInfo(request.Context(), tokens.accessToken)
 	if err != nil {
 		return err
@@ -196,7 +199,8 @@ func verifiedClaimSources(raw string, verified core.AuthContext) (scope, groups 
 	}
 	if rawScope, present := claims["scope"]; present {
 		var value string
-		if bytes.Equal(bytes.TrimSpace(rawScope), []byte("null")) || json.Unmarshal(rawScope, &value) != nil {
+		if bytes.Equal(bytes.TrimSpace(rawScope), []byte("null")) || json.Unmarshal(rawScope, &value) != nil ||
+			!validScopeString(value) {
 			return nil, nil, errors.New("invalid scope")
 		}
 		scope = append([]string{}, verified.Scopes...)

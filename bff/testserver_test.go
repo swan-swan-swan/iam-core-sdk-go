@@ -81,6 +81,8 @@ type bffIssuer struct {
 	UserInfoSubject     string
 	TokenStatus         int
 	TokenError          string
+	TokenResponseError  any
+	TokenErrorPresent   bool
 	TokenType           string
 	ExpiresIn           int64
 	TokenContentType    string
@@ -89,6 +91,8 @@ type bffIssuer struct {
 	UserInfoStatus      int
 	UserInfoContentType string
 	UserInfoBody        string
+	UserInfoRedirect    bool
+	UserInfoTargetCalls atomic.Int32
 	lastTokenForm       url.Values
 	lastTokenHeader     http.Header
 	lastUserInfoHeader  http.Header
@@ -123,6 +127,7 @@ func newBFFIssuer(t *testing.T, clock *mutableClock) *bffIssuer {
 	mux.HandleFunc("/token", issuer.handleToken)
 	mux.HandleFunc("/token-final", issuer.handleTokenFinal)
 	mux.HandleFunc("/userinfo", issuer.handleUserInfo)
+	mux.HandleFunc("/userinfo-final", issuer.handleUserInfoFinal)
 	issuer.Server = httptest.NewServer(mux)
 	t.Cleanup(issuer.Server.Close)
 	return issuer
@@ -236,6 +241,9 @@ func (i *bffIssuer) writeTokenResponse(w http.ResponseWriter, form url.Values) {
 			response["scope"] = i.TokenScope
 		}
 	}
+	if i.TokenErrorPresent {
+		response["error"] = i.TokenResponseError
+	}
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(response)
 }
@@ -246,6 +254,10 @@ func (i *bffIssuer) handleUserInfo(w http.ResponseWriter, request *http.Request)
 	i.userinfoCalls++
 	i.requestLog = append(i.requestLog, request.Method+" "+request.URL.Path)
 	i.lastUserInfoHeader = request.Header.Clone()
+	if i.UserInfoRedirect {
+		http.Redirect(w, request, i.Server.URL+"/userinfo-final", http.StatusFound)
+		return
+	}
 	if i.UserInfoContentType != "" {
 		w.Header().Set("Content-Type", i.UserInfoContentType)
 	}
@@ -264,6 +276,12 @@ func (i *bffIssuer) handleUserInfo(w http.ResponseWriter, request *http.Request)
 	}
 	putOptionalStrings(response, "groups", i.UserInfoGroups)
 	_ = json.NewEncoder(w).Encode(response)
+}
+
+func (i *bffIssuer) handleUserInfoFinal(w http.ResponseWriter, _ *http.Request) {
+	i.UserInfoTargetCalls.Add(1)
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]any{"sub": testSubject})
 }
 
 func putOptionalStrings(target map[string]any, name string, values optionalStrings) {

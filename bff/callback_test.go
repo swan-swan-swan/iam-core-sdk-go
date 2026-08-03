@@ -41,6 +41,37 @@ func TestCallbackNeverElevatesRequestedScope(t *testing.T) {
 	}
 }
 
+func TestCallbackRejectsScopesNotRequestedByThisClient(t *testing.T) {
+	tests := map[string]string{
+		"roles":                   "openid roles",
+		"other scope":             "openid administrative",
+		"malformed backslash":     `openid bad\scope`,
+		"malformed tab separator": "openid\tgroups",
+	}
+	for name, remoteScopes := range tests {
+		t.Run(name, func(t *testing.T) {
+			client, _, issuer := newBFFTestClient(t)
+			issuer.TokenScope = remoteScopes
+			issuer.AccessTokenScope = remoteScopes
+			issuer.IDTokenScope = remoteScopes
+			attempt := beginLogin(t, client, issuer, "/")
+			response := serveCallback(t, client, attempt, url.Values{"code": {testCode}, "state": {attempt.State}}.Encode())
+			if response.Code != http.StatusBadRequest || issuer.TokenCalls.Load() != 1 || issuer.UserInfoCalls() != 0 || hasSessionCookie(response, client) {
+				t.Fatalf("unrequested scopes were accepted: status=%d token=%d userinfo=%d", response.Code, issuer.TokenCalls.Load(), issuer.UserInfoCalls())
+			}
+		})
+	}
+}
+
+func hasSessionCookie(response *httptest.ResponseRecorder, client *Client) bool {
+	for _, cookie := range response.Result().Cookies() {
+		if cookie.Name == client.sessionCookie.Name && cookie.Value != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func TestCallbackKeepsVerifiedAccessProfileWhenUserInfoOmitsOptionalFields(t *testing.T) {
 	client, _, issuer := newBFFTestClient(t)
 	issuer.AccessUsername = "access-user"
@@ -240,6 +271,37 @@ func TestCallbackRejectsNullTokenResponseScope(t *testing.T) {
 	response := serveCallback(t, client, attempt, url.Values{"code": {testCode}, "state": {attempt.State}}.Encode())
 	if response.Code != http.StatusBadRequest || issuer.TokenCalls.Load() != 1 || issuer.UserInfoCalls() != 0 {
 		t.Fatalf("status=%d token=%d userinfo=%d", response.Code, issuer.TokenCalls.Load(), issuer.UserInfoCalls())
+	}
+}
+
+func TestCallbackValidatesTokenResponseErrorFieldPresenceAndType(t *testing.T) {
+	tests := []struct {
+		name         string
+		configure    func(*bffIssuer)
+		wantStatus   int
+		wantUserInfo int
+	}{
+		{name: "absent succeeds", configure: func(*bffIssuer) {}, wantStatus: http.StatusFound, wantUserInfo: 1},
+		{name: "null is malformed", configure: func(issuer *bffIssuer) {
+			issuer.TokenErrorPresent, issuer.TokenResponseError = true, nil
+		}, wantStatus: http.StatusBadRequest},
+		{name: "number is malformed", configure: func(issuer *bffIssuer) {
+			issuer.TokenErrorPresent, issuer.TokenResponseError = true, 7
+		}, wantStatus: http.StatusBadRequest},
+		{name: "recognized string error", configure: func(issuer *bffIssuer) {
+			issuer.TokenStatus, issuer.TokenError = http.StatusBadRequest, "invalid_grant"
+		}, wantStatus: http.StatusUnauthorized},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client, _, issuer := newBFFTestClient(t)
+			test.configure(issuer)
+			attempt := beginLogin(t, client, issuer, "/")
+			response := serveCallback(t, client, attempt, url.Values{"code": {testCode}, "state": {attempt.State}}.Encode())
+			if response.Code != test.wantStatus || issuer.TokenCalls.Load() != 1 || issuer.UserInfoCalls() != test.wantUserInfo {
+				t.Fatalf("token error field case was misclassified: status=%d token=%d userinfo=%d", response.Code, issuer.TokenCalls.Load(), issuer.UserInfoCalls())
+			}
+		})
 	}
 }
 

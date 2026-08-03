@@ -56,6 +56,16 @@ func TestCallbackRejectsTokenRedirectWithoutFollowing(t *testing.T) {
 	}
 }
 
+func TestCallbackRejectsUserInfoRedirectWithoutReachingTarget(t *testing.T) {
+	client, _, issuer := newBFFTestClient(t)
+	issuer.UserInfoRedirect = true
+	attempt := beginLogin(t, client, issuer, "/")
+	response := serveCallback(t, client, attempt, url.Values{"code": {testCode}, "state": {attempt.State}}.Encode())
+	if response.Code != http.StatusBadRequest || issuer.TokenCalls.Load() != 1 || issuer.UserInfoCalls() != 1 || issuer.UserInfoTargetCalls.Load() != 0 {
+		t.Fatalf("UserInfo redirect was followed or misclassified: status=%d target=%d", response.Code, issuer.UserInfoTargetCalls.Load())
+	}
+}
+
 func TestCallbackDoesNotRetryTokenFailures(t *testing.T) {
 	client, _, issuer := newBFFTestClient(t)
 	issuer.TokenStatus = http.StatusServiceUnavailable

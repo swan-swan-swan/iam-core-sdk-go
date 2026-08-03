@@ -34,14 +34,27 @@ type SecretProviderFunc func(context.Context) (string, error)
 
 func (f SecretProviderFunc) Secret(ctx context.Context) (string, error) { return f(ctx) }
 
+// Config defines the confidential OIDC client and server-side browser session
+// boundary. Cookie templates are configuration only; their Value fields must
+// remain empty because the Client supplies opaque identifiers at runtime.
 type Config struct {
-	Core                         *core.Runtime
-	ClientID                     string
-	ClientSecret                 SecretProvider
-	RedirectURL                  string
-	Scopes                       []string
-	Backend                      session.Backend
-	SessionCookie                http.Cookie
+	Core         *core.Runtime
+	ClientID     string
+	ClientSecret SecretProvider
+	RedirectURL  string
+	Scopes       []string
+	Backend      session.Backend
+	// SessionCookie is the application-session cookie template. It must be
+	// host-only, HttpOnly, Path=/, SameSite=Lax, non-Partitioned, and have zero
+	// MaxAge and Expires. The Backend's absolute and idle TTLs own expiration;
+	// a browser-persistent lifetime could outlive or disagree with that state.
+	// HTTPS redirects additionally require Secure and an __Host- cookie name;
+	// insecure templates require the explicit loopback-only development opt-in.
+	SessionCookie http.Cookie
+	// FlowCookie is the one-time login-flow cookie template and has the same
+	// restrictions as SessionCookie. SameSite=Lax is required so the cookie is
+	// sent on the OAuth authorization server's top-level callback navigation
+	// while remaining unavailable to ordinary cross-site subrequests.
 	FlowCookie                   http.Cookie
 	FlowTTL                      time.Duration
 	SessionAbsoluteTTL           time.Duration
@@ -177,7 +190,7 @@ func validateScopes(configured []string) ([]string, error) {
 	hasOpenID := false
 	result := make([]string, len(configured))
 	for index, scope := range configured {
-		if scope == "" || scope != strings.TrimSpace(scope) || strings.ContainsAny(scope, " \t\r\n") || scope == "roles" {
+		if !validScopeToken(scope) || scope == "roles" {
 			return nil, configureError()
 		}
 		if _, duplicate := seen[scope]; duplicate {
@@ -191,6 +204,20 @@ func validateScopes(configured []string) ([]string, error) {
 		return nil, configureError()
 	}
 	return result, nil
+}
+
+func validScopeToken(scope string) bool {
+	if scope == "" {
+		return false
+	}
+	for index := range len(scope) {
+		value := scope[index]
+		if value == 0x21 || (value >= 0x23 && value <= 0x5b) || (value >= 0x5d && value <= 0x7e) {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func positiveDurationOrDefault(value, fallback time.Duration) (time.Duration, bool) {

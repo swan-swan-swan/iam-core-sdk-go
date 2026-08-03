@@ -1,4 +1,4 @@
-// Command nethttp-v2 demonstrates a Bearer-only IAM Core resource server.
+// Command nethttp demonstrates a Bearer-only IAM Core resource server.
 package main
 
 import (

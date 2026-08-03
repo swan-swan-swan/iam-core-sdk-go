@@ -237,18 +237,18 @@ func (b *Backend) AcquireRefreshLease(
 		return nil, err
 	}
 	now := b.clock.Now()
-	if err := b.validateRefreshLeaseAcquisitionLocked(sessionID, now); err != nil {
+	if err := b.prepareRefreshLeaseAcquisitionLocked(sessionID, now); err != nil {
 		b.mu.Unlock()
 		return nil, err
 	}
 	b.mu.Unlock()
 
-	owner, err := b.randomOwner()
-	if err != nil {
-		return nil, err
-	}
+	owner, entropyErr := b.randomOwner()
 	if err := contextError(ctx); err != nil {
 		return nil, err
+	}
+	if entropyErr != nil {
+		return nil, ErrRandomSource
 	}
 
 	b.mu.Lock()
@@ -257,7 +257,7 @@ func (b *Backend) AcquireRefreshLease(
 		return nil, err
 	}
 	now = b.clock.Now()
-	if err := b.validateRefreshLeaseAcquisitionLocked(sessionID, now); err != nil {
+	if err := b.prepareRefreshLeaseAcquisitionLocked(sessionID, now); err != nil {
 		return nil, err
 	}
 	b.nextFence++
@@ -415,12 +415,13 @@ func (b *Backend) deleteSessionLocked(id string) {
 	delete(b.leases, id)
 }
 
-func (b *Backend) validateRefreshLeaseAcquisitionLocked(sessionID string, now time.Time) error {
+func (b *Backend) prepareRefreshLeaseAcquisitionLocked(sessionID string, now time.Time) error {
 	item, ok := b.sessions[sessionID]
 	if !ok {
 		return session.ErrNotFound
 	}
 	if sessionExpired(item, now) {
+		b.deleteSessionLocked(sessionID)
 		return session.ErrExpired
 	}
 	if current, ok := b.leases[sessionID]; ok && current.expiresAt.After(now) {
@@ -439,7 +440,7 @@ func (b *Backend) randomOwner() (string, error) {
 	b.randomMu.Unlock()
 	if err != nil {
 		clear(ownerBytes)
-		return "", ErrRandomSource
+		return "", err
 	}
 	owner := base64.RawURLEncoding.EncodeToString(ownerBytes)
 	clear(ownerBytes)

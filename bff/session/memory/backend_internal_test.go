@@ -34,6 +34,7 @@ type blockingReader struct {
 	started chan struct{}
 	release chan struct{}
 	once    sync.Once
+	err     error
 }
 
 func newBlockingReader() *blockingReader {
@@ -43,10 +44,58 @@ func newBlockingReader() *blockingReader {
 func (r *blockingReader) Read(value []byte) (int, error) {
 	r.once.Do(func() { close(r.started) })
 	<-r.release
+	if r.err != nil {
+		return 0, r.err
+	}
 	for index := range value {
 		value[index] = 1
 	}
 	return len(value), nil
+}
+
+func TestAcquireRefreshLeaseCancellationWinsOverEntropyFailure(t *testing.T) {
+	now := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
+	clock := &sessiontest.Clock{}
+	clock.Set(now)
+	secret := "entropy-error-sensitive-detail"
+	random := newBlockingReader()
+	random.err = errors.New(secret)
+	backend := New(Options{Clock: clock, Random: random})
+	item := liveSession("cancel-entropy-error", now)
+	if err := backend.Create(context.Background(), item); err != nil {
+		t.Fatal("failed to arrange live Session")
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	type acquireResult struct {
+		lease session.Lease
+		err   error
+	}
+	acquired := make(chan acquireResult, 1)
+	go func() {
+		lease, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+		acquired <- acquireResult{lease: lease, err: err}
+	}()
+	select {
+	case <-random.started:
+	case <-time.After(time.Second):
+		t.Fatal("entropy read did not start")
+	}
+	cancel()
+	close(random.release)
+	result := <-acquired
+	if result.lease != nil {
+		t.Fatal("canceled entropy failure returned a Lease")
+	}
+	if result.err != context.Canceled {
+		t.Fatal("entropy failure took precedence over exact context.Canceled")
+	}
+	if strings.Contains(result.err.Error(), secret) {
+		t.Fatal("canceled entropy failure exposed provider detail")
+	}
+	if backend.nextFence != 0 || len(backend.leases) != 0 {
+		t.Fatal("canceled entropy failure mutated fence or lease state")
+	}
 }
 
 func TestNewRejectsTypedNilOptionsAndDefaultsAbsentOptions(t *testing.T) {

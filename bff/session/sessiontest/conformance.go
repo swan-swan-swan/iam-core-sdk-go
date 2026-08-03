@@ -570,6 +570,9 @@ func Run(t *testing.T, factory Factory) {
 		if _, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute); !errors.Is(err, session.ErrExpired) {
 			t.Fatal("AcquireRefreshLease returned the wrong error for an expired Session")
 		}
+		if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrNotFound) {
+			t.Fatal("AcquireRefreshLease did not remove the expired Session")
+		}
 	})
 
 	for name, makeContext := range map[string]func() (context.Context, context.CancelFunc){

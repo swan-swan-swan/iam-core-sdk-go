@@ -230,7 +230,7 @@ if type(granted) == "table" and granted.err then
 	redis.pcall("DEL", KEYS[2])
 	return -2
 end
-return 1
+return requestedTTL
 `)
 
 var leaseValidScript = goredis.NewScript(`

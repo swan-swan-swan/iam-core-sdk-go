@@ -336,10 +336,6 @@ func (b *Backend) AcquireRefreshLease(
 	if !validLuaTTL(ttl) {
 		return nil, ErrInvalidInput
 	}
-	expiresAt := now.Add(ttl)
-	if !expiresAt.After(now) {
-		return nil, ErrInvalidInput
-	}
 	for range maxFenceGrantAttempts {
 		if err := contextError(ctx); err != nil {
 			return nil, err
@@ -360,8 +356,11 @@ func (b *Backend) AcquireRefreshLease(
 		if err != nil {
 			return nil, backendError(err)
 		}
-		switch status {
-		case 1:
+		if status > 0 {
+			expiresAt, ok := leaseDeadline(b.clock.Now(), status)
+			if !ok {
+				return nil, ErrBackendUnavailable
+			}
 			return &refreshLease{
 				backend:    b,
 				sessionID:  sessionID,
@@ -371,6 +370,8 @@ func (b *Backend) AcquireRefreshLease(
 				generation: stored.generation,
 				expiresAt:  expiresAt,
 			}, nil
+		}
+		switch status {
 		case 0:
 			return nil, session.ErrConflict
 		case -1:
@@ -882,6 +883,17 @@ func millisecondsText(duration time.Duration) string {
 func validLuaTTL(duration time.Duration) bool {
 	milliseconds := duration.Milliseconds()
 	return duration > 0 && milliseconds > 0 && milliseconds <= maxLuaExactInteger
+}
+
+func leaseDeadline(observedAt time.Time, grantedMilliseconds int64) (time.Time, bool) {
+	const maxDurationMilliseconds = int64(math.MaxInt64) / int64(time.Millisecond)
+	if grantedMilliseconds <= 0 || grantedMilliseconds > maxLuaExactInteger ||
+		grantedMilliseconds > maxDurationMilliseconds {
+		return time.Time{}, false
+	}
+	ttl := time.Duration(grantedMilliseconds) * time.Millisecond
+	deadline := observedAt.Add(ttl)
+	return deadline, deadline.After(observedAt)
 }
 
 var _ session.Backend = (*Backend)(nil)

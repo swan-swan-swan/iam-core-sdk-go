@@ -19,11 +19,11 @@ import (
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/bff/session/sessiontest"
 )
 
-func TestBackendConformanceAgainstFaithfulStateFake(t *testing.T) {
+func TestBackendConformanceAgainstLogicalClassificationHarness(t *testing.T) {
 	sessiontest.Run(t, func(t testing.TB, clock *sessiontest.Clock) session.Backend {
 		t.Helper()
 		client := newFakeRedisClient(clock.Now)
-		client.followApplicationClockForConformance()
+		client.enableLogicalClassificationHarness()
 		backend, err := New(client, validOptions(clock, bytes.NewReader(bytes.Repeat([]byte{1}, 4096))))
 		if err != nil {
 			t.Fatal("construct backend")
@@ -178,6 +178,9 @@ func TestCommandsUseExactKeysTTLsAndFencedArguments(t *testing.T) {
 	assertArgStrings(t, acquire.args, 1, "1")
 	assertArgStrings(t, acquire.args, 2, owned.generation)
 	assertArgStrings(t, acquire.args, 3, "60001")
+	if !strings.Contains(acquire.script, "return requestedTTL") {
+		t.Fatal("lease Acquire script did not return the granted TTL")
+	}
 
 	next := testSession(item.ID, clock.Now())
 	next.Version = 2
@@ -407,16 +410,22 @@ func TestLeasePhysicalTTLIsCappedToRemainingSessionPTTL(t *testing.T) {
 	if err := backend.Create(context.Background(), item); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := backend.AcquireRefreshLease(context.Background(), item.ID, 2*time.Hour); err != nil {
+	client.advanceServer(30 * time.Minute)
+	leaseValue, err := backend.AcquireRefreshLease(context.Background(), item.ID, 2*time.Hour)
+	if err != nil {
 		t.Fatal(err)
 	}
+	owned := leaseValue.(*refreshLease)
 	client.mu.Lock()
 	serverNow := client.serverTimeLocked()
 	leaseRemaining := client.values[backend.leaseKey(item.ID)].expiresAt.Sub(serverNow)
 	sessionRemaining := client.values[backend.sessionKey(item.ID)].expiresAt.Sub(serverNow)
 	client.mu.Unlock()
-	if leaseRemaining <= 0 || leaseRemaining > sessionRemaining || leaseRemaining > time.Hour {
+	if leaseRemaining <= 0 || leaseRemaining > sessionRemaining || leaseRemaining > 30*time.Minute {
 		t.Fatalf("lease TTL %s exceeded remaining Session PTTL %s", leaseRemaining, sessionRemaining)
+	}
+	if localRemaining := owned.expiresAt.Sub(clock.Now()); localRemaining != leaseRemaining {
+		t.Fatalf("local lease TTL %s differs from Redis grant %s", localRemaining, leaseRemaining)
 	}
 }
 
@@ -506,6 +515,148 @@ func TestFenceGrantOrderingRejectsDelayedLowerReservation(t *testing.T) {
 	}
 	if acquiredA.lease.(*refreshLease).fence <= 2 {
 		t.Fatal("lower reserved fence was granted after the higher fence")
+	}
+}
+
+func TestAcquireLocalDeadlineStartsAtSuccessfulGrant(t *testing.T) {
+	clock := newSessionClock()
+	baseClient := newFakeRedisClient(clock.Now)
+	client := newScriptGateClient(baseClient, scriptMarkerFenceNext)
+	backendValue, err := New(client, validOptions(clock, bytes.NewReader(bytes.Repeat([]byte{34}, 512))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := backendValue.(*Backend)
+	ctx := context.Background()
+	item := testSession("grant-deadline", clock.Now())
+	if err := backend.Create(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+
+	const requested = time.Minute
+	result := make(chan leaseResult, 1)
+	go func() {
+		leaseValue, acquireErr := backend.AcquireRefreshLease(ctx, item.ID, requested)
+		result <- leaseResult{lease: leaseValue, err: acquireErr}
+	}()
+	client.waitUntilBlocked(t)
+	clock.Advance(2 * requested)
+	baseClient.advanceServer(2 * requested)
+	client.resume()
+	acquired := <-result
+	if acquired.err != nil || acquired.lease == nil {
+		t.Fatal("delayed Acquire did not receive the Redis grant")
+	}
+	if !acquired.lease.Valid(ctx) {
+		t.Error("newly granted lease was already locally expired")
+	}
+	if successor, err := backend.AcquireRefreshLease(ctx, item.ID, requested); successor != nil || !errors.Is(err, session.ErrConflict) {
+		t.Error("newly granted Redis lease did not block a concurrent successor")
+	}
+
+	clock.Advance(requested)
+	baseClient.advanceServer(requested)
+	if acquired.lease.Valid(ctx) {
+		t.Error("lease remained valid at the granted TTL boundary")
+	}
+	successor, err := backend.AcquireRefreshLease(ctx, item.ID, requested)
+	if err != nil || successor == nil {
+		t.Fatal("new Acquire was unavailable after the granted TTL elapsed")
+	}
+	if err := successor.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRedisRemainsAuthoritativeAfterAcquireResponseDelay(t *testing.T) {
+	clock := newSessionClock()
+	baseClient := newFakeRedisClient(clock.Now)
+	client := newAfterAcquireGateClient(baseClient)
+	backendValue, err := New(client, validOptions(clock, bytes.NewReader(bytes.Repeat([]byte{35}, 512))))
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := backendValue.(*Backend)
+	ctx := context.Background()
+	item := testSession("grant-response-delay", clock.Now())
+	if err := backend.Create(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+
+	const requested = time.Minute
+	result := make(chan leaseResult, 1)
+	go func() {
+		leaseValue, acquireErr := backend.AcquireRefreshLease(ctx, item.ID, requested)
+		result <- leaseResult{lease: leaseValue, err: acquireErr}
+	}()
+	client.waitUntilBlocked(t)
+	clock.Advance(requested)
+	baseClient.advanceServer(requested)
+	client.resume()
+	acquired := <-result
+	if acquired.err != nil || acquired.lease == nil {
+		t.Fatal("delayed response lost the completed Redis grant")
+	}
+	if acquired.lease.Valid(ctx) {
+		t.Fatal("optimistic local deadline bypassed authoritative Redis expiry")
+	}
+	successor, err := backend.AcquireRefreshLease(ctx, item.ID, requested)
+	if err != nil || successor == nil {
+		t.Fatal("expired Redis lease blocked a successor after response delay")
+	}
+	if err := successor.Release(ctx); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestLeaseGrantStatusAndDeadlineBoundaries(t *testing.T) {
+	t.Run("one millisecond is success", func(t *testing.T) {
+		clock, _, backend := newBackendFixture(t, bytes.NewReader(bytes.Repeat([]byte{36}, 256)))
+		item := testSession("one-millisecond-grant", clock.Now())
+		if err := backend.Create(context.Background(), item); err != nil {
+			t.Fatal(err)
+		}
+		leaseValue, err := backend.AcquireRefreshLease(context.Background(), item.ID, time.Nanosecond)
+		if err != nil || leaseValue == nil {
+			t.Fatal("one-millisecond positive status was not treated as success")
+		}
+		owned := leaseValue.(*refreshLease)
+		if got := owned.expiresAt.Sub(clock.Now()); got != time.Millisecond {
+			t.Fatalf("local deadline offset = %s, want 1ms", got)
+		}
+		if err := leaseValue.Release(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	})
+
+	const maxDurationMilliseconds = int64(math.MaxInt64) / int64(time.Millisecond)
+	// time.Time stores wall seconds from year 1; subtracting the Unix epoch
+	// offset constructs its largest representable wall second without overflow.
+	const secondsFromYearOneToUnixEpoch = int64(62135596800)
+	now := time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
+	maximumTime := time.Unix(math.MaxInt64-secondsFromYearOneToUnixEpoch, 999999999).UTC()
+	for _, test := range []struct {
+		name         string
+		observedAt   time.Time
+		milliseconds int64
+		wantOK       bool
+	}{
+		{name: "zero", observedAt: now, milliseconds: 0},
+		{name: "negative", observedAt: now, milliseconds: -1},
+		{name: "one", observedAt: now, milliseconds: 1, wantOK: true},
+		{name: "maximum duration", observedAt: now, milliseconds: maxDurationMilliseconds, wantOK: true},
+		{name: "duration overflow", observedAt: now, milliseconds: maxDurationMilliseconds + 1},
+		{name: "time add saturation", observedAt: maximumTime, milliseconds: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			deadline, ok := leaseDeadline(test.observedAt, test.milliseconds)
+			if ok != test.wantOK {
+				t.Fatalf("leaseDeadline(%s) = %s, ok %t, want %t", test.observedAt, deadline, ok, test.wantOK)
+			}
+			if ok && !deadline.After(test.observedAt) {
+				t.Fatal("accepted deadline did not advance time")
+			}
+		})
 	}
 }
 
@@ -1048,17 +1199,17 @@ type fakeValue struct {
 type fakeRedisClient struct {
 	goredis.UniversalClient
 
-	mu                  sync.Mutex
-	appNow              func() time.Time
-	serverNow           time.Time
-	serverOffset        time.Duration
-	serverFixed         bool
-	logicalReadBoundary bool
-	values              map[string]*fakeValue
-	fences              map[string]uint64
-	evals               []recordedEval
-	calls               int
-	err                 error
+	mu                           sync.Mutex
+	appNow                       func() time.Time
+	serverNow                    time.Time
+	serverOffset                 time.Duration
+	serverFixed                  bool
+	logicalClassificationHarness bool
+	values                       map[string]*fakeValue
+	fences                       map[string]uint64
+	evals                        []recordedEval
+	calls                        int
+	err                          error
 }
 
 type cleanupRaceClient struct {
@@ -1108,6 +1259,42 @@ func (c *acquireGateClient) waitUntilBlocked(t testing.TB) {
 }
 
 func (c *acquireGateClient) resume() { close(c.proceed) }
+
+type afterAcquireGateClient struct {
+	*fakeRedisClient
+	entered chan struct{}
+	proceed chan struct{}
+	once    sync.Once
+}
+
+func newAfterAcquireGateClient(client *fakeRedisClient) *afterAcquireGateClient {
+	return &afterAcquireGateClient{
+		fakeRedisClient: client,
+		entered:         make(chan struct{}),
+		proceed:         make(chan struct{}),
+	}
+}
+
+func (c *afterAcquireGateClient) Eval(ctx context.Context, script string, keys []string, args ...interface{}) *goredis.Cmd {
+	result := c.fakeRedisClient.Eval(ctx, script, keys, args...)
+	if strings.Contains(script, scriptMarkerLeaseAcquire) {
+		c.once.Do(func() {
+			close(c.entered)
+			select {
+			case <-c.proceed:
+			case <-ctx.Done():
+			}
+		})
+	}
+	return result
+}
+
+func (c *afterAcquireGateClient) waitUntilBlocked(t testing.TB) {
+	t.Helper()
+	waitForSignal(t, c.entered, "Acquire response was not delayed after its Redis grant")
+}
+
+func (c *afterAcquireGateClient) resume() { close(c.proceed) }
 
 type cancelAfterAcquireClient struct {
 	*fakeRedisClient
@@ -1355,12 +1542,15 @@ func newFakeRedisClient(now func() time.Time) *fakeRedisClient {
 	}
 }
 
-func (c *fakeRedisClient) followApplicationClockForConformance() {
+// enableLogicalClassificationHarness couples server time to the contract test
+// clock and retains just-expired values for the Backend's one-shot logical
+// ErrExpired classification. It is not a faithful Redis physical-expiry mode.
+func (c *fakeRedisClient) enableLogicalClassificationHarness() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.serverFixed = false
 	c.serverOffset = 0
-	c.logicalReadBoundary = true
+	c.logicalClassificationHarness = true
 }
 
 func (c *fakeRedisClient) advanceServer(delta time.Duration) {
@@ -1388,7 +1578,7 @@ func (c *fakeRedisClient) serverTimeLocked() time.Time {
 }
 
 func (c *fakeRedisClient) expiresBeforeLogicalReadLocked() bool {
-	return !c.logicalReadBoundary
+	return !c.logicalClassificationHarness
 }
 
 func (c *fakeRedisClient) HMGet(ctx context.Context, key string, fields ...string) *goredis.SliceCmd {
@@ -1573,7 +1763,7 @@ func (c *fakeRedisClient) runScriptLocked(script string, keys []string, args []i
 			"generation": argString(args[2]), "expires_at": strconv.FormatInt(now+requestedTTL, 10),
 		}, expiresAt: c.serverTimeLocked().Add(time.Duration(requestedTTL) * time.Millisecond)}
 		currentSession.fields["last_fence"] = candidate
-		return int64(1)
+		return requestedTTL
 	case strings.Contains(script, scriptMarkerLeaseValid):
 		if c.validLeaseLocked(keys[0], keys[1], args) {
 			return int64(1)

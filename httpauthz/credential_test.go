@@ -23,6 +23,19 @@ func TestCredentialHeaderDistinguishesMissingFromValidBearer(t *testing.T) {
 	}
 }
 
+func TestCredentialHeaderAcceptsRFC6750B64TokenGrammar(t *testing.T) {
+	for _, token := range []string{
+		"a", "AZaz09-._~+/", "opaque-token", "header.payload.signature", "token=", "token==", "token=====",
+	} {
+		request := httptest.NewRequest(http.MethodGet, "/", nil)
+		request.Header.Set("Authorization", "Bearer "+token)
+		got, present, err := credentialHeader(request)
+		if err != nil || !present || got != token {
+			t.Fatalf("credentialHeader() rejected valid RFC 6750 token: present/error=%v/%v", present, err)
+		}
+	}
+}
+
 func TestCredentialHeaderRejectsMalformedValues(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -41,6 +54,18 @@ func TestCredentialHeaderRejectsMalformedValues(t *testing.T) {
 		{name: "whitespace in token", values: map[string][]string{"Authorization": {"Bearer tok en"}}},
 		{name: "unicode whitespace", values: map[string][]string{"Authorization": {"Bearer tok\u00a0en"}}},
 		{name: "comma joined", values: map[string][]string{"Authorization": {"Bearer one,Bearer two"}}},
+		{name: "quote in token", values: map[string][]string{"Authorization": {`Bearer tok"en`}}},
+		{name: "backslash in token", values: map[string][]string{"Authorization": {`Bearer tok\en`}}},
+		{name: "semicolon in token", values: map[string][]string{"Authorization": {"Bearer tok;en"}}},
+		{name: "colon in token", values: map[string][]string{"Authorization": {"Bearer tok:en"}}},
+		{name: "leading equals", values: map[string][]string{"Authorization": {"Bearer =token"}}},
+		{name: "equals only", values: map[string][]string{"Authorization": {"Bearer ==="}}},
+		{name: "internal equals", values: map[string][]string{"Authorization": {"Bearer tok=en"}}},
+		{name: "body after padding", values: map[string][]string{"Authorization": {"Bearer token==suffix"}}},
+		{name: "non ASCII", values: map[string][]string{"Authorization": {"Bearer tokéen"}}},
+		{name: "emoji", values: map[string][]string{"Authorization": {"Bearer tok😀en"}}},
+		{name: "zero width format", values: map[string][]string{"Authorization": {"Bearer tok\u200ben"}}},
+		{name: "bidi format", values: map[string][]string{"Authorization": {"Bearer tok\u202een"}}},
 		{name: "multiple", values: map[string][]string{"Authorization": {"Bearer one", "Bearer two"}}},
 		{name: "multiple casing", values: map[string][]string{"Authorization": {"Bearer one"}, "authorization": {"Bearer two"}}},
 		{name: "newline", values: map[string][]string{"Authorization": {"Bearer tok\nen"}}},

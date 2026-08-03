@@ -96,7 +96,7 @@ func (c *PDPClient) Decide(ctx context.Context, tokens core.TokenSource, route R
 		}
 		return Decision{}, sanitizeTokenSourceError(err)
 	}
-	if !validAccessToken(accessToken) {
+	if !validBearerToken(accessToken) {
 		return Decision{}, newPDPError(core.KindUnauthenticated, decideOperation, 0, false)
 	}
 
@@ -221,9 +221,43 @@ func validRouteValue(value string) bool {
 	return value != "" && value == strings.TrimSpace(value) && utf8.ValidString(value) && !strings.ContainsFunc(value, unicode.IsControl)
 }
 
-func validAccessToken(token string) bool {
-	return token != "" && token == strings.TrimSpace(token) && utf8.ValidString(token) &&
-		!strings.ContainsFunc(token, func(r rune) bool { return unicode.IsSpace(r) || unicode.IsControl(r) })
+func validBearerToken(token string) bool {
+	bodySeen := false
+	paddingSeen := false
+	for index := 0; index < len(token); index++ {
+		character := token[index]
+		if character == '=' {
+			if !bodySeen {
+				return false
+			}
+			paddingSeen = true
+			continue
+		}
+		if paddingSeen || !validBearerBodyCharacter(character) {
+			return false
+		}
+		bodySeen = true
+	}
+	return bodySeen
+}
+
+func validBearerBodyCharacter(character byte) bool {
+	return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+		(character >= '0' && character <= '9') || strings.ContainsRune("-._~+/", rune(character))
+}
+
+func validSessionBinding(value string) bool {
+	if value == "" {
+		return false
+	}
+	for index := 0; index < len(value); index++ {
+		character := value[index]
+		if !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || character == '-' || character == '_') {
+			return false
+		}
+	}
+	return true
 }
 
 func isJSONMediaType(value string) bool {

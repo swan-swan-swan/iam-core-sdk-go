@@ -27,7 +27,7 @@ func credentialHeader(request *http.Request) (string, bool, error) {
 		return "", true, credentialError(core.KindUnauthenticated)
 	}
 	token := strings.TrimPrefix(value, "Bearer ")
-	if strings.Contains(token, ",") || !validAccessToken(token) {
+	if !validBearerToken(token) {
 		return "", true, credentialError(core.KindUnauthenticated)
 	}
 	return token, true, nil
@@ -90,7 +90,7 @@ func (s *Service) selectCredential(request *http.Request) (core.Credential, erro
 	if err != nil {
 		return core.Credential{}, err
 	}
-	if !present || credential.Source != core.CredentialSession || !validAccessToken(credential.SessionID) ||
+	if !present || credential.Source != core.CredentialSession || !validSessionBinding(credential.SessionID) ||
 		strings.TrimSpace(credential.Auth.Subject) == "" || nilcheck.IsNil(credential.Tokens) {
 		return core.Credential{}, credentialError(core.KindUnauthenticated)
 	}

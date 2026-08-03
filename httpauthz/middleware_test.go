@@ -289,6 +289,17 @@ func TestAuthenticateRejectsForgedSessionResolverResults(t *testing.T) {
 		{name: "padded session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = " session-1 "; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
 		{name: "whitespace in session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = "session 1"; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
 		{name: "control in session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = "session\n1"; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
+		{name: "dot in session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = "session.1"; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
+		{name: "plus in session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = "session+1"; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
+		{name: "slash in session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = "session/1"; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
+		{name: "equals in session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = "session=1"; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
+		{name: "tilde in session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = "session~1"; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
+		{name: "quote in session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = `session"1`; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
+		{name: "backslash in session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = `session\1`; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
+		{name: "non ASCII session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = "sessioné1"; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
+		{name: "zero width session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = "session\u200b1"; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
+		{name: "bidi session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = "session\u202e1"; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
+		{name: "emoji session binding", credential: func() core.Credential { c := credentialWithToken("token"); c.SessionID = "session😀1"; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
 		{name: "missing subject", credential: func() core.Credential { c := credentialWithToken("token"); c.Auth.Subject = ""; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
 		{name: "missing token source", credential: func() core.Credential { c := credentialWithToken("token"); c.Tokens = nil; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
 		{name: "typed nil token source", credential: func() core.Credential { c := credentialWithToken("token"); c.Tokens = typedNil; return c }(), resolvePresent: true, wantStatus: http.StatusUnauthorized},
@@ -312,6 +323,27 @@ func TestAuthenticateRejectsForgedSessionResolverResults(t *testing.T) {
 				t.Fatalf("status/present/resolve/verifier=%d/%d/%d/%d", response.Code, resolver.presentCalls, resolver.resolveCalls, verifier.calls)
 			}
 		})
+	}
+}
+
+func TestAuthenticateAcceptsBFFSessionBindingGrammar(t *testing.T) {
+	for _, sessionID := range []string{"a", "AZaz09_-", "session-1", "opaque_ID-123"} {
+		credential := credentialWithToken("token")
+		credential.SessionID = sessionID
+		resolver := &fakeSessionResolver{present: true, resolvePresent: true, credential: credential}
+		service, err := httpauthz.New(httpauthz.Config{Verifier: &fakeVerifier{auth: validAuth()}, PDP: &fakeAuthorizer{}, Sessions: resolver})
+		if err != nil {
+			t.Fatal(err)
+		}
+		handler, err := service.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/", nil))
+		if response.Code != http.StatusNoContent || resolver.presentCalls != 1 || resolver.resolveCalls != 1 {
+			t.Fatalf("status/present/resolve=%d/%d/%d", response.Code, resolver.presentCalls, resolver.resolveCalls)
+		}
 	}
 }
 
@@ -451,42 +483,239 @@ func TestRequireDenyProvidesDecisionContextButNeverCallsHandler(t *testing.T) {
 	}
 }
 
-func TestRequireNeverWritesUnsafeDecisionIDHeader(t *testing.T) {
-	tests := []struct {
-		name string
-		id   string
+func TestRequireRejectsMalformedAuthorizerDecisionBeforeContextOrHandler(t *testing.T) {
+	mutations := []struct {
+		name   string
+		mutate func(*httpauthz.Decision)
 	}{
-		{name: "empty", id: ""},
-		{name: "newline", id: "opaque\ninjected"},
-		{name: "carriage return", id: "opaque\rinjected"},
-		{name: "nul", id: "opaque\x00injected"},
-		{name: "unicode control", id: "opaque\u0085injected"},
-		{name: "zero width format", id: "opaque\u200binjected"},
-		{name: "bidi format", id: "opaque\u202einjected"},
-		{name: "surrounding whitespace", id: " opaque-id "},
+		{name: "empty decision ID", mutate: func(d *httpauthz.Decision) { d.ID = "" }},
+		{name: "padded decision ID", mutate: func(d *httpauthz.Decision) { d.ID = " decision-secret " }},
+		{name: "control decision ID", mutate: func(d *httpauthz.Decision) { d.ID = "decision\nsecret" }},
+		{name: "zero width decision ID", mutate: func(d *httpauthz.Decision) { d.ID = "decision\u200bsecret" }},
+		{name: "bidi decision ID", mutate: func(d *httpauthz.Decision) { d.ID = "decision\u202esecret" }},
+		{name: "invalid UTF8 decision ID", mutate: func(d *httpauthz.Decision) { d.ID = "decision\xffsecret" }},
+		{name: "empty reason code", mutate: func(d *httpauthz.Decision) { d.ReasonCode = "" }},
+		{name: "padded reason code", mutate: func(d *httpauthz.Decision) { d.ReasonCode = " reason-secret " }},
+		{name: "control reason code", mutate: func(d *httpauthz.Decision) { d.ReasonCode = "reason\rsecret" }},
+		{name: "zero width reason code", mutate: func(d *httpauthz.Decision) { d.ReasonCode = "reason\u200bsecret" }},
+		{name: "bidi reason code", mutate: func(d *httpauthz.Decision) { d.ReasonCode = "reason\u202esecret" }},
+		{name: "invalid UTF8 reason code", mutate: func(d *httpauthz.Decision) { d.ReasonCode = "reason\xffsecret" }},
+		{name: "padded request ID", mutate: func(d *httpauthz.Decision) { d.RequestID = " request-secret " }},
+		{name: "format request ID", mutate: func(d *httpauthz.Decision) { d.RequestID = "request\u200bsecret" }},
+		{name: "control trace ID", mutate: func(d *httpauthz.Decision) { d.TraceID = "trace\nsecret" }},
+		{name: "invalid UTF8 trace ID", mutate: func(d *httpauthz.Decision) { d.TraceID = "trace\xffsecret" }},
+	}
+	for _, allowed := range []bool{true, false} {
+		outcome := "deny"
+		if allowed {
+			outcome = "allow"
+		}
+		for _, mutation := range mutations {
+			t.Run(outcome+"/"+mutation.name, func(t *testing.T) {
+				decision := httpauthz.Decision{
+					ID: "decision-valid", Allowed: allowed, ReasonCode: "policy_valid",
+					RequestID: "request-valid", TraceID: "trace-valid",
+				}
+				mutation.mutate(&decision)
+				verifier := &fakeVerifier{auth: validAuth()}
+				pdp := &fakeAuthorizer{decision: decision}
+				var responderCalls, handlerCalls int
+				service, err := httpauthz.New(httpauthz.Config{
+					Verifier: verifier, PDP: pdp,
+					Responder: httpauthz.ErrorResponderFunc(func(w http.ResponseWriter, request *http.Request, err error) {
+						responderCalls++
+						var typed *core.Error
+						if !errors.As(err, &typed) || typed == nil || typed.Kind != core.KindProtocol {
+							t.Fatalf("error = %T", err)
+						}
+						if _, ok := httpauthz.DecisionFromContext(request.Context()); ok {
+							t.Fatal("malformed Decision reached request context")
+						}
+						auth, ok := core.AuthContextFromContext(request.Context())
+						if !ok || auth.DecisionID != "" || auth.ReasonCode != "" {
+							t.Fatal("malformed Decision reached AuthContext")
+						}
+						http.Error(w, http.StatusText(http.StatusBadRequest), http.StatusBadRequest)
+					}),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				handler, err := service.Require(boundRoute(t), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+					handlerCalls++
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				if err != nil {
+					t.Fatal(err)
+				}
+				request := httptest.NewRequest(http.MethodGet, "/", nil)
+				request.Header.Set("Authorization", "Bearer token")
+				response := httptest.NewRecorder()
+				handler.ServeHTTP(response, request)
+				if response.Code != http.StatusBadRequest || response.Header().Get("X-IAM-Decision-ID") != "" ||
+					verifier.calls != 1 || pdp.calls != 1 || responderCalls != 1 || handlerCalls != 0 {
+					t.Fatalf("status/header/verifier/PDP/responder/handler=%d/%t/%d/%d/%d/%d",
+						response.Code, response.Header().Get("X-IAM-Decision-ID") != "", verifier.calls, pdp.calls, responderCalls, handlerCalls)
+				}
+				for _, secret := range []string{"decision-secret", "reason-secret", "request-secret", "trace-secret"} {
+					if strings.Contains(response.Body.String(), secret) {
+						t.Fatal("malformed Decision metadata reached response body")
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestRequireMalformedDecisionDefaultResponseIsSanitized(t *testing.T) {
+	verifier := &fakeVerifier{auth: validAuth()}
+	pdp := &fakeAuthorizer{decision: httpauthz.Decision{
+		ID: " malformed-decision-secret ", Allowed: true, ReasonCode: "policy_allow",
+	}}
+	service, err := httpauthz.New(httpauthz.Config{Verifier: verifier, PDP: pdp})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var handlerCalls int
+	handler, err := service.Require(boundRoute(t), http.HandlerFunc(func(http.ResponseWriter, *http.Request) { handlerCalls++ }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("Authorization", "Bearer token")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || response.Body.String() != "Bad Request\n" ||
+		response.Header().Get("X-IAM-Decision-ID") != "" || verifier.calls != 1 || pdp.calls != 1 || handlerCalls != 0 {
+		t.Fatalf("status/header/verifier/PDP/handler=%d/%t/%d/%d/%d",
+			response.Code, response.Header().Get("X-IAM-Decision-ID") != "", verifier.calls, pdp.calls, handlerCalls)
+	}
+	if strings.Contains(response.Body.String(), "malformed-decision-secret") {
+		t.Fatal("default response disclosed malformed Decision metadata")
+	}
+}
+
+func TestRequireClearsStaleDecisionHeaderBeforeEveryBranch(t *testing.T) {
+	tests := []struct {
+		name                                 string
+		method, header                       string
+		sessions                             *fakeSessionResolver
+		decision                             httpauthz.Decision
+		pdpErr                               error
+		wantStatus, wantPresent, wantResolve int
+		wantVerify, wantPDP                  int
+		wantHeader                           string
+	}{
+		{
+			name: "method mismatch", method: http.MethodPost, header: "Bearer token",
+			sessions:   &fakeSessionResolver{present: true},
+			wantStatus: http.StatusBadRequest,
+		},
+		{
+			name: "SessionPresent error", method: http.MethodGet, header: "Bearer token",
+			sessions:   &fakeSessionResolver{presentErr: errors.New("session-present-secret")},
+			wantStatus: http.StatusServiceUnavailable, wantPresent: 1,
+		},
+		{
+			name: "credential error", method: http.MethodGet, header: "Basic credential-secret",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name: "ResolveSession error", method: http.MethodGet,
+			sessions:   &fakeSessionResolver{present: true, resolvePresent: true, resolveErr: errors.New("resolve-session-secret")},
+			wantStatus: http.StatusServiceUnavailable, wantPresent: 1, wantResolve: 1,
+		},
+		{
+			name: "PDP error", method: http.MethodGet, header: "Bearer token",
+			pdpErr:     core.NewError(core.KindIAMUnavailable, "pdp-secret", 0, true, nil),
+			wantStatus: http.StatusServiceUnavailable, wantVerify: 1, wantPDP: 1,
+		},
+		{
+			name: "malformed decision", method: http.MethodGet, header: "Bearer token",
+			decision:   httpauthz.Decision{ID: "decision-valid", Allowed: true},
+			wantStatus: http.StatusBadRequest, wantVerify: 1, wantPDP: 1,
+		},
+		{
+			name: "deny unsafe decision", method: http.MethodGet, header: "Bearer token",
+			decision:   httpauthz.Decision{ID: "deny\u202esecret", Allowed: false, ReasonCode: "default_deny"},
+			wantStatus: http.StatusBadRequest, wantVerify: 1, wantPDP: 1,
+		},
+		{
+			name: "allow safe replacement", method: http.MethodGet, header: "Bearer token",
+			decision:   httpauthz.Decision{ID: "fresh-decision", Allowed: true, ReasonCode: "policy_allow"},
+			wantStatus: http.StatusNoContent, wantVerify: 1, wantPDP: 1, wantHeader: "fresh-decision",
+		},
+		{
+			name: "deny safe replacement", method: http.MethodGet, header: "Bearer token",
+			decision:   httpauthz.Decision{ID: "fresh-deny", Allowed: false, ReasonCode: "default_deny"},
+			wantStatus: http.StatusForbidden, wantVerify: 1, wantPDP: 1, wantHeader: "fresh-deny",
+		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			decision := httpauthz.Decision{ID: test.id, Allowed: true, ReasonCode: "policy_allow"}
-			service, err := httpauthz.New(httpauthz.Config{Verifier: &fakeVerifier{auth: validAuth()}, PDP: &fakeAuthorizer{decision: decision}})
+			verifier := &fakeVerifier{auth: validAuth()}
+			pdp := &fakeAuthorizer{decision: test.decision, err: test.pdpErr}
+			cfg := httpauthz.Config{Verifier: verifier, PDP: pdp}
+			if test.sessions != nil {
+				cfg.Sessions = test.sessions
+			}
+			service, err := httpauthz.New(cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var captured httpauthz.Decision
-			handler, err := service.Require(boundRoute(t), http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
-				captured, _ = httpauthz.DecisionFromContext(request.Context())
+			var handlerCalls int
+			handler, err := service.Require(boundRoute(t), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				handlerCalls++
 				w.WriteHeader(http.StatusNoContent)
 			}))
 			if err != nil {
 				t.Fatal(err)
 			}
-			request := httptest.NewRequest(http.MethodGet, "/", nil)
-			request.Header.Set("Authorization", "Bearer token")
+			request := httptest.NewRequest(test.method, "/", nil)
+			if test.header != "" {
+				request.Header.Set("Authorization", test.header)
+			}
 			response := httptest.NewRecorder()
-			response.Header().Set("X-IAM-Decision-ID", "stale-decision")
+			response.Header().Set("X-IAM-Decision-ID", "stale-decision-secret")
+			response.Header()["x-iam-decision-id"] = []string{"stale-lowercase-secret"}
+			response.Header()["X-IAM-decision-ID"] = []string{"stale-mixed-case-secret"}
 			handler.ServeHTTP(response, request)
-			if response.Code != http.StatusNoContent || response.Header().Get("X-IAM-Decision-ID") != "" || captured != decision {
-				t.Fatalf("status/header/context=%d/%q/%#v", response.Code, response.Header().Get("X-IAM-Decision-ID"), captured)
+			presentCalls := 0
+			resolveCalls := 0
+			if test.sessions != nil {
+				presentCalls = test.sessions.presentCalls
+				resolveCalls = test.sessions.resolveCalls
+			}
+			wantHandler := 0
+			if test.wantStatus == http.StatusNoContent {
+				wantHandler = 1
+			}
+			var decisionHeaderKeys, decisionHeaderValues int
+			var decisionHeaderValue string
+			for name, values := range response.Header() {
+				if strings.EqualFold(name, "X-IAM-Decision-ID") {
+					decisionHeaderKeys++
+					decisionHeaderValues += len(values)
+					if len(values) == 1 {
+						decisionHeaderValue = values[0]
+					}
+				}
+			}
+			wantHeaderKeys := 0
+			if test.wantHeader != "" {
+				wantHeaderKeys = 1
+			}
+			if response.Code != test.wantStatus || decisionHeaderKeys != wantHeaderKeys || decisionHeaderValues != wantHeaderKeys ||
+				decisionHeaderValue != test.wantHeader || presentCalls != test.wantPresent || resolveCalls != test.wantResolve ||
+				verifier.calls != test.wantVerify || pdp.calls != test.wantPDP || handlerCalls != wantHandler {
+				t.Fatalf("status/header-keys/header-values/present/resolve/verifier/PDP/handler=%d/%d/%d/%d/%d/%d/%d/%d",
+					response.Code, decisionHeaderKeys, decisionHeaderValues, presentCalls, resolveCalls, verifier.calls, pdp.calls, handlerCalls)
+			}
+			if strings.Contains(response.Body.String(), "stale-decision-secret") || strings.Contains(response.Body.String(), "stale-lowercase-secret") ||
+				strings.Contains(response.Body.String(), "stale-mixed-case-secret") || strings.Contains(response.Body.String(), "session-present-secret") ||
+				strings.Contains(response.Body.String(), "resolve-session-secret") || strings.Contains(response.Body.String(), "credential-secret") ||
+				strings.Contains(response.Body.String(), "pdp-secret") {
+				t.Fatal("error response disclosed stale header or branch secret")
 			}
 		})
 	}

@@ -626,6 +626,16 @@ func TestDecideHandlesTokenSourceFailuresWithoutLeaksOrNetwork(t *testing.T) {
 		{name: "empty token", token: "", kind: core.KindUnauthenticated},
 		{name: "padded token", token: " token-secret", kind: core.KindUnauthenticated},
 		{name: "control token", token: "token\r\nsecret", kind: core.KindUnauthenticated},
+		{name: "quoted token", token: `token"secret`, kind: core.KindUnauthenticated},
+		{name: "backslash token", token: `token\secret`, kind: core.KindUnauthenticated},
+		{name: "comma token", token: "token,secret", kind: core.KindUnauthenticated},
+		{name: "leading equals token", token: "=token-secret", kind: core.KindUnauthenticated},
+		{name: "internal equals token", token: "token=secret", kind: core.KindUnauthenticated},
+		{name: "body after padding token", token: "token==secret", kind: core.KindUnauthenticated},
+		{name: "non ASCII token", token: "token-é-secret", kind: core.KindUnauthenticated},
+		{name: "zero width token", token: "token-\u200b-secret", kind: core.KindUnauthenticated},
+		{name: "bidi token", token: "token-\u202e-secret", kind: core.KindUnauthenticated},
+		{name: "emoji token", token: "token-😀-secret", kind: core.KindUnauthenticated},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -641,6 +651,14 @@ func TestDecideHandlesTokenSourceFailuresWithoutLeaksOrNetwork(t *testing.T) {
 				t.Fatalf("token/network calls = %d/%d", tokenCalls.Load(), networkCalls.Load())
 			}
 		})
+	}
+}
+
+func TestDecideAcceptsRFC6750B64TokenWithTrailingPadding(t *testing.T) {
+	client := newDecisionTestClient(t, http.StatusOK, "application/json", validDecisionResponse)
+	decision, err := client.Decide(t.Context(), staticToken("AZaz09-._~+/=="), compiledRoute())
+	if err != nil || !decision.Allowed {
+		t.Fatalf("Decide() rejected valid RFC 6750 token: allowed/error=%v/%v", decision.Allowed, err)
 	}
 }
 

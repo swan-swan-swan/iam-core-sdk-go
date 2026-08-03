@@ -24,6 +24,7 @@ func (s *Service) authenticateHandler(next http.Handler) http.Handler {
 
 func (s *Service) requireHandler(route Route, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		clearDecisionIDHeader(w.Header())
 		if request == nil || request.Method != route.method {
 			s.responder.Respond(w, request, core.NewError(core.KindProtocol, decideOperation, 0, false, nil))
 			return
@@ -39,8 +40,11 @@ func (s *Service) requireHandler(route Route, next http.Handler) http.Handler {
 			s.responder.Respond(w, request, err)
 			return
 		}
+		if !validMiddlewareDecision(decision) {
+			s.responder.Respond(w, request, core.NewError(core.KindProtocol, decideOperation, 0, false, nil))
+			return
+		}
 		request = requestWithDecision(request, decision)
-		w.Header().Del(decisionIDHeader)
 		if safeDecisionIDHeader(decision.ID) {
 			w.Header().Set(decisionIDHeader, decision.ID)
 		}
@@ -52,9 +56,28 @@ func (s *Service) requireHandler(route Route, next http.Handler) http.Handler {
 	})
 }
 
+func clearDecisionIDHeader(header http.Header) {
+	for name := range header {
+		if strings.EqualFold(name, decisionIDHeader) {
+			delete(header, name)
+		}
+	}
+}
+
+func validMiddlewareDecision(decision Decision) bool {
+	return safeDecisionMetadata(decision.ID, true) && safeDecisionMetadata(decision.ReasonCode, true) &&
+		safeDecisionMetadata(decision.RequestID, false) && safeDecisionMetadata(decision.TraceID, false)
+}
+
 func safeDecisionIDHeader(value string) bool {
-	return value != "" && safeEnvelopeString(value) &&
-		!strings.ContainsFunc(value, func(r rune) bool { return !unicode.IsPrint(r) })
+	return safeDecisionMetadata(value, true)
+}
+
+func safeDecisionMetadata(value string, required bool) bool {
+	if value == "" {
+		return !required
+	}
+	return safeEnvelopeString(value) && !strings.ContainsFunc(value, func(r rune) bool { return !unicode.IsPrint(r) })
 }
 
 func requestWithCredential(request *http.Request, credential core.Credential) *http.Request {

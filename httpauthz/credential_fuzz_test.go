@@ -11,6 +11,8 @@ func FuzzCredentialHeader(f *testing.F) {
 	for _, seed := range []string{
 		"Bearer token", "", "bearer token", "Bearer ", "Bearer one,two",
 		"Bearer two words", "Bearer tok\nen", "Bearer tok\x00en", "Bearer tok\u00a0en",
+		`Bearer tok"en`, `Bearer tok\en`, "Bearer =token", "Bearer tok=en", "Bearer token==suffix",
+		"Bearer tokéen", "Bearer tok😀en", "Bearer tok\u200ben", "Bearer tok\u202een", "Bearer AZaz09-._~+/==",
 	} {
 		f.Add(seed)
 	}
@@ -30,9 +32,29 @@ func FuzzCredentialHeader(f *testing.F) {
 			}
 			return
 		}
-		if !strings.HasPrefix(value, "Bearer ") || token != strings.TrimPrefix(value, "Bearer ") ||
-			token == "" || strings.Contains(token, ",") || !validAccessToken(token) {
+		if !strings.HasPrefix(value, "Bearer ") || token != strings.TrimPrefix(value, "Bearer ") || !validRFC6750TokenForTest(token) {
 			t.Fatal("accepted header was not canonical Bearer")
 		}
 	})
+}
+
+func validRFC6750TokenForTest(token string) bool {
+	body := false
+	padding := false
+	for index := 0; index < len(token); index++ {
+		character := token[index]
+		if character == '=' {
+			if !body {
+				return false
+			}
+			padding = true
+			continue
+		}
+		if padding || !((character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+			(character >= '0' && character <= '9') || strings.ContainsRune("-._~+/", rune(character))) {
+			return false
+		}
+		body = true
+	}
+	return body
 }

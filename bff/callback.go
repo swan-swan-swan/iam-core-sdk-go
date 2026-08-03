@@ -19,6 +19,9 @@ import (
 
 func (c *Client) CallbackHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if !allowOnlyMethod(w, request, http.MethodGet) {
+			return
+		}
 		if err := c.completeCallback(w, request); err != nil {
 			writeBFFError(w, err)
 		}

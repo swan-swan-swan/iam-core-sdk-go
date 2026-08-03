@@ -125,7 +125,11 @@ func TestBeginLoginRejectsMalformedRequests(t *testing.T) {
 	for _, request := range requests {
 		response := httptest.NewRecorder()
 		client.LoginHandler().ServeHTTP(response, request)
-		if response.Code != http.StatusBadRequest {
+		wantStatus := http.StatusBadRequest
+		if request.Method != http.MethodGet {
+			wantStatus = http.StatusMethodNotAllowed
+		}
+		if response.Code != wantStatus {
 			t.Fatalf("%s %s status = %d", request.Method, request.URL, response.Code)
 		}
 	}

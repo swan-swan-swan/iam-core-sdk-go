@@ -24,6 +24,7 @@ type exchangedTokens struct {
 	refreshToken string
 	idToken      string
 	expiresIn    int64
+	expiresAt    time.Time
 	scope        string
 }
 
@@ -79,10 +80,16 @@ func (c *Client) exchange(ctx context.Context, code, verifier string) (tokens ex
 		if response != nil && response.Body != nil {
 			response.Body.Close()
 		}
+		if ctx.Err() != nil {
+			return exchangedTokens{}, ctx.Err()
+		}
 		return exchangedTokens{}, bffError(core.KindIAMUnavailable, operation, 0, true)
 	}
 	defer response.Body.Close()
 	body, err := readOAuthJSON(response)
+	if err != nil && ctx.Err() != nil {
+		return exchangedTokens{}, ctx.Err()
+	}
 	if response.StatusCode != http.StatusOK {
 		var endpoint tokenResponse
 		if err == nil && decodeUniqueJSON(body, &endpoint) == nil {
@@ -153,10 +160,16 @@ func (c *Client) loadUserInfo(ctx context.Context, accessToken string) (identity
 		if response != nil && response.Body != nil {
 			response.Body.Close()
 		}
+		if ctx.Err() != nil {
+			return userInfo{}, ctx.Err()
+		}
 		return userInfo{}, bffError(core.KindIAMUnavailable, operation, 0, true)
 	}
 	defer response.Body.Close()
 	body, err := readOAuthJSON(response)
+	if err != nil && ctx.Err() != nil {
+		return userInfo{}, ctx.Err()
+	}
 	if response.StatusCode != http.StatusOK {
 		return userInfo{}, statusOAuthError(operation, response.StatusCode)
 	}

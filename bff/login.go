@@ -16,6 +16,9 @@ import (
 
 func (c *Client) LoginHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if !allowOnlyMethod(w, request, http.MethodGet) {
+			return
+		}
 		if err := c.beginLogin(w, request); err != nil {
 			writeBFFError(w, err)
 		}

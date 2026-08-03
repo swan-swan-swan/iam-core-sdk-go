@@ -395,7 +395,11 @@ func TestCallbackRejectsMalformedCookieCodeAndMethod(t *testing.T) {
 	for _, request := range tests {
 		response := httptest.NewRecorder()
 		client.CallbackHandler().ServeHTTP(response, request)
-		if response.Code != http.StatusBadRequest {
+		wantStatus := http.StatusBadRequest
+		if request.Method != http.MethodGet {
+			wantStatus = http.StatusMethodNotAllowed
+		}
+		if response.Code != wantStatus {
 			t.Fatalf("%s status=%d", request.Method, response.Code)
 		}
 	}

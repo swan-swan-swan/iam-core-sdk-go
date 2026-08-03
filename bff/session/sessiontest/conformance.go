@@ -1,0 +1,526 @@
+package sessiontest
+
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/bff/session"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
+)
+
+var epoch = time.Date(2026, time.August, 3, 12, 0, 0, 0, time.UTC)
+
+type Clock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *Clock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *Clock) Set(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = now
+}
+
+func (c *Clock) Advance(duration time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(duration)
+}
+
+type Factory func(testing.TB, *Clock) session.Backend
+
+func Run(t *testing.T, factory Factory) {
+	t.Helper()
+
+	t.Run("flow is consumed exactly once", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		flow := fullFlow("flow-once", clock.Now().Add(time.Minute))
+		mustNoError(t, backend.PutFlow(context.Background(), flow))
+
+		const contenders = 16
+		var wait sync.WaitGroup
+		results := make(chan error, contenders)
+		for range contenders {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				_, err := backend.ConsumeFlow(context.Background(), flow.ID)
+				results <- err
+			}()
+		}
+		wait.Wait()
+		close(results)
+
+		var consumed, missing int
+		for err := range results {
+			switch {
+			case err == nil:
+				consumed++
+			case errors.Is(err, session.ErrNotFound):
+				missing++
+			default:
+				t.Fatalf("unexpected consume error: %v", err)
+			}
+		}
+		if consumed != 1 || missing != contenders-1 {
+			t.Fatalf("consumed = %d, missing = %d", consumed, missing)
+		}
+	})
+
+	t.Run("flow expiry uses an exclusive boundary", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+
+		expired := fullFlow("flow-put-expired", clock.Now())
+		if err := backend.PutFlow(ctx, expired); !errors.Is(err, session.ErrExpired) {
+			t.Fatalf("put expired flow error = %v", err)
+		}
+
+		flow := fullFlow("flow-consume-expired", clock.Now().Add(time.Minute))
+		mustNoError(t, backend.PutFlow(ctx, flow))
+		clock.Advance(time.Minute)
+		if _, err := backend.ConsumeFlow(ctx, flow.ID); !errors.Is(err, session.ErrExpired) {
+			t.Fatalf("consume expired flow error = %v", err)
+		}
+		if _, err := backend.ConsumeFlow(ctx, flow.ID); !errors.Is(err, session.ErrNotFound) {
+			t.Fatalf("consume removed flow error = %v", err)
+		}
+	})
+
+	t.Run("flow input and output are defensive copies", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		flow := fullFlow("flow-copy", clock.Now().Add(time.Minute))
+		mustNoError(t, backend.PutFlow(ctx, flow))
+		flow.State = "mutated"
+		flow.CodeVerifier = "mutated"
+
+		got, err := backend.ConsumeFlow(ctx, flow.ID)
+		mustNoError(t, err)
+		if got == flow {
+			t.Fatal("ConsumeFlow returned the caller's Flow pointer")
+		}
+		if got.State != "state-original" || got.CodeVerifier != "verifier-original" {
+			t.Fatalf("stored flow was mutated: %#v", got)
+		}
+	})
+
+	t.Run("session create and get make deep defensive copies", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-copy", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		mutateSession(item)
+
+		first, err := backend.Get(ctx, item.ID)
+		mustNoError(t, err)
+		assertOriginalSession(t, first, 1)
+		mutateSession(first)
+
+		second, err := backend.Get(ctx, item.ID)
+		mustNoError(t, err)
+		assertOriginalSession(t, second, 1)
+	})
+
+	t.Run("session create rejects duplicate and expired state", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-create", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		replacement := fullSession(item.ID, clock.Now())
+		replacement.Tokens.AccessToken = "replacement"
+		if err := backend.Create(ctx, replacement); !errors.Is(err, session.ErrConflict) {
+			t.Fatalf("duplicate create error = %v", err)
+		}
+		stored, err := backend.Get(ctx, item.ID)
+		mustNoError(t, err)
+		if stored.Tokens.AccessToken != "access-original" {
+			t.Fatal("duplicate create replaced the session")
+		}
+
+		absolute := fullSession("session-absolute-expired", clock.Now())
+		absolute.ExpiresAt = clock.Now()
+		if err := backend.Create(ctx, absolute); !errors.Is(err, session.ErrExpired) {
+			t.Fatalf("absolute expiry error = %v", err)
+		}
+		idle := fullSession("session-idle-expired", clock.Now())
+		idle.IdleExpiresAt = clock.Now()
+		if err := backend.Create(ctx, idle); !errors.Is(err, session.ErrExpired) {
+			t.Fatalf("idle expiry error = %v", err)
+		}
+	})
+
+	t.Run("session compare and swap is versioned and atomic", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-cas", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		next := fullSession(item.ID, clock.Now())
+		next.Version = 2
+		next.Tokens.AccessToken = "access-next"
+
+		const contenders = 16
+		var wait sync.WaitGroup
+		results := make(chan error, contenders)
+		for range contenders {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				results <- backend.CompareAndSwap(ctx, item.ID, 1, next)
+			}()
+		}
+		wait.Wait()
+		close(results)
+
+		var swapped, conflicts int
+		for err := range results {
+			switch {
+			case err == nil:
+				swapped++
+			case errors.Is(err, session.ErrConflict):
+				conflicts++
+			default:
+				t.Fatalf("unexpected CAS error: %v", err)
+			}
+		}
+		if swapped != 1 || conflicts != contenders-1 {
+			t.Fatalf("swapped = %d, conflicts = %d", swapped, conflicts)
+		}
+		stored, err := backend.Get(ctx, item.ID)
+		mustNoError(t, err)
+		if stored.Version != 2 || stored.Tokens.AccessToken != "access-next" {
+			t.Fatalf("stored version/token = %d/%q", stored.Version, stored.Tokens.AccessToken)
+		}
+	})
+
+	t.Run("session compare and swap enforces IDs versions and copies", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-cas-invariants", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+
+		badID := fullSession(item.ID, clock.Now())
+		badID.Version = 2
+		if err := backend.CompareAndSwap(ctx, "other", 1, badID); err == nil {
+			t.Fatal("CAS accepted a different argument ID")
+		}
+		badPayload := fullSession("other", clock.Now())
+		badPayload.Version = 2
+		if err := backend.CompareAndSwap(ctx, item.ID, 1, badPayload); err == nil {
+			t.Fatal("CAS accepted a different payload ID")
+		}
+		badVersion := fullSession(item.ID, clock.Now())
+		badVersion.Version = 3
+		if err := backend.CompareAndSwap(ctx, item.ID, 1, badVersion); err == nil {
+			t.Fatal("CAS accepted a skipped payload version")
+		}
+
+		next := fullSession(item.ID, clock.Now())
+		next.Version = 2
+		mustNoError(t, backend.CompareAndSwap(ctx, item.ID, 1, next))
+		mutateSession(next)
+		stored, err := backend.Get(ctx, item.ID)
+		mustNoError(t, err)
+		assertOriginalSession(t, stored, 2)
+	})
+
+	t.Run("session expiry is reported once and removes state", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-expiry", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		clock.Set(item.IdleExpiresAt)
+		if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrExpired) {
+			t.Fatalf("expired get error = %v", err)
+		}
+		if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrNotFound) {
+			t.Fatalf("removed get error = %v", err)
+		}
+	})
+
+	t.Run("delete is idempotent", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-delete", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		mustNoError(t, backend.Delete(ctx, item.ID))
+		mustNoError(t, backend.Delete(ctx, item.ID))
+		if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrNotFound) {
+			t.Fatalf("deleted get error = %v", err)
+		}
+	})
+
+	t.Run("refresh leases are mutually exclusive and releasable", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-lease", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		lease, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+		mustNoError(t, err)
+		if !lease.Valid(ctx) {
+			t.Fatal("fresh lease is invalid")
+		}
+		if _, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute); !errors.Is(err, session.ErrConflict) {
+			t.Fatalf("second lease error = %v", err)
+		}
+		mustNoError(t, lease.Release(ctx))
+		if lease.Valid(ctx) {
+			t.Fatal("released lease is valid")
+		}
+		second, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+		mustNoError(t, err)
+		mustNoError(t, second.Release(ctx))
+	})
+
+	t.Run("expired lease is rejected at the expiry boundary", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-expired-lease", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		lease, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+		mustNoError(t, err)
+		clock.Advance(time.Minute)
+		if lease.Valid(ctx) {
+			t.Fatal("lease remained valid at ExpiresAt")
+		}
+		next := fullSession(item.ID, clock.Now())
+		next.Version = 2
+		if err := backend.CompareAndSwapWithLease(ctx, lease, item.ID, 1, next); !errors.Is(err, session.ErrLeaseLost) {
+			t.Fatalf("expired leased CAS error = %v", err)
+		}
+		if err := backend.DeleteWithLease(ctx, lease, item.ID, 1); !errors.Is(err, session.ErrLeaseLost) {
+			t.Fatalf("expired leased delete error = %v", err)
+		}
+		if err := lease.Release(ctx); !errors.Is(err, session.ErrLeaseLost) {
+			t.Fatalf("expired release error = %v", err)
+		}
+	})
+
+	t.Run("new fencing token rejects a stale lease", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-fence", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		stale, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+		mustNoError(t, err)
+		clock.Advance(time.Minute)
+		current, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+		mustNoError(t, err)
+		if err := stale.Release(ctx); !errors.Is(err, session.ErrLeaseLost) {
+			t.Fatalf("stale release error = %v", err)
+		}
+		if !current.Valid(ctx) {
+			t.Fatal("stale release invalidated current lease")
+		}
+		next := fullSession(item.ID, clock.Now())
+		next.Version = 2
+		if err := backend.CompareAndSwapWithLease(ctx, stale, item.ID, 1, next); !errors.Is(err, session.ErrLeaseLost) {
+			t.Fatalf("stale leased CAS error = %v", err)
+		}
+		mustNoError(t, backend.CompareAndSwapWithLease(ctx, current, item.ID, 1, next))
+		mustNoError(t, current.Release(ctx))
+	})
+
+	t.Run("leased compare and swap validates session and deep copies", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		first := fullSession("session-lease-first", clock.Now())
+		second := fullSession("session-lease-second", clock.Now())
+		mustNoError(t, backend.Create(ctx, first))
+		mustNoError(t, backend.Create(ctx, second))
+		lease, err := backend.AcquireRefreshLease(ctx, first.ID, time.Minute)
+		mustNoError(t, err)
+
+		wrong := fullSession(second.ID, clock.Now())
+		wrong.Version = 2
+		if err := backend.CompareAndSwapWithLease(ctx, lease, second.ID, 1, wrong); !errors.Is(err, session.ErrLeaseLost) {
+			t.Fatalf("cross-session leased CAS error = %v", err)
+		}
+		next := fullSession(first.ID, clock.Now())
+		next.Version = 2
+		mustNoError(t, backend.CompareAndSwapWithLease(ctx, lease, first.ID, 1, next))
+		mutateSession(next)
+		stored, err := backend.Get(ctx, first.ID)
+		mustNoError(t, err)
+		assertOriginalSession(t, stored, 2)
+		mustNoError(t, lease.Release(ctx))
+	})
+
+	t.Run("delete with lease checks version and invalidates lease", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-delete-lease", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		lease, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+		mustNoError(t, err)
+		if err := backend.DeleteWithLease(ctx, lease, item.ID, 2); !errors.Is(err, session.ErrConflict) {
+			t.Fatalf("wrong-version delete error = %v", err)
+		}
+		if !lease.Valid(ctx) {
+			t.Fatal("version conflict invalidated lease")
+		}
+		mustNoError(t, backend.DeleteWithLease(ctx, lease, item.ID, 1))
+		if lease.Valid(ctx) {
+			t.Fatal("successful delete left lease valid")
+		}
+		if _, err := backend.Get(ctx, item.ID); !errors.Is(err, session.ErrNotFound) {
+			t.Fatalf("deleted session get error = %v", err)
+		}
+	})
+
+	t.Run("concurrent refresh acquisition has one owner", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		item := fullSession("session-concurrent-lease", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+
+		const contenders = 32
+		var wait sync.WaitGroup
+		results := make(chan leaseResult, contenders)
+		for range contenders {
+			wait.Add(1)
+			go func() {
+				defer wait.Done()
+				lease, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+				results <- leaseResult{lease: lease, err: err}
+			}()
+		}
+		wait.Wait()
+		close(results)
+
+		var owner session.Lease
+		var acquired, conflicts int
+		for result := range results {
+			switch {
+			case result.err == nil:
+				acquired++
+				owner = result.lease
+			case errors.Is(result.err, session.ErrConflict):
+				conflicts++
+			default:
+				t.Fatalf("unexpected acquire error: %v", result.err)
+			}
+		}
+		if acquired != 1 || conflicts != contenders-1 {
+			t.Fatalf("acquired = %d, conflicts = %d", acquired, conflicts)
+		}
+		if owner == nil || !owner.Valid(ctx) {
+			t.Fatal("winning lease is not valid")
+		}
+		mustNoError(t, owner.Release(ctx))
+	})
+
+	t.Run("refresh lease requires a live session", func(t *testing.T) {
+		backend, clock := newBackend(t, factory)
+		ctx := context.Background()
+		if _, err := backend.AcquireRefreshLease(ctx, "missing", time.Minute); !errors.Is(err, session.ErrNotFound) {
+			t.Fatalf("missing session acquire error = %v", err)
+		}
+		item := fullSession("session-acquire-expired", clock.Now())
+		mustNoError(t, backend.Create(ctx, item))
+		clock.Set(item.ExpiresAt)
+		if _, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute); !errors.Is(err, session.ErrExpired) {
+			t.Fatalf("expired session acquire error = %v", err)
+		}
+	})
+}
+
+type leaseResult struct {
+	lease session.Lease
+	err   error
+}
+
+func newBackend(t testing.TB, factory Factory) (session.Backend, *Clock) {
+	t.Helper()
+	clock := &Clock{now: epoch}
+	return factory(t, clock), clock
+}
+
+func fullFlow(id string, expiresAt time.Time) *session.Flow {
+	return &session.Flow{
+		ID:           id,
+		State:        "state-original",
+		Nonce:        "nonce-original",
+		CodeVerifier: "verifier-original",
+		ClientID:     "client-original",
+		RedirectURL:  "https://client.example/callback",
+		ReturnTo:     "/dashboard",
+		CreatedAt:    epoch,
+		ExpiresAt:    expiresAt,
+	}
+}
+
+func fullSession(id string, now time.Time) *session.Session {
+	return &session.Session{
+		ID:      id,
+		Version: 1,
+		Tokens: session.TokenSet{
+			AccessToken:       "access-original",
+			TokenType:         "Bearer",
+			RefreshToken:      "refresh-original",
+			IDToken:           "id-original",
+			AccessTokenExpiry: now.Add(10 * time.Minute),
+			GrantedScopes:     []string{"openid", "profile"},
+		},
+		Auth:          sessionAuth(now),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+		LastSeenAt:    now,
+		ExpiresAt:     now.Add(2 * time.Hour),
+		IdleExpiresAt: now.Add(time.Hour),
+	}
+}
+
+func sessionAuth(now time.Time) (auth core.AuthContext) {
+	auth.Subject = "subject-original"
+	auth.Issuer = "https://issuer.example"
+	auth.Audience = []string{"client-original"}
+	auth.TokenID = "token-id-original"
+	auth.IssuedAt = now
+	auth.NotBefore = now
+	auth.ExpiresAt = now.Add(10 * time.Minute)
+	auth.Scopes = []string{"openid", "profile"}
+	auth.Groups = []string{"group-original"}
+	auth.Username = "username-original"
+	auth.DisplayName = "display-original"
+	auth.Email = "user@example.com"
+	auth.DecisionID = "decision-original"
+	auth.ReasonCode = "reason-original"
+	auth.TraceID = "trace-original"
+	return auth
+}
+
+func mutateSession(item *session.Session) {
+	item.Tokens.AccessToken = "mutated"
+	item.Tokens.GrantedScopes[0] = "mutated"
+	item.Auth.Subject = "mutated"
+	item.Auth.Audience[0] = "mutated"
+	item.Auth.Scopes[0] = "mutated"
+	item.Auth.Groups[0] = "mutated"
+}
+
+func assertOriginalSession(t testing.TB, item *session.Session, version uint64) {
+	t.Helper()
+	if item.Version != version || item.Tokens.AccessToken != "access-original" ||
+		item.Tokens.GrantedScopes[0] != "openid" || item.Auth.Subject != "subject-original" ||
+		item.Auth.Audience[0] != "client-original" || item.Auth.Scopes[0] != "openid" ||
+		item.Auth.Groups[0] != "group-original" {
+		t.Fatalf("session was not deeply copied: %#v", item)
+	}
+}
+
+func mustNoError(t testing.TB, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatal(err)
+	}
+}

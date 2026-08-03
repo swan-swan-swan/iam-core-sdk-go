@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -98,16 +99,147 @@ type logicalLeaseBackend struct {
 	deadlines map[string]time.Time
 }
 
+func TestLogicalLeaseBackendPreservesDelegateConcurrency(t *testing.T) {
+	clock := new(sessiontest.Clock)
+	clock.Set(time.Unix(1, 0))
+	probe := newAcquireProbeBackend()
+	backend := &logicalLeaseBackend{
+		Backend:   probe,
+		clock:     clock,
+		deadlines: make(map[string]time.Time),
+	}
+	results := make(chan error, 2)
+	for range 2 {
+		go func() {
+			_, err := backend.AcquireRefreshLease(context.Background(), "session", time.Minute)
+			results <- err
+		}()
+	}
+
+	<-probe.entered
+	timer := time.NewTimer(500 * time.Millisecond)
+	defer timer.Stop()
+	concurrent := false
+	select {
+	case <-probe.entered:
+		concurrent = true
+	case <-timer.C:
+	}
+	close(probe.release)
+	for range 2 {
+		if err := <-results; err != nil {
+			t.Fatal("delegate acquisition failed:", err)
+		}
+	}
+	if !concurrent || probe.maxInFlight.Load() != 2 {
+		t.Fatalf("maximum delegate acquisitions in flight = %d, want 2", probe.maxInFlight.Load())
+	}
+}
+
+func TestLogicalLeaseBackendDoesNotBlockCanceledDelegate(t *testing.T) {
+	clock := new(sessiontest.Clock)
+	clock.Set(time.Unix(1, 0))
+	probe := newAcquireProbeBackend()
+	backend := &logicalLeaseBackend{
+		Backend:   probe,
+		clock:     clock,
+		deadlines: make(map[string]time.Time),
+	}
+	first := make(chan error, 1)
+	go func() {
+		_, err := backend.AcquireRefreshLease(context.Background(), "session", time.Minute)
+		first <- err
+	}()
+	<-probe.entered
+
+	ctx, cancel := context.WithCancel(context.Background())
+	second := make(chan error, 1)
+	go func() {
+		_, err := backend.AcquireRefreshLease(ctx, "session", time.Minute)
+		second <- err
+	}()
+	cancel()
+
+	timer := time.NewTimer(500 * time.Millisecond)
+	defer timer.Stop()
+	returnedBeforeRelease := false
+	var secondErr error
+	select {
+	case secondErr = <-second:
+		returnedBeforeRelease = true
+	case <-timer.C:
+	}
+	close(probe.release)
+	if err := <-first; err != nil {
+		t.Fatal("first delegate acquisition failed:", err)
+	}
+	if !returnedBeforeRelease {
+		secondErr = <-second
+	}
+	if !errors.Is(secondErr, context.Canceled) {
+		t.Fatal("canceled delegate returned the wrong error")
+	}
+	if !returnedBeforeRelease {
+		t.Fatal("canceled delegate waited for an unrelated acquisition")
+	}
+}
+
+type acquireProbeBackend struct {
+	session.Backend
+	entered     chan struct{}
+	release     chan struct{}
+	inFlight    atomic.Int32
+	maxInFlight atomic.Int32
+}
+
+func newAcquireProbeBackend() *acquireProbeBackend {
+	return &acquireProbeBackend{
+		entered: make(chan struct{}, 2),
+		release: make(chan struct{}),
+	}
+}
+
+func (b *acquireProbeBackend) AcquireRefreshLease(
+	ctx context.Context,
+	_ string,
+	_ time.Duration,
+) (session.Lease, error) {
+	inFlight := b.inFlight.Add(1)
+	defer b.inFlight.Add(-1)
+	for {
+		maximum := b.maxInFlight.Load()
+		if inFlight <= maximum || b.maxInFlight.CompareAndSwap(maximum, inFlight) {
+			break
+		}
+	}
+	b.entered <- struct{}{}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-b.release:
+		return probeLease{}, nil
+	}
+}
+
+type probeLease struct{}
+
+func (probeLease) Valid(context.Context) bool    { return true }
+func (probeLease) Release(context.Context) error { return nil }
+
 func (b *logicalLeaseBackend) AcquireRefreshLease(
 	ctx context.Context,
 	sessionID string,
 	duration time.Duration,
 ) (session.Lease, error) {
 	b.mu.Lock()
-	defer b.mu.Unlock()
-
+	expire := false
 	if deadline, ok := b.deadlines[sessionID]; ok && !b.clock.Now().Before(deadline) {
 		delete(b.deadlines, sessionID)
+		expire = true
+	}
+	b.mu.Unlock()
+
+	if expire {
 		if err := b.client.PExpire(ctx, leaseKey(b.prefix, sessionID), 0).Err(); err != nil {
 			return nil, err
 		}
@@ -116,7 +248,9 @@ func (b *logicalLeaseBackend) AcquireRefreshLease(
 	if err != nil {
 		return nil, err
 	}
+	b.mu.Lock()
 	b.deadlines[sessionID] = b.clock.Now().Add(duration)
+	b.mu.Unlock()
 	return lease, nil
 }
 
@@ -161,6 +295,13 @@ func testRawRedisLeaseExpiry(t *testing.T, client *goredis.Client) {
 		t.Fatal("short raw Redis lease was not initially valid")
 	}
 	waitForLeaseExpiry(t, lease)
+	current, err := backend.AcquireRefreshLease(t.Context(), item.ID, 5*time.Second)
+	if err != nil {
+		t.Fatal("reacquire after raw Redis lease expiry:", err)
+	}
+	if !current.Valid(t.Context()) {
+		t.Fatal("reacquired raw Redis lease was not valid")
+	}
 
 	next := *item
 	next.Version = 2
@@ -171,13 +312,15 @@ func testRawRedisLeaseExpiry(t *testing.T, client *goredis.Client) {
 	if err := lease.Release(t.Context()); !errors.Is(err, session.ErrLeaseLost) {
 		t.Fatal("raw Redis released a physically expired lease")
 	}
-
-	current, err := backend.AcquireRefreshLease(t.Context(), item.ID, 100*time.Millisecond)
+	stored, err := backend.Get(t.Context(), item.ID)
 	if err != nil {
-		t.Fatal("reacquire after raw Redis lease expiry:", err)
+		t.Fatal("get Session after stale lease operations:", err)
+	}
+	if stored.Version != 1 {
+		t.Fatal("stale lease operation changed the Session")
 	}
 	if !current.Valid(t.Context()) {
-		t.Fatal("reacquired raw Redis lease was not valid")
+		t.Fatal("stale lease operation invalidated the current lease")
 	}
 	if err := current.Release(t.Context()); err != nil {
 		t.Fatal("release reacquired raw Redis lease:", err)
@@ -199,20 +342,37 @@ func waitForLeaseExpiry(t *testing.T, lease session.Lease) {
 	}
 }
 
+func TestRedisOptionsSanitizesMalformedEndpoint(t *testing.T) {
+	const (
+		username = "endpoint-user-secret"
+		password = "endpoint-password-secret"
+		endpoint = "redis://" + username + ":" + password + "@localhost/%zz"
+	)
+	_, err := redisOptions(endpoint)
+	if !errors.Is(err, errInvalidEndpoint) {
+		t.Fatal("malformed endpoint returned the wrong error classification")
+	}
+	for _, secret := range []string{endpoint, username, password, "%zz"} {
+		if strings.Contains(err.Error(), secret) {
+			t.Fatal("malformed endpoint error exposed input material")
+		}
+	}
+}
+
 func redisOptions(endpoint string) (*goredis.Options, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil {
-		return nil, err
+		return nil, errInvalidEndpoint
 	}
 	if parsed.Scheme != "redis" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return nil, &url.Error{Op: "parse", URL: "redis endpoint", Err: errInvalidEndpoint}
+		return nil, errInvalidEndpoint
 	}
 
 	database := 0
 	if path := strings.TrimPrefix(parsed.EscapedPath(), "/"); path != "" {
 		database, err = strconv.Atoi(path)
 		if err != nil || database < 0 {
-			return nil, &url.Error{Op: "parse", URL: "redis endpoint", Err: errInvalidEndpoint}
+			return nil, errInvalidEndpoint
 		}
 	}
 	username := ""
@@ -229,11 +389,7 @@ func redisOptions(endpoint string) (*goredis.Options, error) {
 	}, nil
 }
 
-type endpointError struct{}
-
-func (endpointError) Error() string { return "invalid Redis endpoint" }
-
-var errInvalidEndpoint endpointError
+var errInvalidEndpoint = errors.New("invalid Redis endpoint")
 
 func integrationPrefix(name string) string {
 	digest := sha256.Sum256([]byte(name))

@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -34,3 +35,16 @@ func TestRemoteKeysReturnsInstalledCacheWhenRefreshIsThrottled(t *testing.T) {
 type fixedJWKSClock struct{ now time.Time }
 
 func (clock fixedJWKSClock) Now() time.Time { return clock.now }
+
+func TestRemoteKeysPrioritizesCallerCancellationOverCompletedFetch(t *testing.T) {
+	for range 100 {
+		completed := &jwksInflight{done: make(chan struct{}), keys: []jose.JSONWebKey{{KeyID: "test-key"}}}
+		close(completed.done)
+		set := &keySet{inflight: completed}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		if _, err := set.remoteKeys(ctx); !errors.Is(err, context.Canceled) {
+			t.Fatalf("remoteKeys() error = %v, want context.Canceled", err)
+		}
+	}
+}

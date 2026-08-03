@@ -4,6 +4,8 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -98,6 +100,69 @@ func TestKnownKIDBadSignatureDoesNotRefreshJWKS(t *testing.T) {
 	}
 	if got := issuer.JWKSCalls.Load(); got != 1 {
 		t.Fatalf("JWKS calls = %d, want no refresh for known kid", got)
+	}
+}
+
+func TestVerifyAccessTokenPreservesCancellationDuringSharedJWKSFetch(t *testing.T) {
+	issuer := newCoreIssuer(t, core.Metadata{CodeChallengeMethodsSupported: []string{"S256"}, IDTokenSigningAlgValuesSupported: []string{"RS256"}})
+	runtime, err := core.New(t.Context(), core.Config{IssuerURL: issuer.Server.URL, Audiences: []string{"portal"}, HTTPClient: issuer.Server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := &tokenSigner{PrivateKey: issuer.Key, Issuer: issuer.Server.URL, Audience: "portal", KeyID: "test-key"}
+	raw := signer.AccessToken(t, signer.validClaims())
+	started, release := make(chan struct{}, 1), make(chan struct{})
+	issuer.blockJWKS(started, release)
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	go func() {
+		_, err := runtime.VerifyAccessToken(ctx, raw)
+		result <- err
+	}()
+	<-started
+	cancel()
+	verificationErr := <-result
+	close(release)
+	if !errors.Is(verificationErr, context.Canceled) {
+		t.Fatalf("VerifyAccessToken() error = %v, want context.Canceled", verificationErr)
+	}
+	if _, err := runtime.VerifyAccessToken(t.Context(), raw); err != nil {
+		t.Fatalf("shared JWKS fetch did not remain usable: %v", err)
+	}
+	if got := issuer.JWKSCalls.Load(); got != 1 {
+		t.Fatalf("JWKS calls = %d, want one shared fetch", got)
+	}
+}
+
+func TestVerifyAccessTokenClassifiesJWKSFetchFailureAsUnavailable(t *testing.T) {
+	issuer := newCoreIssuer(t, core.Metadata{CodeChallengeMethodsSupported: []string{"S256"}, IDTokenSigningAlgValuesSupported: []string{"RS256"}})
+	runtime, err := core.New(t.Context(), core.Config{IssuerURL: issuer.Server.URL, Audiences: []string{"portal"}, HTTPClient: issuer.Server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	signer := &tokenSigner{PrivateKey: issuer.Key, Issuer: issuer.Server.URL, Audience: "portal", KeyID: "test-key"}
+	raw := signer.AccessToken(t, signer.validClaims())
+	issuer.Server.Close()
+
+	for attempt := 1; attempt <= 2; attempt++ {
+		_, err = runtime.VerifyAccessToken(t.Context(), raw)
+		var typed *core.Error
+		if !errors.As(err, &typed) || typed.Kind != core.KindIAMUnavailable || !typed.Retryable || !errors.Is(err, core.ErrUnavailable) {
+			t.Fatalf("attempt %d error = %#v, want retryable IAM unavailable", attempt, err)
+		}
+		if strings.Contains(err.Error(), issuer.Server.URL) {
+			t.Fatalf("attempt %d leaked JWKS endpoint: %v", attempt, err)
+		}
+	}
+}
+
+func TestVerifyAccessTokenPreservesCallerDeadline(t *testing.T) {
+	runtime, signer := newCoreRuntime(t)
+	ctx, cancel := context.WithDeadline(t.Context(), time.Now().Add(-time.Second))
+	defer cancel()
+	_, err := runtime.VerifyAccessToken(ctx, signer.AccessToken(t, signer.validClaims()))
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("VerifyAccessToken() error = %v, want context.DeadlineExceeded", err)
 	}
 }
 

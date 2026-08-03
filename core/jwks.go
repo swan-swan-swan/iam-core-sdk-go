@@ -10,6 +10,8 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 )
 
+var errJWKSUnavailable = errors.New("jwks unavailable")
+
 type keySet struct {
 	url             string
 	transport       transportClient
@@ -17,11 +19,12 @@ type keySet struct {
 	refreshInterval time.Duration
 	clock           Clock
 
-	mu           sync.RWMutex
-	keys         []jose.JSONWebKey
-	inflight     *jwksInflight
-	lastRefresh  time.Time
-	hasRefreshed bool
+	mu             sync.RWMutex
+	keys           []jose.JSONWebKey
+	inflight       *jwksInflight
+	lastRefresh    time.Time
+	lastRefreshErr error
+	hasRefreshed   bool
 }
 
 type jwksInflight struct {
@@ -35,8 +38,11 @@ func newKeySet(url string, transport transportClient, timeout, refreshInterval t
 }
 
 func (set *keySet) verifySignature(ctx context.Context, rawToken string) ([]byte, error) {
-	if ctx == nil || ctx.Err() != nil {
+	if ctx == nil {
 		return nil, errors.New("verification unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
 	header, err := parseProtectedHeader(rawToken)
 	if err != nil {
@@ -54,7 +60,7 @@ func (set *keySet) verifySignature(ctx context.Context, rawToken string) ([]byte
 	}
 	keys, err := set.remoteKeys(ctx)
 	if err != nil {
-		return nil, errors.New("jwks unavailable")
+		return nil, err
 	}
 	if payload, _, verifyErr := verifyWithKeyID(signature, keys, header.keyID); verifyErr == nil {
 		return payload, nil
@@ -84,13 +90,20 @@ func (set *keySet) cachedKeys() []jose.JSONWebKey {
 }
 
 func (set *keySet) remoteKeys(ctx context.Context) ([]jose.JSONWebKey, error) {
+	if ctx == nil {
+		return nil, errors.New("verification unavailable")
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	set.mu.Lock()
 	if set.inflight == nil {
 		now := set.clock.Now()
 		if set.hasRefreshed && now.Sub(set.lastRefresh) < set.refreshInterval {
 			keys := append([]jose.JSONWebKey(nil), set.keys...)
+			err := set.lastRefreshErr
 			set.mu.Unlock()
-			return keys, nil
+			return keys, err
 		}
 		set.lastRefresh = now
 		set.hasRefreshed = true
@@ -101,6 +114,7 @@ func (set *keySet) remoteKeys(ctx context.Context) ([]jose.JSONWebKey, error) {
 			keys, err := set.fetch(fetchContext)
 			set.mu.Lock()
 			current.keys, current.err = keys, err
+			set.lastRefreshErr = err
 			if err == nil {
 				set.keys = append([]jose.JSONWebKey(nil), keys...)
 			}
@@ -117,6 +131,9 @@ func (set *keySet) remoteKeys(ctx context.Context) ([]jose.JSONWebKey, error) {
 	case <-ctx.Done():
 		return nil, ctx.Err()
 	case <-current.done:
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		set.mu.RLock()
 		defer set.mu.RUnlock()
 		return append([]jose.JSONWebKey(nil), current.keys...), current.err
@@ -128,22 +145,22 @@ func (set *keySet) fetch(ctx context.Context) ([]jose.JSONWebKey, error) {
 	defer cancel()
 	request, err := http.NewRequestWithContext(requestContext, http.MethodGet, set.url, nil)
 	if err != nil {
-		return nil, errors.New("invalid jwks endpoint")
+		return nil, errJWKSUnavailable
 	}
 	response, err := set.transport.getJSON(request)
 	if err != nil || response.status != http.StatusOK {
-		return nil, errors.New("jwks endpoint unavailable")
+		return nil, errJWKSUnavailable
 	}
 	var document jose.JSONWebKeySet
 	if decodeJSON(response.body, &document) != nil || len(document.Keys) == 0 {
-		return nil, errors.New("invalid jwks response")
+		return nil, errJWKSUnavailable
 	}
 	for index := range document.Keys {
 		key := &document.Keys[index]
 		if !key.Valid() || key.KeyID == "" ||
 			(key.Algorithm != "" && key.Algorithm != "RS256") ||
 			(key.Use != "" && key.Use != "sig") {
-			return nil, errors.New("invalid jwks key")
+			return nil, errJWKSUnavailable
 		}
 	}
 	return document.Keys, nil

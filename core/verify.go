@@ -48,12 +48,21 @@ func (r *Runtime) verifyToken(ctx context.Context, raw, operation, expectedNonce
 	}
 	started := r.clock.Now()
 	defer func() { r.record(ctx, operation, resultErr, started) }()
-	if ctx == nil || ctx.Err() != nil || strings.TrimSpace(raw) == "" ||
+	if ctx != nil && ctx.Err() != nil {
+		return AuthContext{}, ctx.Err()
+	}
+	if ctx == nil || strings.TrimSpace(raw) == "" ||
 		(requireNonce && strings.TrimSpace(expectedNonce) == "") {
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
 	}
 	payload, err := r.keys.verifySignature(ctx, raw)
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return AuthContext{}, err
+		}
+		if errors.Is(err, errJWKSUnavailable) {
+			return AuthContext{}, coreError(KindIAMUnavailable, operation, 0, true)
+		}
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
 	}
 	var claims tokenClaims
@@ -90,11 +99,11 @@ func (r *Runtime) verifyToken(ctx context.Context, raw, operation, expectedNonce
 	scopes := strings.Fields(claims.Scope)
 	auth = AuthContext{
 		Subject: claims.Subject, Issuer: claims.Issuer, Audience: append([]string(nil), audience...),
-		TokenID: claims.TokenID, IssuedAt: time.Unix(issuedAt.unixSeconds, 0), ExpiresAt: time.Unix(expiresAt.unixSeconds, 0),
+		TokenID: claims.TokenID, IssuedAt: issuedAt.asTime(), ExpiresAt: expiresAt.asTime(),
 		Scopes: append([]string(nil), scopes...),
 	}
 	if notBefore != nil {
-		auth.NotBefore = time.Unix(notBefore.unixSeconds, 0)
+		auth.NotBefore = notBefore.asTime()
 	}
 	if slices.Contains(scopes, "profile") {
 		auth.Username, auth.DisplayName = claims.Username, claims.DisplayName
@@ -138,6 +147,7 @@ func normalizeGroups(groups []string) []string {
 type numericDate struct {
 	value       *big.Rat
 	unixSeconds int64
+	nanoseconds int64
 }
 
 func decodeNumericDate(raw json.RawMessage, required bool) (*numericDate, error) {
@@ -172,7 +182,18 @@ func decodeNumericDate(raw json.RawMessage, required bool) (*numericDate, error)
 	if !whole.IsInt64() {
 		return nil, errors.New("invalid numeric date")
 	}
-	return &numericDate{value: value, unixSeconds: whole.Int64()}, nil
+	wholeValue := new(big.Rat).SetInt(whole)
+	fraction := new(big.Rat).Sub(value, wholeValue)
+	scaledNanos := new(big.Rat).Mul(fraction, new(big.Rat).SetInt64(int64(time.Second)))
+	nanos := new(big.Int).Quo(scaledNanos.Num(), scaledNanos.Denom())
+	if !nanos.IsInt64() {
+		return nil, errors.New("invalid numeric date")
+	}
+	return &numericDate{value: value, unixSeconds: whole.Int64(), nanoseconds: nanos.Int64()}, nil
+}
+
+func (date *numericDate) asTime() time.Time {
+	return time.Unix(date.unixSeconds, date.nanoseconds)
 }
 
 func numericDateFromTime(value time.Time) *big.Rat {

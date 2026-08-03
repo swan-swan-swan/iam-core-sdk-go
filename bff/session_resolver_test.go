@@ -11,7 +11,10 @@ import (
 
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/bff/session"
 	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
+	"github.com/swan-swan-swan/iam-core-client-sdk-go/httpauthz"
 )
+
+var _ httpauthz.SessionResolver = (*Client)(nil)
 
 type countingSessionBackend struct {
 	session.Backend

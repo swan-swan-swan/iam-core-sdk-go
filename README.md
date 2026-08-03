@@ -1,262 +1,199 @@
 # IAM Core Go Client SDK
 
-`github.com/swan-swan-swan/iam-core-client-sdk-go` 为 Go Web/BFF 和 HTTP API
-提供 OIDC 登录、服务端 Session、Bearer 认证及逐请求 PDP 权限决策。本文与示例使用
-IAM Core Issuer `https://iam.wuhl-goose.top`；库本身要求显式配置 `IssuerURL`。最低
-支持 Go 1.24。
+本仓库提供面向 IAM Core v1.8.1 的 Go SDK。v0.2 是一次干净的破坏性重写，
+不与 v0.1 源码兼容；请按[迁移指南](docs/migration-v0.1-to-v0.2.md)替换旧根 Client，
+不要在旧接口外再包一层适配器。
 
-## 十分钟 Quickstart
+当前只支持三个入口：服务端 Core/BFF 浏览器流程、基于 `net/http` 的 HTTP Resource
+Server，以及可选的 Gin/Redis 独立 adapter。RPC 暂不支持，IAM 管理 API 不受支持；
+SDK 不创建 Application、OIDC Client、资源目录、Policy 或审计对象。
 
-### 1. 准备 IAM Core 配置
+最低 Go 版本为 1.24。协议和安全边界见
+[IAM Core v1.8.1 契约](docs/iam-core-v1.8.1-contract.md)，版本矩阵见
+[COMPATIBILITY.md](COMPATIBILITY.md)。
 
-开始编码前，在 IAM Core 中完成以下配置：
+## 安装
 
-1. 创建 Application 和 Confidential OIDC Client，并安全保存 Client ID、Client Secret。
-2. 注册业务回调地址，例如 `https://asset.example.com/auth/callback`。它必须与 SDK 的
-   `RedirectURL` 完全一致。
-3. 允许 `openid profile email roles` Scope；`openid` 是必需项，其余 Scope 决定可见的
-   身份字段。
-4. 在 Application 的资源目录中登记 Resource Server、Resource 和允许的 HTTP Method，
-   例如 `asset-api`、`assets`、`GET`。
-
-SDK 不会自动创建这些管理面对象。
-
-### 2. 安装
+根模块、Gin adapter 与 Redis adapter 是三个独立发布模块，按实际需要分别安装：
 
 ```bash
-go get github.com/swan-swan-swan/iam-core-client-sdk-go@v0.1.0
+go get github.com/swan-swan-swan/iam-core-client-sdk-go@v0.2.0
+go get github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/gin@v0.2.0
+go get github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/redis@v0.2.0
 ```
 
-### 3. 配置 Redis 与 AES-256-GCM Session
+根模块不会传递引入 Gin、go-redis、Docker、Moby 或 Testcontainers。Redis 和 Gin
+adapter 也必须使用各自的 module tag，不能只安装根模块后假定它们存在。
 
-生产或多副本部署应使用 Redis Backend。当前 AES 密钥必须是随机的 32 字节；以下命令
-生成 base64 配置值，请放入 Secret Manager 或 Kubernetes Secret，不要提交到仓库：
+## 入口一：Core/BFF 浏览器流程
 
-```bash
-openssl rand -base64 32
-```
+完整可编译配置在 [`examples/bff`](examples/bff)。启动期先用 `core.New` 完成 Discovery，
+再把 Runtime、Confidential Client 配置和 Session Backend 交给 `bff.New`：
 
 ```go
-package main
-
-import (
-    "crypto/rand"
-    "encoding/base64"
-    "fmt"
-    "os"
-    "time"
-
-    goredis "github.com/redis/go-redis/v9"
-    "github.com/swan-swan-swan/iam-core-client-sdk-go/session"
-    redisstore "github.com/swan-swan-swan/iam-core-client-sdk-go/session/redis"
-)
-
-type wallClock struct{}
-
-func (wallClock) Now() time.Time { return time.Now() }
-
-func newSessionBackend() (*redisstore.Backend, goredis.UniversalClient, error) {
-    key, err := base64.StdEncoding.DecodeString(os.Getenv("IAMCORE_SESSION_AES_KEY"))
-    if err != nil || len(key) != 32 {
-        return nil, nil, fmt.Errorf("IAMCORE_SESSION_AES_KEY must encode exactly 32 bytes")
-    }
-    codec, err := session.NewAESGCMCodec(
-        session.Key{ID: "2026-07", Bytes: key},
-        nil,
-    )
-    if err != nil {
-        return nil, nil, err
-    }
-    redisClient := goredis.NewUniversalClient(&goredis.UniversalOptions{
-        Addrs:    []string{os.Getenv("IAMCORE_REDIS_ADDR")},
-        Username: os.Getenv("IAMCORE_REDIS_USERNAME"),
-        Password: os.Getenv("IAMCORE_REDIS_PASSWORD"),
-    })
-    backend, err := redisstore.New(redisClient, redisstore.Options{
-        Prefix: "iamcore",
-        Codec:  codec,
-        Clock:  wallClock{},
-        Random: rand.Reader,
-    })
-    if err != nil {
-        _ = redisClient.Close()
-        return nil, nil, err
-    }
-    return backend, redisClient, nil
-}
-```
-
-调用方负责在进程退出时关闭 `redis.UniversalClient`。`session/memory` 仅适用于测试、
-开发和单进程：它不会在多个副本间共享 Session 或 Refresh Lock。
-
-### 4. 构造根 Client
-
-```go
-redisBackend, redisClient, err := newSessionBackend()
-if err != nil {
-    return err
-}
-defer redisClient.Close()
-
 ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 defer cancel()
 
-client, err := iamcore.New(ctx, iamcore.Config{
-    IssuerURL:            "https://iam.wuhl-goose.top",
-    ClientID:             os.Getenv("IAMCORE_CLIENT_ID"),
-    ClientSecretProvider: iamcore.StaticSecret(os.Getenv("IAMCORE_CLIENT_SECRET")),
-    RedirectURL:          "https://asset.example.com/auth/callback",
-    Scopes:               []string{"openid", "profile", "email", "roles"},
-    Session: iamcore.SessionConfig{
-        Backend: redisBackend,
-    },
+runtime, err := core.New(ctx, core.Config{
+    IssuerURL: issuerURL,
+    Audiences: []string{clientID},
 })
 if err != nil {
     return err
 }
-```
 
-`iamcore.New` 会校验配置并执行 OIDC Discovery。默认超时分别是 Discovery/JWKS 5 秒、
-Token/UserInfo 10 秒、PDP 3 秒、Refresh Lock 15 秒；调用方更早的 Context Deadline
-优先。生产 Cookie 默认是 `__Host-iam_core_session`，并启用 `Secure`、`HttpOnly`、
-`SameSite=Lax` 和 `Path=/`。
-
-### 5. 注册登录、回调与登出
-
-```go
-mux := http.NewServeMux()
-mux.Handle("/auth/login", client.LoginHandler())
-mux.Handle("/auth/callback", client.CallbackHandler())
-mux.Handle("/auth/logout", client.LogoutHandler())
-```
-
-浏览器访问 `/auth/login?return_to=%2Fprofile` 开始登录。`return_to` 默认只接受以一个
-斜杠开头的站内相对地址；绝对地址必须预先配置到 `AllowedReturnToURLs`。回调会一次性
-消费 state/nonce 登录事务，建立新 Session 后跳回已验证地址。登出先删除本地 Session，
-再请求 IAM Core 远端登出；不会因远端错误恢复本地会话。
-
-### 6. 从 Context 读取身份
-
-```go
-profile := client.Authenticate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-    identity, ok := iamcore.IdentityFromContext(r.Context())
-    if !ok {
-        http.Error(w, "unauthenticated", http.StatusUnauthorized)
-        return
-    }
-    _ = json.NewEncoder(w).Encode(identity)
-}))
-mux.Handle("/profile", profile)
-```
-
-还可使用 `CredentialSourceFromContext` 区分 Session/Bearer，或在授权 Handler 内通过
-`DecisionFromContext` 获取 PDP 的 Decision ID、Reason Code、Request ID 和 Trace ID。
-这些 Helper 返回防御性副本。
-
-### 7. 显式声明资源权限
-
-`net/http` 根 Client 的真实签名接收一个 `iamcore.Permission`；HTTP Method 自动取当前
-请求，不能由业务方伪造：
-
-```go
-mux.Handle("/assets", client.RequirePermission(iamcore.Permission{
-    ResourceServer: "asset-api",
-    Resource:       "assets",
-})(http.HandlerFunc(listAssets)))
-```
-
-Gin 适配器的签名是 `ginmw.RequirePermission(client, resourceServer, resource)`：
-
-```go
-router.GET(
-    "/assets",
-    ginmw.RequirePermission(client, "asset-api", "assets"),
-    listAssets,
-)
-```
-
-`RequirePermission` 已包含认证，不需要再叠加 `Authenticate`。它每次请求都会调用 PDP，
-不缓存 allow/deny，并在 IAM Core、PDP、审计或响应协议异常时失败关闭。
-
-### 8. Session Cookie 与 Bearer 行为
-
-- Session Cookie 仅保存随机 Session ID。使用 Redis Backend 并配置 Codec 时，Redis 中的
-  Session/Flow Payload 由 AES-256-GCM 加密。
-- Memory Backend 保存进程内结构，仅适用于开发、测试和单进程。自定义 Backend 的
-  静态加密、访问控制、备份保护和其他存储安全由其实现方负责。
-- `Authorization: Bearer <access_token>` 通过 UserInfo 在线验证，不创建 Session，也不会
-  自动刷新。
-- Cookie 和 Bearer 同时出现时，仅当 Bearer 与当前 Session Access Token 完全一致才接受；
-  不一致返回 `401 credential_conflict`。
-- Session Access Token 临近过期时在分布式锁保护下刷新。PDP 首次返回 401 时，Session
-  最多强制刷新并重新决策一次；Bearer 不执行该恢复。
-- SDK 不对 Token、Refresh、PDP 超时或 5xx 隐式重试。
-
-### 9. Roles 不是授权依据
-
-`identity.Roles` 只用于身份展示和非安全 UX。Access Token 不携带角色，角色变化也不能
-替代资源策略。SDK 不提供本地角色授权；所有安全放行必须使用
-`RequirePermission`/PDP。
-
-### 10. v0.1 限制
-
-- 仅支持 Authorization Code + Confidential Client；IAM Core 当前没有可依赖的 PKCE
-  契约，因此 SDK 不提供 Public Client 或 PKCE。
-- UserInfo 当前没有稳定的 organization Claim。未知字段可从 `Identity.ExtraClaims`
-  读取，但不能把它当作已承诺的强类型组织模型。
-- 不包含用户、角色、Application、资源目录、策略或审计管理 API。
-- 不支持 SPA、移动端、CLI、Echo、Fiber，也不自动注册 IAM Core 配置。
-
-### 11. 密钥轮换、TLS 与可观测性
-
-Client Secret 应由实现 `iamcore.ClientSecretProvider` 的动态 Provider 从 Secret Manager
-读取，以支持轮换；`iamcore.StaticSecret` 只适合固定生命周期的进程配置。Provider 不得
-记录返回值。
-
-AES Keyring 轮换时，把新密钥设为 primary，把仍可能存在于 Redis 的旧密钥放入
-fallback：
-
-```go
-codec, err := session.NewAESGCMCodec(
-    session.Key{ID: "2026-08", Bytes: newKey},
-    []session.Key{{ID: "2026-07", Bytes: oldKey}},
-)
-```
-
-新写入只使用 primary；fallback 仅用于解密。确认旧 Session/Flow 全部过期或已重写后，
-才能移除旧密钥。Key ID 不是秘密，密钥字节本身不得进入日志、错误、指标或 Trace。
-
-私有 CA 通过 `Config.HTTPClient` 注入自定义 `tls.Config.RootCAs`；SDK 不提供跳过证书
-校验的配置。保留 TLS 验证与合理超时，例如：
-
-```go
-transport := http.DefaultTransport.(*http.Transport).Clone()
-transport.TLSClientConfig = &tls.Config{
-    MinVersion: tls.VersionTLS12,
-    RootCAs:    privateCAPool,
-}
-config.HTTPClient = &http.Client{
-    Transport: transport,
-    CheckRedirect: func(*http.Request, []*http.Request) error {
-        return http.ErrUseLastResponse
+backend := memory.New(memory.Options{}) // 只用于开发、测试和单进程
+client, err := bff.New(bff.Config{
+    Core:         runtime,
+    ClientID:     clientID,
+    ClientSecret: bff.SecretProviderFunc(func(context.Context) (string, error) {
+        return clientSecret, nil
+    }),
+    RedirectURL: redirectURL,
+    Scopes:      bff.DefaultScopes(),
+    Backend:     backend,
+    SessionCookie: http.Cookie{
+        Name:        "__Host-example_session",
+        Value:       "",
+        Path:        "/",
+        Domain:      "",
+        HttpOnly:    true,
+        Secure:      true,
+        SameSite:    http.SameSiteLaxMode,
+        MaxAge:      0,
+        Expires:     time.Time{},
+        Partitioned: false,
     },
+    FlowCookie: http.Cookie{
+        Name:        "__Host-example_flow",
+        Value:       "",
+        Path:        "/",
+        Domain:      "",
+        HttpOnly:    true,
+        Secure:      true,
+        SameSite:    http.SameSiteLaxMode,
+        MaxAge:      0,
+        Expires:     time.Time{},
+        Partitioned: false,
+    },
+})
+```
+
+Cookie 名称没有平台级默认值，调用方必须显式提供。生产 Cookie 必须是 host-only
+（`Domain` 留空）、`Path=/`、`HttpOnly`、`Secure`、`SameSite=Lax`，且名称使用
+`__Host-` 前缀。示例中的 `__Host-example_session` 和 `__Host-example_flow` 分别承载
+不透明 Session ID 与一次性 Flow ID；Token、Client Secret、PKCE verifier、nonce 和
+state 均不进入 Cookie。示例的内部 HTTP listener 必须部署在可信 TLS 终止代理之后，
+浏览器访问地址和注册的 redirect URL 必须是 HTTPS；不要为了本地直连而移除 Secure。
+
+默认 scopes 恰好是 `openid profile email groups`。roles 不被接受，也不会作为
+`groups` 的回退来源。返回身份只反映实际 granted scope；refresh 会原子替换 Token、
+AuthContext、Groups 和 Granted Scopes，绝不回退到 requested scopes。
+
+BFF 强制 PKCE S256，不支持 plain 或无 PKCE。state、nonce、精确 redirect URL、
+return target、一次性 Flow 和 Cookie 边界都失败关闭。注册的 Handler 方法边界为：
+
+```go
+mux.Handle("GET /auth/login", client.LoginHandler())
+mux.Handle("GET /auth/callback", client.CallbackHandler())
+mux.Handle("GET /me", client.MeHandler())
+mux.Handle("POST /auth/logout/local", client.LocalLogoutHandler())
+mux.Handle("POST /auth/logout/central", client.CentralLogoutHandler())
+```
+
+本地登出只删除当前应用的服务端 Session 并清 Cookie，不声称退出其他平台。集中登出先完成
+同样的本地删除，再调用 IAM Core end-session；远端失败不会恢复已经删除的本地 Session。
+
+`bff/session/memory` 仅用于开发、测试和单进程。多副本生产部署应选用下文的 Redis
+adapter 或实现完整 `bff/session.Backend` 契约。
+
+## 入口二：HTTP Resource Server
+
+可运行示例位于 [`examples/nethttp`](examples/nethttp)。路由必须先在 Manifest 中以稳定
+Method、Resource Server code 和 Resource code 声明，再通过 Binder 完成唯一绑定和启动期
+完整性校验：
+
+```go
+manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
+    Name: "list_orders", Method: http.MethodGet,
+    ResourceServer: "orders_api", Resource: "orders",
+}})
+if err != nil {
+    return err
+}
+binder := manifest.NewBinder()
+route, err := binder.Bind("list_orders")
+if err != nil {
+    return err
+}
+
+pdp, err := httpauthz.NewPDPClient(httpauthz.PDPConfig{IssuerURL: issuerURL})
+if err != nil {
+    return err
+}
+service, err := httpauthz.New(httpauthz.Config{Verifier: runtime, PDP: pdp})
+if err != nil {
+    return err
+}
+protected, err := service.Require(route, http.HandlerFunc(listOrders))
+if err != nil {
+    return err
+}
+if err := binder.Validate(); err != nil {
+    return err
 }
 ```
 
-注入的 Client 会保留调用方定义的重定向行为；不要移除上述失败关闭策略，否则远端
-重定向可能扩大凭证发送边界。
+未编译、未绑定、重复或未完全绑定的路由在启动期被拒绝。`Require` 先验证唯一 credential，
+再对该请求执行恰好一次 PDP 调用（一次 PDP），只有合法 `allowed=true` 才执行下游 Handler。
+deny、401、503、超时、网络错误、审计失败和畸形 envelope 全部失败关闭；不缓存 allow/deny，
+不使用 groups 或本地规则降级。PDP 401 不会刷新凭证或重试 PDP。
 
-`Config.Hooks` 接受实现 `Observe(context.Context, iamcore.Observation)` 的 Hook，可桥接
-Prometheus/OpenTelemetry。事件只包含低基数的 operation、outcome、credential source
-和 duration；不要附加 Token、Cookie、Client Secret、授权码、Session ID 或完整身份。
-SDK 会传播 `traceparent`、`tracestate` 与 `X-Request-ID`。
+Bearer 与 BFF Session Cookie 同时存在会直接返回 credential conflict，不比较两份凭证内容。
+BFF Session resolver 只允许在 PDP 调用之前按本地过期窗口主动 refresh；PDP 返回后授权链路
+不会再改变凭证。
 
-## 可运行示例
+## 入口三：可选 Gin/Redis adapters
 
-- `go run ./examples/nethttp`
-- `go run ./examples/gin`
-- `go run ./examples/redis`
+Gin adapter 是 `httpauthz.Service` 的薄适配层，不重新实现认证或授权：
 
-示例通过环境变量读取配置，且不会输出 Secret。Redis 示例要求
-`IAMCORE_SESSION_AES_KEY` 是 base64 编码的精确 32 字节密钥。版本支持范围见
-[COMPATIBILITY.md](COMPATIBILITY.md)，版本变更见 [CHANGELOG.md](CHANGELOG.md)。
+```go
+handler, err := ginadapter.Require(service, route)
+router.GET("/orders", handler, listOrders)
+```
+
+示例位于 [`adapters/gin/example`](adapters/gin/example)，必须从
+`github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/gin` 独立安装。
+
+Redis adapter 实现 `bff/session.Backend`。它用 AES-256-GCM 加密完整 Flow/Session
+payload，并使用 generation-bound、fenced、server-time leases 保护 refresh 原子提交。
+这些存储细节不是公共 API；调用方只需构造 `Codec` 与 Backend，并自行管理
+`redis.UniversalClient` 生命周期：
+
+```go
+codec, err := redisadapter.NewAESGCMCodec(
+    redisadapter.Key{ID: keyID, Bytes: keyBytes},
+    fallbackKeys,
+)
+backend, err := redisadapter.New(redisClient, redisadapter.Options{
+    Prefix: prefix,
+    Codec:  codec,
+})
+```
+
+每个 AES key 必须是 32 字节；新写入只使用 primary，fallback 只用于解密轮换期旧数据。
+密钥、Token、Cookie、Session/Flow ID 与原始 Redis 错误不得记录。示例位于
+[`adapters/redis/example`](adapters/redis/example)，模块路径为
+`github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/redis`。
+
+## 安全与错误边界
+
+- OIDC Access Token 与 ID Token 只接受 RS256，并验证 `kid/iss/aud/sub/jti/iat/exp`、
+  可选 `nbf`，登录 ID Token 还验证 nonce。
+- Discovery/JWKS 可以缓存；未知 `kid` 仅受控刷新。可信 JWKS 不能替代新的 PDP allow。
+- Token、Refresh 和 PDP 都不做 SDK 级自动重试；Authorization Code 与 Refresh Token
+  具有一次性或轮换语义。
+- 错误与观测只公开稳定分类和低基数字段，不包含 Token、Authorization Header、
+  Client Secret、授权码、PKCE verifier、Cookie、Session/Flow ID 或完整 URL query。
+- SDK 不支持 no-PKCE、bare decision、dual-credential 或 legacy roles 兼容模式，也没有
+  打开这些模式的配置开关。

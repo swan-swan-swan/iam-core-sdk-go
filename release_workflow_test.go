@@ -91,6 +91,51 @@ func TestPostReleaseWorkflowAuthenticatesPrivateModulesAndSupportsManualRecovery
 	}
 }
 
+func TestDiffCheckSupportsManualWorkflowDispatch(t *testing.T) {
+	repository := t.TempDir()
+	for _, args := range [][]string{
+		{"init", "-q"},
+		{"config", "user.name", "CI Test"},
+		{"config", "user.email", "ci-test@example.com"},
+	} {
+		command := exec.Command("git", args...)
+		command.Dir = repository
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("manual recovery\n"), 0o644); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	for _, args := range [][]string{{"add", "README.md"}, {"commit", "-q", "-m", "fixture"}} {
+		command := exec.Command("git", args...)
+		command.Dir = repository
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
+		}
+	}
+	headCommand := exec.Command("git", "rev-parse", "HEAD")
+	headCommand.Dir = repository
+	headOutput, err := headCommand.Output()
+	if err != nil {
+		t.Fatalf("resolve fixture HEAD: %v", err)
+	}
+
+	workingDirectory, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get working directory: %v", err)
+	}
+	command := exec.Command("bash", filepath.Join(workingDirectory, ".github/scripts/check-diff.sh"))
+	command.Dir = repository
+	command.Env = append(os.Environ(),
+		"IAMCORE_CI_EVENT_NAME=workflow_dispatch",
+		"IAMCORE_CI_HEAD_SHA="+strings.TrimSpace(string(headOutput)),
+	)
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("manual workflow diff check: %v\n%s", err, output)
+	}
+}
+
 func TestReleaseScriptRejectsMalformedVersionBeforeGit(t *testing.T) {
 	script := releaseScriptFromWorkflow(t)
 	for _, test := range []struct {

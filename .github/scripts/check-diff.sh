@@ -44,6 +44,14 @@ push)
 	git cat-file -e "${before_sha}^{commit}"
 	git diff --check "${before_sha}..${head_sha}" --
 	;;
+workflow_dispatch)
+	if git rev-parse --verify "${head_sha}^" >/dev/null 2>&1; then
+		git diff --check "${head_sha}^..${head_sha}" --
+	else
+		empty_tree=$(git hash-object -t tree /dev/null)
+		git diff --check "$empty_tree" "$head_sha" --
+	fi
+	;;
 *)
 	echo "unsupported event" >&2
 	exit 1

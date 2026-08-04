@@ -196,6 +196,15 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B main origin/main
+          if git merge-base --is-ancestor "$RELEASE_SHA" HEAD; then
+            echo "release commit ${RELEASE_SHA} is already contained in main" >&2
+            exit 1
+          fi
           git merge --no-ff "$RELEASE_SHA" -m "chore(release): ${release_tag}"
+          merge_parents=($(git rev-list --parents -n 1 HEAD))
+          if [[ "${#merge_parents[@]}" -ne 3 || "${merge_parents[2]}" != "$RELEASE_SHA" ]]; then
+            echo "merge commit must include the release revision as its second parent" >&2
+            exit 1
+          fi
           git tag -a "${release_tag}" -m "IAM Core SDK ${release_tag}"
           git push --atomic origin main "${release_tag}"

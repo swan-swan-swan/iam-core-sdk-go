@@ -258,14 +258,27 @@ Extend `module_layout_v030_test.go` to require both new adapter `go.mod` paths, 
 
 - [ ] **Step 4: Tidy and verify both modules in the development workspace**
 
-Run:
+Because Go 1.24 `go mod tidy` is module-scoped and does not resolve the unpublished root through `go.work`, run tidy with a temporary local replace that is removed by an exit trap and must never be committed:
 
 ```bash
-(cd runtime/adapters/gin && go mod tidy && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
-(cd runtime/adapters/redis && go mod tidy && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
+(
+  cd runtime/adapters/gin
+  go mod edit -replace=github.com/swan-swan-swan/iam-core-sdk-go=../../..
+  trap 'go mod edit -dropreplace=github.com/swan-swan-swan/iam-core-sdk-go' EXIT
+  go mod tidy
+)
+(
+  cd runtime/adapters/redis
+  go mod edit -replace=github.com/swan-swan-swan/iam-core-sdk-go=../../..
+  trap 'go mod edit -dropreplace=github.com/swan-swan-swan/iam-core-sdk-go' EXIT
+  go mod tidy
+)
+! rg -n '^replace ' runtime/adapters/gin/go.mod runtime/adapters/redis/go.mod
+(cd runtime/adapters/gin && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
+(cd runtime/adapters/redis && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
 ```
 
-Expected: both modules build and test against the local v0.3 root through `go.work`. Do not use `GOWORK=off` before `v0.3.0` exists remotely; standalone module resolution is a post-tag release verification.
+Expected: tidy and all tests PASS, and neither committed nested `go.mod` contains a `replace`. Tests resolve the local v0.3 root through `go.work`; do not use `GOWORK=off` before `v0.3.0` exists remotely because standalone module resolution is a post-tag release verification.
 
 - [ ] **Step 5: Commit adapter migration**
 

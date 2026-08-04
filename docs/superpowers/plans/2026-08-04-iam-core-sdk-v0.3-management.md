@@ -927,13 +927,20 @@ After the three v0.3.0 tags are published, a separate post-release job must veri
 Run:
 
 ```bash
-rg -n 'github.com/swan-swan-swan/iam-core-client-sdk-go' \
-  --glob '*.go' --glob 'go.mod' --glob 'go.work' --glob '.github/**' \
-  --glob '!docs/superpowers/**'
+(
+  go list -f '{{range .Imports}}{{println .}}{{end}}' ./...
+  cd runtime/adapters/gin && go list -f '{{range .Imports}}{{println .}}{{end}}' ./...
+  cd ../redis && go list -f '{{range .Imports}}{{println .}}{{end}}' ./...
+  cd ../../../integration && go list -f '{{range .Imports}}{{println .}}{{end}}' ./...
+) | if grep -F 'github.com/swan-swan-swan/iam-core-client-sdk-go'; then
+  exit 1
+fi
+! rg -n 'github.com/swan-swan-swan/iam-core-client-sdk-go' \
+  --glob 'go.mod' --glob 'go.work' --glob '.github/**'
 find . -type d -name rpc -not -path './.git/*'
 ```
 
-Expected: no old imports and no SDK RPC directory. Historical docs may name the old module only in migration and compatibility history.
+Expected: no live old imports, no old module path in current module/workflow metadata, and no SDK RPC directory. Contract tests and historical docs may name the old module only as migration/compatibility data.
 
 - [ ] **Step 7: Commit the release candidate**
 

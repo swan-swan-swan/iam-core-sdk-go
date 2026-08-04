@@ -450,15 +450,22 @@ git commit -m "ci: validate v0.3 runtime layout"
 
 - [ ] **Step 1: Search for unexpected old imports**
 
-Run:
+Inspect compiled package imports structurally, then search module/workflow metadata. This avoids treating the intentional legacy-module string in migration contract tests as a live import:
 
 ```bash
-rg -n 'github.com/swan-swan-swan/iam-core-client-sdk-go' \
-  --glob '*.go' --glob 'go.mod' --glob 'go.work' --glob '.github/**' \
-  --glob '!docs/superpowers/**'
+(
+  go list -f '{{range .Imports}}{{println .}}{{end}}' ./...
+  cd runtime/adapters/gin && go list -f '{{range .Imports}}{{println .}}{{end}}' ./...
+  cd ../redis && go list -f '{{range .Imports}}{{println .}}{{end}}' ./...
+  cd ../../../integration && go list -f '{{range .Imports}}{{println .}}{{end}}' ./...
+) | if grep -F 'github.com/swan-swan-swan/iam-core-client-sdk-go'; then
+  exit 1
+fi
+! rg -n 'github.com/swan-swan-swan/iam-core-client-sdk-go' \
+  --glob 'go.mod' --glob 'go.work' --glob '.github/**'
 ```
 
-Expected: no output.
+Expected: no live old imports and no old module path in current module/workflow metadata. Test fixtures and historical/migration documents may still name the old module as data.
 
 - [ ] **Step 2: Run the complete non-Docker verification**
 

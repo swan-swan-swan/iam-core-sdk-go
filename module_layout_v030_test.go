@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -113,6 +114,30 @@ require( // another direct dependency block
 	}
 }
 
+func TestV030ModuleLayoutUnquotesDirectRequirements(t *testing.T) {
+	moduleFile := filepath.Join(t.TempDir(), "go.mod")
+	contents := `module example.com/fixture
+
+go 1.24.0
+
+require "google.golang.org/grpc" v1.70.0
+
+require (
+	"example.com/\x64ubbo" v1.0.0
+	"example.com/\x74riple" v1.0.0
+)
+`
+	if err := os.WriteFile(moduleFile, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write fixture go.mod: %v", err)
+	}
+
+	got := strings.Join(directGoModRequirements(t, moduleFile), ",")
+	const want = "google.golang.org/grpc,example.com/dubbo,example.com/triple"
+	if got != want {
+		t.Fatalf("direct requirements = %q, want %q", got, want)
+	}
+}
+
 func assertNoRPCPublicSurface(t *testing.T, root string) {
 	t.Helper()
 	historicalDirectories := map[string]bool{
@@ -196,13 +221,25 @@ func directGoModRequirements(t *testing.T, path string) []string {
 			continue
 		}
 		if inRequireBlock && len(fields) >= 2 {
-			requirements = append(requirements, fields[0])
+			requirements = append(requirements, unquoteGoModString(t, path, fields[0]))
 		}
 		if !inRequireBlock && len(fields) >= 3 && fields[0] == "require" {
-			requirements = append(requirements, fields[1])
+			requirements = append(requirements, unquoteGoModString(t, path, fields[1]))
 		}
 	}
 	return requirements
+}
+
+func unquoteGoModString(t *testing.T, path, token string) string {
+	t.Helper()
+	if !strings.HasPrefix(token, `"`) {
+		return token
+	}
+	value, err := strconv.Unquote(token)
+	if err != nil {
+		t.Fatalf("unquote module path %q in %s: %v", token, path, err)
+	}
+	return value
 }
 
 func taskScopedGoSources(t *testing.T, root string) []string {

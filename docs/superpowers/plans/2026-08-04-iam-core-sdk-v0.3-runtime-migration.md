@@ -358,10 +358,18 @@ Run:
 ```bash
 go build ./examples/runtime/...
 go test ./examples/runtime/... -count=1
-(cd integration && go mod tidy && go test ./redis -run '^$' -count=1)
+(
+  cd integration
+  go mod edit -replace=github.com/swan-swan-swan/iam-core-sdk-go=..
+  go mod edit -replace=github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis=../runtime/adapters/redis
+  trap 'go mod edit -dropreplace=github.com/swan-swan-swan/iam-core-sdk-go; go mod edit -dropreplace=github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis' EXIT
+  go mod tidy
+)
+! rg -n '^replace ' integration/go.mod
+(cd integration && go test ./redis -run '^$' -count=1)
 ```
 
-Expected: examples PASS; the integration package compiles without starting Docker when `-run '^$'` selects no tests.
+Expected: examples PASS; integration tidy PASS with both temporary unpublished-module replaces removed afterward; the integration package compiles through `go.work` without starting Docker when `-run '^$'` selects no tests. Do not commit a replace in `integration/go.mod`.
 
 - [ ] **Step 5: Commit examples and integration wiring**
 

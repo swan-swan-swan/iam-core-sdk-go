@@ -171,7 +171,7 @@ OIDC Client 凭据创建响应中的 Secret 只返回一次。SDK 使用专用 `
 
 ### 6.5 `catalog`
 
-提供 HTTP Resource Catalog 查询，Resource Server、Resource、Action 的创建与更新，Method 到 Action Mapping 更新，未引用实体停用，以及 managed Catalog 显式发布。发布所需 revision/hash 是必填参数；SDK 不根据 Runtime Route Manifest 自动写入 Catalog。
+提供 HTTP Resource Catalog 查询，Resource Server、Resource、Action 的创建与更新，Method 到 Action Mapping 更新，未引用实体停用，以及 managed Catalog 显式发布。当前发布契约是无请求体的单次 `POST`，不虚构服务端尚未提供的 revision/hash 参数；SDK 也不根据 Runtime Route Manifest 自动写入 Catalog。
 
 ### 6.6 `policies`
 

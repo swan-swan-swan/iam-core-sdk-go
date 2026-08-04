@@ -3,6 +3,7 @@ name: CI
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -255,19 +256,34 @@ jobs:
 
   post_release:
     name: Verify published v0.3.0 modules
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    if: >-
+      always() &&
+      (
+        (github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.release.result == 'success') ||
+        github.event_name == 'workflow_dispatch'
+      )
     needs: release
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    permissions:
+      contents: read
     steps:
       - name: Set up Go 1.24
         uses: actions/setup-go@v5
         with:
           go-version: "1.24.x"
+      - name: Configure private module access
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
       - name: Resolve all published modules without the workspace
         shell: bash
         env:
           GOPROXY: direct
+          GOPRIVATE: github.com/swan-swan-swan/*
         run: |
           set -euo pipefail
           verification_directory=$(mktemp -d)

@@ -1,0 +1,12 @@
+go 1.24.0
+
+use (
+	.
+	./adapters/gin
+	./adapters/redis
+	./integration
+)
+
+replace github.com/swan-swan-swan/iam-core-client-sdk-go v0.2.0 => .
+
+replace github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/redis v0.2.0 => ./adapters/redis

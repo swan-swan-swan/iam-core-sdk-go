@@ -125,7 +125,9 @@ type Config struct {
 
 ### 5.3 Envelope 与元数据
 
-Management Client 严格解析 IAM Core 统一 envelope。成功响应必须具有合法 `code`、`message` 和与方法相符的 `data`；可选 `request_id`、`trace_id` 以安全元数据返回。解码拒绝重复 JSON key、尾随 JSON、错误字段类型、非零成功 code、超限 body 和缺失必需数据。允许同一 IAM Core v1.8.x 内新增不冲突字段。
+Management Client 严格解析 IAM Core 统一 envelope。所有响应必须存在 `code`、`message` 和 `data`；成功响应还要求零 `code` 以及与方法相符的非空数据，只有不接收结果的方法可接受 `data:null`。错误响应不解码领域结果，允许 null 或结构化 `data`。可选 `request_id`、`trace_id` 以安全元数据返回，空值表示服务端未提供。解码拒绝重复 JSON key、尾随 JSON、错误字段类型、非零成功 code、超限 body 和缺失必需数据。允许同一 IAM Core v1.8.x 内新增不冲突字段。
+
+每次 Management 调用最多产生一个终态观测事件：成功 Outcome 固定为 `success`，失败 Outcome 固定为最终错误 Kind。Observer panic 被隔离，不能改变调用返回值、触发重试或产生第二次 HTTP 请求。
 
 领域 Client 依赖共享 `Transport` 接口，以便测试注入，但普通调用方通过 `client.New(Config)` 构造真实实现。Transport 只负责一次请求、认证、envelope 和元数据，不包含领域路径或自动编排。
 

@@ -1,5 +1,7 @@
 # IAM Core Go SDK v0.3.0 Management and Release Implementation Plan
 
+> **Superseded execution plan:** 自 2026-08-04 起，本文件仅作为已确认 API、类型与端点的技术参考，不再按下方 11 个细粒度 Task 执行。未完成工作以 `2026-08-04-iam-core-sdk-v0.3-management-remaining.md` 的 6 个单层宏观任务为唯一执行计划；测试、修复、评审和提交均留在所属宏观任务内部。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Implement all 42 approved IAM Core platform-integration Management endpoints as hand-written, strongly typed Go clients and release them with the migrated Runtime as `v0.3.0`.
@@ -330,6 +332,8 @@ For each call:
 
 Never attach a Cookie or preserve a caller Jar.
 
+Emit at most one terminal `Event` per `Do`: `Outcome` is exactly `success` for success, otherwise the final `Error.Kind` string. Recover and ignore Observer panics so observation cannot change the returned result, trigger a retry, or cause another HTTP request.
+
 - [ ] **Step 4: Implement duplicate-safe envelope decoding**
 
 Use a token walk to reject duplicate keys at every object level before unmarshalling. Decode the outer shape as:
@@ -344,7 +348,7 @@ type envelope struct {
 }
 ```
 
-Require one complete JSON value, a nonblank message, safe correlation IDs, and `code == 0` for 2xx. Permit `data:null` only when the method passes `out == nil`. For non-2xx, preserve bounded structured `data` in `Error` and map status exactly: 401 unauthenticated, 403 forbidden, 404 not_found, 409 conflict, 429 rate_limited, 5xx iam_unavailable, other statuses protocol.
+Require one complete JSON value and require `code`, `message`, and `data` to be present for every status. Permit unknown non-conflicting outer fields for forward compatibility. `request_id` and `trace_id` are optional and may be empty; validate them when nonempty. Require a nonblank message and `code == 0` for 2xx. On 2xx, permit `data:null` only when the method passes `out == nil`; when `out != nil`, require non-null data and decode it strictly. For non-2xx, never decode `out`; permit null or structured `data`, defensively preserve bounded non-null data in `Error`, and map status exactly: 401 unauthenticated, 403 forbidden, 404 not_found, 409 conflict, 429 rate_limited, 5xx iam_unavailable, other statuses protocol. HTTP status determines the Kind; do not require a nonzero envelope code on error responses.
 
 - [ ] **Step 5: Run focused, fuzz, race, and leakage tests**
 

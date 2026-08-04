@@ -73,19 +73,50 @@ func TestV030ModuleLayout(t *testing.T) {
 
 	const legacyModule = "github.com/swan-swan-swan/iam-core-client-sdk-go"
 	for _, path := range taskScopedGoSources(t, root) {
-		parsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join(root, path), nil, parser.ImportsOnly)
-		if err != nil {
-			t.Fatalf("parse %s: %v", path, err)
-		}
-		for _, imported := range parsed.Imports {
-			importPath := strings.Trim(imported.Path.Value, "\"")
-			if importPath == legacyModule || strings.HasPrefix(importPath, legacyModule+"/") {
-				t.Errorf("%s imports legacy module path %q", path, importPath)
-			}
+		for _, importPath := range legacyImportsInGoFile(t, filepath.Join(root, path), legacyModule) {
+			t.Errorf("%s imports legacy module path %q", path, importPath)
 		}
 	}
 
 	assertNoRPCPublicSurface(t, root)
+}
+
+func TestV030ModuleLayoutUnquotesLegacyImportLiterals(t *testing.T) {
+	fixture := filepath.Join(t.TempDir(), "legacy_import_literals.go")
+	contents := "package fixture\n\nimport (\n" +
+		"\t_ `github.com/swan-swan-swan/iam-core-client-sdk-go/core`\n" +
+		"\t_ \"github.com/swan-swan-swan/iam-core-client-sdk-go/\\x62ff\"\n" +
+		")\n"
+	if err := os.WriteFile(fixture, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write legacy import fixture: %v", err)
+	}
+
+	const legacyModule = "github.com/swan-swan-swan/iam-core-client-sdk-go"
+	got := strings.Join(legacyImportsInGoFile(t, fixture, legacyModule), ",")
+	const want = "github.com/swan-swan-swan/iam-core-client-sdk-go/core,github.com/swan-swan-swan/iam-core-client-sdk-go/bff"
+	if got != want {
+		t.Fatalf("legacy imports = %q, want %q", got, want)
+	}
+}
+
+func legacyImportsInGoFile(t *testing.T, path, legacyModule string) []string {
+	t.Helper()
+	parsed, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+	if err != nil {
+		t.Fatalf("parse %s: %v", path, err)
+	}
+
+	var legacyImports []string
+	for _, imported := range parsed.Imports {
+		importPath, err := strconv.Unquote(imported.Path.Value)
+		if err != nil {
+			t.Fatalf("unquote import path %q in %s: %v", imported.Path.Value, path, err)
+		}
+		if importPath == legacyModule || strings.HasPrefix(importPath, legacyModule+"/") {
+			legacyImports = append(legacyImports, importPath)
+		}
+	}
+	return legacyImports
 }
 
 func TestV030ModuleLayoutParsesCommentedRequireBlocks(t *testing.T) {

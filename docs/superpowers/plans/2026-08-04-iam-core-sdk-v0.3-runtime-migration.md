@@ -414,6 +414,8 @@ runtime/adapters/redis/v0.3.0
 
 Keep `VERSION` at `0.2.0` and every committed test green. Management Task 11 adds the final tag assertions and changes `VERSION` atomically.
 
+While the renamed root module is committed with this prerelease version, add a fail-safe release-script guard before every Git operation. Only the exact pair `module github.com/swan-swan-swan/iam-core-sdk-go` and `VERSION` bytes `0.2.0\n` may exit successfully without releasing; every other module/version combination must fail explicitly rather than silently skip. Management Task 11 must remove or replace this temporary guard when it atomically switches to `0.3.0` and the three-tag release flow.
+
 - [ ] **Step 3: Add a no-RPC public surface check**
 
 In `module_layout_v030_test.go`, walk non-historical directories and reject a directory named `rpc` or direct `go.mod` requirements whose module path contains `dubbo`, `triple`, or a direct root `google.golang.org/grpc`. Explicitly skip `integration/go.sum` and indirect integration dependencies.

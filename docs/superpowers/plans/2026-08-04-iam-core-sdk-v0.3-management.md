@@ -890,6 +890,8 @@ Set `VERSION` to one line:
 0.3.0
 ```
 
+Remove or replace the Runtime plan's temporary prerelease-stage guard in the same commit. The exact new-module + `0.2.0` success-without-release branch must not remain once `VERSION` becomes `0.3.0`; replace it with the final release preflight below so a dev push can reach the three-tag flow only after all v0.3 metadata checks pass.
+
 Update the release job to preflight and atomically push:
 
 ```text

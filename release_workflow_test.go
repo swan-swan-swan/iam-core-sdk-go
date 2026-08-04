@@ -44,43 +44,47 @@ func TestDevPushReleaseWorkflowContract(t *testing.T) {
 	}
 }
 
-func TestReleaseScriptAcceptsValidVersionUntilFirstGitOperation(t *testing.T) {
+func TestReleaseScriptSafelySkipsRuntimePrereleaseBeforeGit(t *testing.T) {
 	result := runReleaseScript(t, releaseScriptFromWorkflow(t), []byte("0.2.0\n"), 99, 1, "")
-	if result.err == nil {
-		t.Fatal("valid VERSION unexpectedly completed after the fake Git fetch failure")
+	if result.err != nil {
+		t.Fatalf("runtime prerelease guard returned an error: %v", result.err)
 	}
-	if result.calls != "fetch origin main dev --tags\n" {
-		t.Fatalf("valid VERSION did not reach the expected first Git operation: %q", result.calls)
-	}
-}
-
-func TestReleaseScriptRejectsAlreadyContainedRevision(t *testing.T) {
-	result := runReleaseScript(t, releaseScriptFromWorkflow(t), []byte("0.2.0\n"), 0, 0, "")
-	if result.err == nil {
-		t.Fatal("already-contained release revision unexpectedly succeeded")
-	}
-	if !strings.Contains(result.calls, "merge-base --is-ancestor deadbeef HEAD\n") {
-		t.Fatalf("release script did not check whether the release revision is already contained: %q", result.calls)
-	}
-	for _, operation := range []string{"merge --no-ff", "tag -a", "push --atomic"} {
-		if strings.Contains(result.calls, operation) {
-			t.Fatalf("already-contained release revision reached forbidden Git operation %q: %q", operation, result.calls)
-		}
+	if result.calls != "" {
+		t.Fatalf("runtime prerelease guard reached Git operations: %q", result.calls)
 	}
 }
 
-func TestReleaseScriptRejectsMergeWithoutReleaseSHAAsSecondParent(t *testing.T) {
-	result := runReleaseScript(t, releaseScriptFromWorkflow(t), []byte("0.2.0\n"), 0, 1, "merge-commit first-parent another-sha")
-	if result.err == nil {
-		t.Fatal("merge with the wrong second parent unexpectedly succeeded")
-	}
-	if !strings.Contains(result.calls, "merge --no-ff deadbeef -m chore(release): v0.2.0\n") {
-		t.Fatalf("release script did not perform the expected merge: %q", result.calls)
-	}
-	for _, operation := range []string{"tag -a", "push --atomic"} {
-		if strings.Contains(result.calls, operation) {
-			t.Fatalf("invalid merge reached forbidden Git operation %q: %q", operation, result.calls)
-		}
+func TestReleaseScriptRejectsPrereleaseGuardMismatchesBeforeGit(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		version           []byte
+		moduleDeclaration string
+	}{
+		{
+			name:              "legacy module with prerelease version",
+			version:           []byte("0.2.0\n"),
+			moduleDeclaration: "module github.com/swan-swan-swan/iam-core-client-sdk-go",
+		},
+		{
+			name:              "new module with unprepared release version",
+			version:           []byte("0.3.0\n"),
+			moduleDeclaration: "module github.com/swan-swan-swan/iam-core-sdk-go",
+		},
+		{
+			name:              "new module with trailing module data",
+			version:           []byte("0.2.0\n"),
+			moduleDeclaration: "module github.com/swan-swan-swan/iam-core-sdk-go ",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := runReleaseScriptWithModule(t, releaseScriptFromWorkflow(t), test.version, test.moduleDeclaration)
+			if result.err == nil {
+				t.Fatal("prerelease-stage mismatch unexpectedly succeeded")
+			}
+			if result.calls != "" {
+				t.Fatalf("prerelease-stage mismatch reached Git operations: %q", result.calls)
+			}
+		})
 	}
 }
 
@@ -232,6 +236,10 @@ func assertReleaseJobContract(t *testing.T, release string) {
 		`^([0-9]+)\.([0-9]+)\.([0-9]+)$`,
 		`LC_ALL=C grep -axE '[0-9]+\.[0-9]+\.[0-9]+' VERSION`,
 		`LC_ALL=C wc -c < VERSION`,
+		`IFS= read -r root_module_declaration < go.mod`,
+		`"${root_module_declaration}" == "module github.com/swan-swan-swan/iam-core-sdk-go" && "${release_version}" == "0.2.0"`,
+		`release paused until Management Task 11 prepares v0.3.0`,
+		`prerelease-stage guard requires module github.com/swan-swan-swan/iam-core-sdk-go with VERSION 0.2.0`,
 		`release_tag="v${release_version}"`,
 		`git fetch origin main dev --tags`,
 		`refs/tags/${release_tag}`,
@@ -364,9 +372,22 @@ func releaseScriptFromWorkflow(t *testing.T) string {
 
 func runReleaseScript(t *testing.T, script string, version []byte, fetchExit, mergeBaseExit int, revList string) releaseScriptResult {
 	t.Helper()
+	return runReleaseScriptFixture(t, script, version, "module github.com/swan-swan-swan/iam-core-sdk-go", fetchExit, mergeBaseExit, revList)
+}
+
+func runReleaseScriptWithModule(t *testing.T, script string, version []byte, moduleDeclaration string) releaseScriptResult {
+	t.Helper()
+	return runReleaseScriptFixture(t, script, version, moduleDeclaration, 99, 1, "")
+}
+
+func runReleaseScriptFixture(t *testing.T, script string, version []byte, moduleDeclaration string, fetchExit, mergeBaseExit int, revList string) releaseScriptResult {
+	t.Helper()
 	directory := t.TempDir()
 	if err := os.WriteFile(filepath.Join(directory, "VERSION"), version, 0o600); err != nil {
 		t.Fatalf("write VERSION: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "go.mod"), []byte(moduleDeclaration+"\n"), 0o600); err != nil {
+		t.Fatalf("write go.mod: %v", err)
 	}
 
 	gitPath := filepath.Join(directory, "git")

@@ -185,6 +185,14 @@ jobs:
             echo "VERSION must use X.Y.Z format" >&2
             exit 1
           fi
+          IFS= read -r root_module_declaration < go.mod
+          if [[ "${root_module_declaration}" == "module github.com/swan-swan-swan/iam-core-sdk-go" && "${release_version}" == "0.2.0" ]]; then
+            echo "release paused until Management Task 11 prepares v0.3.0"
+            exit 0
+          fi
+          echo "prerelease-stage guard requires module github.com/swan-swan-swan/iam-core-sdk-go with VERSION 0.2.0" >&2
+          exit 1
+
           release_tag="v${release_version}"
 
           git fetch origin main dev --tags

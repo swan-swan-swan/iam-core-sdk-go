@@ -1,4 +1,4 @@
-package iamcore_test
+package iamcoresdk_test
 
 import (
 	"fmt"
@@ -27,7 +27,7 @@ func TestDevPushReleaseWorkflowContract(t *testing.T) {
 
 	script := releaseRunScript(t, release)
 	for _, test := range []struct {
-		name    string
+		name     string
 		contents []byte
 	}{
 		{name: "split line", contents: []byte("0.2\n.0\n")},

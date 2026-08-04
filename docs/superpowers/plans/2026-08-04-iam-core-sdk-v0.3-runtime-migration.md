@@ -112,6 +112,7 @@ Do not commit a knowingly failing branch state. Preserve the RED output as TDD e
 - Move: `internal/nilcheck/` → `runtime/internal/nilcheck/`
 - Move: `internal/random/` → `runtime/internal/random/`
 - Move: `contract_v181_test.go` → `runtime/contract_v181_test.go`
+- Modify: Runtime imports under `examples/bff/` and `examples/nethttp/` without moving those directories yet.
 - Modify: `go.mod`, `doc.go`, `documentation_test.go`, `module_layout_v030_test.go`
 - Test: all moved `*_test.go` files.
 
@@ -165,6 +166,8 @@ Mechanically replace imports using this exact mapping:
 
 Do not rename Go package declarations such as `package core`, `package bff`, or `package httpauthz`.
 
+Because `examples/bff` and `examples/nethttp` are still packages in the root module until Task 3 moves them, mechanically update only their Runtime imports to the new `runtime/*` paths in this task. Do not move the example directories or change example behavior yet.
+
 - [ ] **Step 3: Update the root package documentation**
 
 Replace `doc.go` with a documentation-only root package and no facade symbols:
@@ -185,8 +188,9 @@ Run:
 gofmt -w $(rg --files runtime -g '*.go') doc.go module_layout_v030_test.go documentation_test.go
 go mod tidy
 go test ./runtime/... -count=1
+go test ./examples/... -count=1
 go test -race ./runtime/... -count=1
-go vet ./runtime/...
+go vet ./runtime/... ./examples/...
 ```
 
 Expected: all pre-migration Runtime behavior tests PASS under their new import paths.
@@ -205,7 +209,7 @@ Expected: no Gin, go-redis, Docker, Moby, Testcontainers, Dubbo, Triple, or dire
 - [ ] **Step 6: Commit the Runtime package move**
 
 ```bash
-git add go.mod go.sum doc.go documentation_test.go module_layout_v030_test.go runtime
+git add go.mod go.sum doc.go documentation_test.go module_layout_v030_test.go runtime examples/bff examples/nethttp
 git commit -m "refactor(runtime): move v0.2 APIs under runtime"
 ```
 
@@ -293,6 +297,8 @@ git mv examples/nethttp examples/runtime/nethttp
 ```
 
 Update imports to `runtime/core`, `runtime/bff`, `runtime/bff/session/memory`, and `runtime/httpauthz`. Preserve all explicit secure Cookie, PKCE, scope, Manifest, and one-PDP example behavior.
+
+The Runtime import rewrite may already have been completed in Task 1 so the renamed root module could be tidied. Verify the imports here and keep this step limited to the directory move plus any remaining path-only correction.
 
 - [ ] **Step 2: Rewrite the integration module**
 

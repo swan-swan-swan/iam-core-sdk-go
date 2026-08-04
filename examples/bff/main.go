@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/bff"
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/bff/session/memory"
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session/memory"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
 )
 
 const startupTimeout = 10 * time.Second

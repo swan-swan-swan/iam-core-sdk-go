@@ -1,4 +1,4 @@
-package iamcore_test
+package iamcoresdk_test
 
 import (
 	"os"

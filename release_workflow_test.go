@@ -56,13 +56,37 @@ func TestReleaseWorkflowContract(t *testing.T) {
 	postRelease := releaseJob(t, workflow, "post_release")
 	for _, value := range []string{
 		"needs: release",
-		"if: github.event_name == 'push' && github.ref == 'refs/heads/dev'",
 		"GOWORK=off go mod download " + rootModule + "@v0.3.0",
 		"GOWORK=off go mod download " + ginModule + "@v0.3.0",
 		"GOWORK=off go mod download " + redisModule + "@v0.3.0",
 	} {
 		if !strings.Contains(postRelease, value) {
 			t.Errorf("post-release job missing %q", value)
+		}
+	}
+}
+
+func TestPostReleaseWorkflowAuthenticatesPrivateModulesAndSupportsManualRecovery(t *testing.T) {
+	raw, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatalf("read workflow: %v", err)
+	}
+	workflow := string(raw)
+	if !strings.Contains(workflow, "  workflow_dispatch:\n") {
+		t.Fatal("CI workflow has no manual recovery trigger")
+	}
+
+	postRelease := releaseJob(t, workflow, "post_release")
+	for _, value := range []string{
+		"always()",
+		"github.event_name == 'workflow_dispatch'",
+		"permissions:\n      contents: read",
+		"GITHUB_TOKEN: ${{ github.token }}",
+		`git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"`,
+		"GOPRIVATE: github.com/swan-swan-swan/*",
+	} {
+		if !strings.Contains(postRelease, value) {
+			t.Errorf("post-release private module recovery missing %q", value)
 		}
 	}
 }

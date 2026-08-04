@@ -3,7 +3,7 @@ package client
 import (
 	"encoding/json"
 	"fmt"
-	"sync"
+	"reflect"
 	"testing"
 )
 
@@ -29,43 +29,56 @@ func TestSensitiveStringRedactsAllDefaultFormattingAndJSON(t *testing.T) {
 	}
 }
 
-func TestSensitiveStringRevealIsSingleUseAcrossCopies(t *testing.T) {
-	value := NewSensitiveString("one-time-secret")
-	copyOfValue := value
-	if got := value.Reveal(); got != "one-time-secret" {
-		t.Errorf("first Reveal() = %q, want secret", got)
+func TestSensitiveStringHasExactSingleValueFieldLayout(t *testing.T) {
+	typeOfSensitive := reflect.TypeOf(SensitiveString{})
+	if typeOfSensitive.NumField() != 1 {
+		t.Fatalf("SensitiveString field count = %d, want 1", typeOfSensitive.NumField())
 	}
-	if got := copyOfValue.Reveal(); got != "" {
-		t.Errorf("Reveal() through copy = %q, want empty after first reveal", got)
+	field := typeOfSensitive.Field(0)
+	if field.Name != "value" || field.Type.Kind() != reflect.String || field.PkgPath == "" {
+		t.Errorf("SensitiveString field = %#v, want unexported string value", field)
 	}
 }
 
-func TestSensitiveStringRevealIsConcurrentSafeAcrossCopies(t *testing.T) {
-	value := NewSensitiveString("one-time-secret")
-	const attempts = 32
-
-	results := make(chan string, attempts)
-	var group sync.WaitGroup
-	for range attempts {
-		copyOfValue := value
-		group.Add(1)
-		go func() {
-			defer group.Done()
-			results <- copyOfValue.Reveal()
-		}()
+func TestSensitiveStringRevealIsRepeatableAcrossCopies(t *testing.T) {
+	value := NewSensitiveString("repeatable-secret")
+	copyOfValue := value
+	if got := value.Reveal(); got != "repeatable-secret" {
+		t.Errorf("first Reveal() = %q, want secret", got)
 	}
-	group.Wait()
-	close(results)
+	if got := value.Reveal(); got != "repeatable-secret" {
+		t.Errorf("second Reveal() = %q, want secret", got)
+	}
+	if got := copyOfValue.Reveal(); got != "repeatable-secret" {
+		t.Errorf("Reveal() through copy = %q, want secret", got)
+	}
+}
 
-	count := 0
-	for got := range results {
-		if got == "one-time-secret" {
-			count++
-		} else if got != "" {
-			t.Errorf("Reveal() = %q, want secret or empty", got)
+func TestSensitiveStringZeroValueIsAlwaysSafe(t *testing.T) {
+	var value SensitiveString
+	for _, got := range []string{
+		fmt.Sprint(value),
+		fmt.Sprintf("%v", value),
+		fmt.Sprintf("%+v", value),
+		fmt.Sprintf("%#v", value),
+		value.String(),
+		value.GoString(),
+	} {
+		if got != "[REDACTED]" {
+			t.Errorf("zero-value formatting = %q, want [REDACTED]", got)
 		}
 	}
-	if count != 1 {
-		t.Errorf("secret reveal count = %d, want 1", count)
+	gotJSON, err := json.Marshal(value)
+	if err != nil {
+		t.Fatalf("json.Marshal(): %v", err)
+	}
+	if string(gotJSON) != `"[REDACTED]"` {
+		t.Errorf("json.Marshal() = %s, want redacted JSON string", gotJSON)
+	}
+	if got := value.Reveal(); got != "" {
+		t.Errorf("first zero-value Reveal() = %q, want empty", got)
+	}
+	if got := value.Reveal(); got != "" {
+		t.Errorf("second zero-value Reveal() = %q, want empty", got)
 	}
 }

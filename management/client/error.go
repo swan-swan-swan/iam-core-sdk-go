@@ -53,6 +53,17 @@ func (e *Error) Error() string {
 	return fmt.Sprintf("management API error: operation=%s kind=%s status=%d", e.Operation, e.Kind, e.StatusCode)
 }
 
+// GoString prevents Go-syntax formatting from exposing structured error data.
+func (e *Error) GoString() string {
+	return e.Error()
+}
+
+// Format keeps all common fmt verbs on errors limited to Error's safe
+// operation, kind, and status summary.
+func (e *Error) Format(state fmt.State, verb rune) {
+	_, _ = state.Write([]byte(e.Error()))
+}
+
 // Is reports whether target has the same error kind. It makes the package
 // sentinel errors usable with errors.Is.
 func (e *Error) Is(target error) bool {

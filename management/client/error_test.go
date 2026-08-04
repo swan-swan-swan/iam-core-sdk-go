@@ -3,6 +3,7 @@ package client
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -40,6 +41,56 @@ func TestErrorStringReportsSafeMetadataWithoutSensitiveContent(t *testing.T) {
 	for _, forbidden := range []string{token, query, body, secret, "authorization"} {
 		if strings.Contains(strings.ToLower(got), strings.ToLower(forbidden)) {
 			t.Errorf("Error() leaked %q: %q", forbidden, got)
+		}
+	}
+}
+
+func TestErrorFormattingNeverLeaksStructuredData(t *testing.T) {
+	const (
+		token  = "token-marker-must-not-leak"
+		header = "header-marker-must-not-leak"
+		body   = "body-marker-must-not-leak"
+		query  = "query-marker-must-not-leak"
+		secret = "secret-marker-must-not-leak"
+	)
+	err := &Error{
+		Kind:       KindForbidden,
+		Operation:  "management.oidcclients.rotate_credential",
+		StatusCode: 403,
+		Data: json.RawMessage(`{"token":"` + token + `","authorization":"` + header +
+			`","body":"` + body + `","query":"` + query + `","secret":"` + secret + `"}`),
+	}
+
+	for _, got := range []string{
+		fmt.Sprint(err),
+		fmt.Sprintf("%v", err),
+		fmt.Sprintf("%+v", err),
+		fmt.Sprintf("%#v", err),
+		fmt.Sprintf("%s", err),
+		fmt.Sprintf("%q", err),
+		err.GoString(),
+	} {
+		for _, marker := range []string{token, header, body, query, secret, "authorization"} {
+			if strings.Contains(strings.ToLower(got), strings.ToLower(marker)) {
+				t.Errorf("formatted Error leaked %q: %q", marker, got)
+			}
+		}
+	}
+}
+
+func TestNilErrorFormattingIsSafe(t *testing.T) {
+	var err *Error
+	for _, got := range []string{
+		fmt.Sprint(err),
+		fmt.Sprintf("%v", err),
+		fmt.Sprintf("%+v", err),
+		fmt.Sprintf("%#v", err),
+		fmt.Sprintf("%s", err),
+		fmt.Sprintf("%q", err),
+		err.GoString(),
+	} {
+		if got != "" {
+			t.Errorf("formatted nil Error = %q, want empty", got)
 		}
 	}
 }

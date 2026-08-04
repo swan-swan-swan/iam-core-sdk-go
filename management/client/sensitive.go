@@ -3,39 +3,23 @@ package client
 import (
 	"encoding/json"
 	"fmt"
-	"sync/atomic"
 )
 
 const redactedSensitiveString = "[REDACTED]"
 
-type sensitiveState struct {
-	value    string
-	revealed atomic.Bool
-}
-
 // SensitiveString prevents a secret from being written by normal formatting,
-// logging, or JSON encoding. A value can be revealed exactly once.
-type SensitiveString struct {
-	value string
-	state *sensitiveState
-}
+// logging, or JSON encoding. Reveal is explicit and repeatable.
+type SensitiveString struct{ value string }
 
 // NewSensitiveString wraps value so it remains redacted unless explicitly
-// revealed once.
+// revealed.
 func NewSensitiveString(value string) SensitiveString {
-	return SensitiveString{
-		value: value,
-		state: &sensitiveState{value: value},
-	}
+	return SensitiveString{value: value}
 }
 
-// Reveal returns the wrapped value only on its first call across all copies.
-// The zero value has no value to reveal.
+// Reveal returns the wrapped value. It is explicit and repeatable.
 func (s SensitiveString) Reveal() string {
-	if s.state == nil || !s.state.revealed.CompareAndSwap(false, true) {
-		return ""
-	}
-	return s.state.value
+	return s.value
 }
 
 func (SensitiveString) String() string {

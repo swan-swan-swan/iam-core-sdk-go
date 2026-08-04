@@ -22,6 +22,7 @@ func TestV030ModuleLayout(t *testing.T) {
 		"runtime/core", "runtime/bff", "runtime/httpauthz", "runtime/testkit",
 		"runtime/internal/nilcheck", "runtime/internal/random",
 		"runtime/adapters/gin/go.mod", "runtime/adapters/redis/go.mod",
+		"examples/runtime/bff", "examples/runtime/nethttp",
 	}
 	for _, path := range required {
 		if _, err := os.Stat(filepath.Join(root, path)); err != nil {
@@ -61,6 +62,12 @@ func TestV030ModuleLayout(t *testing.T) {
 		if declaration := strings.SplitN(moduleFile, "\n", 2)[0]; declaration != adapterModule.declaration {
 			t.Errorf("%s module declaration = %q, want %q", adapterModule.path, declaration, adapterModule.declaration)
 		}
+	}
+
+	integrationModule := readFile(t, "integration/go.mod")
+	const integrationDeclaration = "module github.com/swan-swan-swan/iam-core-sdk-go/integration"
+	if declaration := strings.SplitN(integrationModule, "\n", 2)[0]; declaration != integrationDeclaration {
+		t.Errorf("integration/go.mod module declaration = %q, want %q", declaration, integrationDeclaration)
 	}
 
 	const legacyModule = "github.com/swan-swan-swan/iam-core-client-sdk-go"

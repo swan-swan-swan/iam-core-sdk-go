@@ -16,9 +16,9 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-	redisadapter "github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/redis"
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/bff/session"
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/bff/session/sessiontest"
+	redisadapter "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session/sessiontest"
 	"github.com/testcontainers/testcontainers-go"
 	rediscontainer "github.com/testcontainers/testcontainers-go/modules/redis"
 )

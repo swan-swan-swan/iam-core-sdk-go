@@ -137,7 +137,7 @@ func TestV02DocumentationContract(t *testing.T) {
 		"Cookie 与 Bearer 同时出现直接视为 credential conflict",
 	)
 
-	example := read("examples/bff/main.go")
+	example := read("examples/runtime/bff/main.go")
 	requireAll("BFF example", example,
 		"core.New(",
 		"bff.New(",

@@ -149,7 +149,7 @@ Management Client 严格解析 IAM Core 统一 envelope。成功响应必须具�
 
 ### 5.5 敏感值
 
-OIDC Client 凭据创建响应中的 Secret 只返回一次。SDK 使用专用 `SensitiveString` 保存该值；`String()`、`GoString()` 和默认格式化只输出 `[REDACTED]`，调用方必须显式调用 `Reveal()`。SDK 不缓存、不持久化、不克隆到观测事件，也不在后续查询响应中建模 Secret。
+OIDC Client 凭据创建响应中的 Secret 只返回一次。SDK 使用专用的单字段值类型 `SensitiveString` 保存该值；`String()`、`GoString()` 和默认格式化只输出 `[REDACTED]`，调用方必须显式调用 `Reveal()`。`Reveal()` 可以重复调用；“只返回一次”描述服务端创建凭据响应，不表示 SDK 在值副本间维护一次性共享状态。SDK 不缓存、不持久化、不克隆到观测事件，也不在后续查询响应中建模 Secret。
 
 ## 6. Management 领域能力
 

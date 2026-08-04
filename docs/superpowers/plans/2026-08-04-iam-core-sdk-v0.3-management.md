@@ -253,6 +253,8 @@ func (s SensitiveString) Format(fmt.State, rune)
 
 `Reveal` is the only method returning the raw value. Do not implement JSON or text marshaling that can expose it.
 
+`Reveal` is explicit but repeatable and `SensitiveString` must keep the exact single-field value layout above. “Secret is returned once” describes the IAM Core credential-creation response, not a one-shot SDK method; do not add shared atomic state across value copies.
+
 - [ ] **Step 5: Run tests and commit**
 
 ```bash

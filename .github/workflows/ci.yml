@@ -46,11 +46,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if GOWORK=off go list -m all | grep -Eiq '(gin-gonic|go-redis|docker|moby|testcontainers)'; then
+          if GOWORK=off go list -m all | grep -Eiq '(gin-gonic|go-redis|docker|moby|testcontainers|dubbo|triple|google\.golang\.org/grpc)'; then
             echo "forbidden module in root dependency graph" >&2
             exit 1
           fi
-          if GOWORK=off go list -deps ./... | grep -Eiq '(gin-gonic|go-redis|docker|moby|testcontainers)'; then
+          if GOWORK=off go list -deps ./... | grep -Eiq '(gin-gonic|go-redis|docker|moby|testcontainers|dubbo|triple|google\.golang\.org/grpc)'; then
             echo "forbidden package in root dependency graph" >&2
             exit 1
           fi
@@ -74,21 +74,21 @@ jobs:
         with:
           go-version: "1.24.x"
           cache: true
-          cache-dependency-path: adapters/gin/go.sum
+          cache-dependency-path: runtime/adapters/gin/go.sum
       - name: Download Gin modules
-        working-directory: adapters/gin
+        working-directory: runtime/adapters/gin
         run: go mod download
       - name: Gin tests
-        working-directory: adapters/gin
+        working-directory: runtime/adapters/gin
         run: go test ./... -count=1
       - name: Gin race tests
-        working-directory: adapters/gin
+        working-directory: runtime/adapters/gin
         run: go test -race ./... -count=1
       - name: Gin vet
-        working-directory: adapters/gin
+        working-directory: runtime/adapters/gin
         run: go vet ./...
       - name: Gin example
-        working-directory: adapters/gin
+        working-directory: runtime/adapters/gin
         run: go build -o /tmp/iamcore-gin-example ./example
 
   redis:
@@ -103,21 +103,21 @@ jobs:
         with:
           go-version: "1.24.x"
           cache: true
-          cache-dependency-path: adapters/redis/go.sum
+          cache-dependency-path: runtime/adapters/redis/go.sum
       - name: Download Redis adapter modules
-        working-directory: adapters/redis
+        working-directory: runtime/adapters/redis
         run: go mod download
       - name: Redis adapter tests
-        working-directory: adapters/redis
+        working-directory: runtime/adapters/redis
         run: go test ./... -count=1
       - name: Redis adapter race tests
-        working-directory: adapters/redis
+        working-directory: runtime/adapters/redis
         run: go test -race ./... -count=1
       - name: Redis adapter vet
-        working-directory: adapters/redis
+        working-directory: runtime/adapters/redis
         run: go vet ./...
       - name: Redis adapter example
-        working-directory: adapters/redis
+        working-directory: runtime/adapters/redis
         run: go build -o /tmp/iamcore-redis-example ./example
 
   integration:
@@ -167,31 +167,66 @@ jobs:
         shell: bash
         env:
           RELEASE_SHA: ${{ github.sha }}
+          REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if ! LC_ALL=C grep -axEq '[0-9]+\.[0-9]+\.[0-9]+' VERSION; then
-            echo "VERSION must use X.Y.Z format" >&2
+          if ! LC_ALL=C grep -axFq '0.3.0' VERSION; then
+            echo "VERSION must be exactly 0.3.0" >&2
             exit 1
           fi
           version_byte_count=$(LC_ALL=C wc -c < VERSION)
-          matching_version_byte_count=$(LC_ALL=C grep -axE '[0-9]+\.[0-9]+\.[0-9]+' VERSION | LC_ALL=C wc -c)
-          matching_version_line_count=$(LC_ALL=C grep -axE '[0-9]+\.[0-9]+\.[0-9]+' VERSION | LC_ALL=C wc -l)
-          if [[ "${matching_version_line_count}" -ne 1 || "${matching_version_byte_count}" -ne "${version_byte_count}" ]]; then
-            echo "VERSION must contain exactly one X.Y.Z line" >&2
+          matching_version_byte_count=$(LC_ALL=C grep -axF '0.3.0' VERSION | LC_ALL=C wc -c)
+          matching_version_line_count=$(LC_ALL=C grep -axF '0.3.0' VERSION | LC_ALL=C wc -l)
+          if [[ "${matching_version_line_count}" -ne 1 || "${matching_version_byte_count}" -ne "${version_byte_count}" || "${version_byte_count}" -ne 6 ]]; then
+            echo "VERSION must contain exactly the bytes 0.3.0 followed by LF" >&2
             exit 1
           fi
           IFS= read -r release_version < VERSION
-          if [[ ! "${release_version}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
-            echo "VERSION must use X.Y.Z format" >&2
+          if [[ "${release_version}" != "0.3.0" ]]; then
+            echo "VERSION must be exactly 0.3.0" >&2
             exit 1
           fi
-          release_tag="v${release_version}"
+          if [[ "${REPOSITORY}" != "swan-swan-swan/iam-core-sdk-go" ]]; then
+            echo "GitHub repository must be swan-swan-swan/iam-core-sdk-go" >&2
+            exit 1
+          fi
+
+          IFS= read -r root_module_declaration < go.mod
+          IFS= read -r gin_module_declaration < runtime/adapters/gin/go.mod
+          IFS= read -r redis_module_declaration < runtime/adapters/redis/go.mod
+          if [[ "${root_module_declaration}" != "module github.com/swan-swan-swan/iam-core-sdk-go" ]]; then
+            echo "root module path does not match the v0.3 release contract" >&2
+            exit 1
+          fi
+          if [[ "${gin_module_declaration}" != "module github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin" ]]; then
+            echo "Gin module path does not match the v0.3 release contract" >&2
+            exit 1
+          fi
+          if [[ "${redis_module_declaration}" != "module github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis" ]]; then
+            echo "Redis module path does not match the v0.3 release contract" >&2
+            exit 1
+          fi
+          if ! awk '$1 == "github.com/swan-swan-swan/iam-core-sdk-go" && $2 == "v0.3.0" { found = 1 } END { exit !found }' runtime/adapters/gin/go.mod; then
+            echo "Gin module must require root module v0.3.0" >&2
+            exit 1
+          fi
+          if ! awk '$1 == "github.com/swan-swan-swan/iam-core-sdk-go" && $2 == "v0.3.0" { found = 1 } END { exit !found }' runtime/adapters/redis/go.mod; then
+            echo "Redis module must require root module v0.3.0" >&2
+            exit 1
+          fi
+
+          root_tag="v${release_version}"
+          gin_tag="runtime/adapters/gin/v${release_version}"
+          redis_tag="runtime/adapters/redis/v${release_version}"
+          release_tags=("${root_tag}" "${gin_tag}" "${redis_tag}")
 
           git fetch origin main dev --tags
-          if git rev-parse --verify --quiet "refs/tags/${release_tag}" >/dev/null; then
-            echo "tag ${release_tag} already exists" >&2
-            exit 1
-          fi
+          for release_tag in "${release_tags[@]}"; do
+            if git rev-parse --verify --quiet "refs/tags/${release_tag}" >/dev/null; then
+              echo "tag ${release_tag} already exists" >&2
+              exit 1
+            fi
+          done
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -200,11 +235,45 @@ jobs:
             echo "release commit ${RELEASE_SHA} is already contained in main" >&2
             exit 1
           fi
-          git merge --no-ff "$RELEASE_SHA" -m "chore(release): ${release_tag}"
+          git merge --no-ff "$RELEASE_SHA" -m "chore(release): ${root_tag}"
           merge_parents=($(git rev-list --parents -n 1 HEAD))
           if [[ "${#merge_parents[@]}" -ne 3 || "${merge_parents[2]}" != "$RELEASE_SHA" ]]; then
             echo "merge commit must include the release revision as its second parent" >&2
             exit 1
           fi
-          git tag -a "${release_tag}" -m "IAM Core SDK ${release_tag}"
-          git push --atomic origin main "${release_tag}"
+          release_commit=$(git rev-parse HEAD)
+          for release_tag in "${release_tags[@]}"; do
+            git tag -a "${release_tag}" -m "IAM Core SDK ${release_tag}"
+          done
+          for release_tag in "${release_tags[@]}"; do
+            if [[ "$(git rev-list -n 1 "${release_tag}")" != "${release_commit}" ]]; then
+              echo "tag ${release_tag} does not point to the verified release merge" >&2
+              exit 1
+            fi
+          done
+          git push --atomic origin main "${root_tag}" "${gin_tag}" "${redis_tag}"
+
+  post_release:
+    name: Verify published v0.3.0 modules
+    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
+    needs: release
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Set up Go 1.24
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.24.x"
+      - name: Resolve all published modules without the workspace
+        shell: bash
+        env:
+          GOPROXY: direct
+        run: |
+          set -euo pipefail
+          verification_directory=$(mktemp -d)
+          trap 'rm -rf "${verification_directory}"' EXIT
+          cd "${verification_directory}"
+          GOWORK=off go mod init example.com/iam-core-sdk-release-verification
+          GOWORK=off go mod download github.com/swan-swan-swan/iam-core-sdk-go@v0.3.0
+          GOWORK=off go mod download github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin@v0.3.0
+          GOWORK=off go mod download github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis@v0.3.0

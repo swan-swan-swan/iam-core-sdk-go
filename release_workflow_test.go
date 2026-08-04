@@ -1,4 +1,4 @@
-package iamcore_test
+package iamcoresdk_test
 
 import (
 	"fmt"
@@ -9,177 +9,203 @@ import (
 	"testing"
 )
 
-func TestDevPushReleaseWorkflowContract(t *testing.T) {
+const (
+	repositoryName = "swan-swan-swan/iam-core-sdk-go"
+	rootModule     = "github.com/swan-swan-swan/iam-core-sdk-go"
+	ginModule      = rootModule + "/runtime/adapters/gin"
+	redisModule    = rootModule + "/runtime/adapters/redis"
+
+	rootTag  = "v0.3.0"
+	ginTag   = "runtime/adapters/gin/v0.3.0"
+	redisTag = "runtime/adapters/redis/v0.3.0"
+)
+
+func TestReleaseWorkflowContract(t *testing.T) {
 	version, err := os.ReadFile("VERSION")
 	if err != nil {
 		t.Fatalf("read VERSION: %v", err)
 	}
-	if string(version) != "0.2.0\n" {
-		t.Fatal("VERSION must contain the initial SDK version")
+	if string(version) != "0.3.0\n" {
+		t.Fatalf("VERSION = %q, want exact v0.3 release bytes", version)
 	}
 
 	raw, err := os.ReadFile(".github/workflows/ci.yml")
 	if err != nil {
 		t.Fatalf("read workflow: %v", err)
 	}
-	release := releaseJob(t, string(raw))
-	assertReleaseJobContract(t, release)
-
-	script := releaseRunScript(t, release)
-	for _, test := range []struct {
-		name    string
-		contents []byte
-	}{
-		{name: "split line", contents: []byte("0.2\n.0\n")},
-		{name: "extra blank line", contents: []byte("0.2.0\n\n")},
-		{name: "carriage return", contents: []byte("0.2.0\r\n")},
-		{name: "NUL byte", contents: []byte("0.2\x00.0\n")},
-		{name: "missing newline", contents: []byte("0.2.0")},
-		{name: "multiple valid lines", contents: []byte("0.2.0\n0.2.1\n")},
-		{name: "trailing data", contents: []byte("0.2.0\nextra\n")},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			assertVersionRejectedBeforeGit(t, script, test.contents)
-		})
-	}
-}
-
-func TestReleaseScriptAcceptsValidVersionUntilFirstGitOperation(t *testing.T) {
-	result := runReleaseScript(t, releaseScriptFromWorkflow(t), []byte("0.2.0\n"), 99, 1, "")
-	if result.err == nil {
-		t.Fatal("valid VERSION unexpectedly completed after the fake Git fetch failure")
-	}
-	if result.calls != "fetch origin main dev --tags\n" {
-		t.Fatalf("valid VERSION did not reach the expected first Git operation: %q", result.calls)
-	}
-}
-
-func TestReleaseScriptRejectsAlreadyContainedRevision(t *testing.T) {
-	result := runReleaseScript(t, releaseScriptFromWorkflow(t), []byte("0.2.0\n"), 0, 0, "")
-	if result.err == nil {
-		t.Fatal("already-contained release revision unexpectedly succeeded")
-	}
-	if !strings.Contains(result.calls, "merge-base --is-ancestor deadbeef HEAD\n") {
-		t.Fatalf("release script did not check whether the release revision is already contained: %q", result.calls)
-	}
-	for _, operation := range []string{"merge --no-ff", "tag -a", "push --atomic"} {
-		if strings.Contains(result.calls, operation) {
-			t.Fatalf("already-contained release revision reached forbidden Git operation %q: %q", operation, result.calls)
-		}
-	}
-}
-
-func TestReleaseScriptRejectsMergeWithoutReleaseSHAAsSecondParent(t *testing.T) {
-	result := runReleaseScript(t, releaseScriptFromWorkflow(t), []byte("0.2.0\n"), 0, 1, "merge-commit first-parent another-sha")
-	if result.err == nil {
-		t.Fatal("merge with the wrong second parent unexpectedly succeeded")
-	}
-	if !strings.Contains(result.calls, "merge --no-ff deadbeef -m chore(release): v0.2.0\n") {
-		t.Fatalf("release script did not perform the expected merge: %q", result.calls)
-	}
-	for _, operation := range []string{"tag -a", "push --atomic"} {
-		if strings.Contains(result.calls, operation) {
-			t.Fatalf("invalid merge reached forbidden Git operation %q: %q", operation, result.calls)
-		}
-	}
-}
-
-func TestReleaseJobExtractionIgnoresSiblingStep(t *testing.T) {
-	workflow := `jobs:
-  release:
-    name: Release
-    steps:
-      - run: |
-          echo release
-  trailing: # sibling comment
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    needs:
-      - root
-      - gin
-      - redis
-      - integration
-    permissions:
-      contents: write
-    steps:
-      - name: Merge dev and create version tag
-        run: |
-          set -euo pipefail
-          git push --atomic origin main "${release_tag}"
-`
-
-	release := releaseJob(t, workflow)
+	workflow := string(raw)
+	release := releaseJob(t, workflow, "release")
 	for _, value := range []string{
-		"github.event_name == 'push' && github.ref == 'refs/heads/dev'",
+		"if: github.event_name == 'push' && github.ref == 'refs/heads/dev'",
 		"needs:\n      - root\n      - gin\n      - redis\n      - integration",
 		"permissions:\n      contents: write",
-		`git push --atomic origin main "${release_tag}"`,
+		"fetch-depth: 0",
+		"RELEASE_SHA: ${{ github.sha }}",
+		"REPOSITORY: ${{ github.repository }}",
 	} {
-		if strings.Contains(release, value) {
-			t.Fatalf("release job extraction included trailing sibling requirement %q", value)
+		if !strings.Contains(release, value) {
+			t.Errorf("release job missing %q", value)
 		}
 	}
-	if _, err := extractReleaseRunScript(release); err == nil {
-		t.Fatal("release run-script extraction accepted the trailing sibling step")
+	for _, value := range []string{"--force", "continue-on-error", "|| true", "release paused", "prerelease-stage guard"} {
+		if strings.Contains(release, value) {
+			t.Errorf("release job contains forbidden behavior %q", value)
+		}
+	}
+
+	postRelease := releaseJob(t, workflow, "post_release")
+	for _, value := range []string{
+		"needs: release",
+		"if: github.event_name == 'push' && github.ref == 'refs/heads/dev'",
+		"GOWORK=off go mod download " + rootModule + "@v0.3.0",
+		"GOWORK=off go mod download " + ginModule + "@v0.3.0",
+		"GOWORK=off go mod download " + redisModule + "@v0.3.0",
+	} {
+		if !strings.Contains(postRelease, value) {
+			t.Errorf("post-release job missing %q", value)
+		}
 	}
 }
 
-func TestReleaseRunScriptRequiresNamedSingleBlockStep(t *testing.T) {
+func TestReleaseScriptRejectsMalformedVersionBeforeGit(t *testing.T) {
+	script := releaseScriptFromWorkflow(t)
 	for _, test := range []struct {
-		name    string
-		release string
+		name     string
+		contents []byte
 	}{
-		{
-			name: "earlier unrelated run block",
-			release: `  release:
-    steps:
-      - name: Earlier step
-        run: |
-          echo earlier
-      - name: Merge dev and create version tag
-        shell: bash`,
-		},
-		{
-			name: "future unrelated run block",
-			release: `  release:
-    steps:
-      - name: Merge dev and create version tag
-        run: |
-          echo release
-      - name: Future step
-        run: |
-          echo future`,
-		},
+		{name: "old version", contents: []byte("0.2.0\n")},
+		{name: "split line", contents: []byte("0.3\n.0\n")},
+		{name: "extra blank line", contents: []byte("0.3.0\n\n")},
+		{name: "carriage return", contents: []byte("0.3.0\r\n")},
+		{name: "NUL byte", contents: []byte("0.3\x00.0\n")},
+		{name: "missing newline", contents: []byte("0.3.0")},
+		{name: "trailing data", contents: []byte("0.3.0\nextra\n")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := extractReleaseRunScript(test.release); err == nil {
-				t.Fatal("release run-script extraction accepted an unrelated run block")
+			fixture := validReleaseFixture()
+			fixture.version = string(test.contents)
+			result := runReleaseScriptFixture(t, script, fixture)
+			if result.err == nil {
+				t.Fatal("malformed VERSION unexpectedly succeeded")
+			}
+			if result.calls != "" {
+				t.Fatalf("malformed VERSION reached Git: %q", result.calls)
 			}
 		})
 	}
 }
 
-func releaseJob(t *testing.T, workflow string) string {
+func TestReleaseScriptRejectsRepositoryAndModuleMismatchBeforeGit(t *testing.T) {
+	script := releaseScriptFromWorkflow(t)
+	for _, test := range []struct {
+		name   string
+		mutate func(*releaseFixture)
+	}{
+		{name: "old repository", mutate: func(f *releaseFixture) { f.repository = "swan-swan-swan/iam-core-client-sdk-go" }},
+		{name: "old root module", mutate: func(f *releaseFixture) { f.rootModule = "module github.com/swan-swan-swan/iam-core-client-sdk-go\n" }},
+		{name: "wrong Gin module", mutate: func(f *releaseFixture) { f.ginModule = "module example.com/gin\n" }},
+		{name: "wrong Redis module", mutate: func(f *releaseFixture) { f.redisModule = "module example.com/redis\n" }},
+		{name: "wrong Gin root dependency", mutate: func(f *releaseFixture) { f.ginDependency = rootModule + " v0.2.0" }},
+		{name: "wrong Redis root dependency", mutate: func(f *releaseFixture) { f.redisDependency = rootModule + " v0.2.0" }},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			fixture := validReleaseFixture()
+			test.mutate(&fixture)
+			result := runReleaseScriptFixture(t, script, fixture)
+			if result.err == nil {
+				t.Fatal("release preflight mismatch unexpectedly succeeded")
+			}
+			if result.calls != "" {
+				t.Fatalf("release preflight mismatch reached Git: %q", result.calls)
+			}
+		})
+	}
+}
+
+func TestReleaseScriptRejectsAnyExistingTagBeforeMutation(t *testing.T) {
+	script := releaseScriptFromWorkflow(t)
+	for _, tag := range []string{rootTag, ginTag, redisTag} {
+		t.Run(tag, func(t *testing.T) {
+			fixture := validReleaseFixture()
+			fixture.existingTag = tag
+			result := runReleaseScriptFixture(t, script, fixture)
+			if result.err == nil {
+				t.Fatal("existing release tag unexpectedly succeeded")
+			}
+			for _, mutation := range []string{"checkout ", "merge ", "tag ", "push "} {
+				if strings.Contains(result.calls, mutation) {
+					t.Fatalf("existing tag reached mutation %q in:\n%s", mutation, result.calls)
+				}
+			}
+		})
+	}
+}
+
+func TestReleaseScriptCreatesThreeTagsOnOneMergeCommitAndPushesAtomically(t *testing.T) {
+	result := runReleaseScriptFixture(t, releaseScriptFromWorkflow(t), validReleaseFixture())
+	if result.err != nil {
+		t.Fatalf("release script: %v\nGit calls:\n%s", result.err, result.calls)
+	}
+	for _, call := range []string{
+		"tag -a " + rootTag + " -m IAM Core SDK " + rootTag,
+		"tag -a " + ginTag + " -m IAM Core SDK " + ginTag,
+		"tag -a " + redisTag + " -m IAM Core SDK " + redisTag,
+		"rev-list -n 1 " + rootTag,
+		"rev-list -n 1 " + ginTag,
+		"rev-list -n 1 " + redisTag,
+		"push --atomic origin main " + rootTag + " " + ginTag + " " + redisTag,
+	} {
+		if !strings.Contains(result.calls, call+"\n") {
+			t.Errorf("Git calls missing %q:\n%s", call, result.calls)
+		}
+	}
+	if got := strings.Count(result.calls, "tag -a "); got != 3 {
+		t.Errorf("annotated tag calls = %d, want 3", got)
+	}
+	if got := strings.Count(result.calls, "push --atomic "); got != 1 {
+		t.Errorf("atomic push calls = %d, want 1", got)
+	}
+}
+
+func TestReleaseScriptRejectsOutOfOrderRevisionBeforeMerge(t *testing.T) {
+	fixture := validReleaseFixture()
+	fixture.mergeBaseExit = 0
+	result := runReleaseScriptFixture(t, releaseScriptFromWorkflow(t), fixture)
+	if result.err == nil {
+		t.Fatal("already-released revision unexpectedly succeeded")
+	}
+	for _, mutation := range []string{"merge --no-ff", "tag -a ", "push --atomic"} {
+		if strings.Contains(result.calls, mutation) {
+			t.Fatalf("out-of-order revision reached %q in:\n%s", mutation, result.calls)
+		}
+	}
+}
+
+func TestReleaseJobExtractionIgnoresSiblingJob(t *testing.T) {
+	workflow := "jobs:\n  release:\n    steps:\n      - run: |\n          echo release\n  sibling:\n    run: forbidden\n"
+	release := releaseJob(t, workflow, "release")
+	if strings.Contains(release, "forbidden") {
+		t.Fatal("release job extraction included sibling content")
+	}
+}
+
+func releaseJob(t *testing.T, workflow, jobName string) string {
 	t.Helper()
 	lines := strings.Split(workflow, "\n")
 	start := -1
+	marker := "  " + jobName + ":"
 	for index, line := range lines {
-		if line == "  release:" {
+		if line == marker {
 			start = index
 			break
 		}
 	}
 	if start < 0 {
-		t.Fatal("CI workflow has no release job")
+		t.Fatalf("CI workflow has no %s job", jobName)
 	}
-
 	end := len(lines)
 	for index := start + 1; index < len(lines); index++ {
-		line := lines[index]
-		if strings.HasPrefix(line, "  ") && !strings.HasPrefix(line, "    ") && strings.Contains(line, ":") {
-			name := strings.TrimSpace(strings.SplitN(strings.TrimSpace(line), ":", 2)[0])
-			if name == "" {
-				continue
-			}
+		if strings.HasPrefix(lines[index], "  ") && !strings.HasPrefix(lines[index], "    ") && strings.HasSuffix(lines[index], ":") {
 			end = index
 			break
 		}
@@ -187,126 +213,28 @@ func releaseJob(t *testing.T, workflow string) string {
 	return strings.Join(lines[start:end], "\n")
 }
 
-func assertReleaseJobContract(t *testing.T, release string) {
+func releaseScriptFromWorkflow(t *testing.T) string {
 	t.Helper()
-	required := []string{
-		"if: github.event_name == 'push' && github.ref == 'refs/heads/dev'",
-		"needs:\n      - root\n      - gin\n      - redis\n      - integration",
-		"permissions:\n      contents: write",
-		"fetch-depth: 0",
-		"RELEASE_SHA: ${{ github.sha }}",
-	}
-	for _, value := range required {
-		if !strings.Contains(release, value) {
-			t.Errorf("release job missing required contract %q", value)
-		}
-	}
-
-	script := releaseRunScript(t, release)
-	if !strings.Contains(script, "set -euo pipefail") {
-		t.Error("release script must enable strict Bash mode")
-	}
-	if strings.Contains(script, "tr -d") {
-		t.Error("release script must not normalize VERSION content")
-	}
-	for _, failurePath := range []string{
-		"if [[ ! \"${release_version}\" =~ ^([0-9]+)\\.([0-9]+)\\.([0-9]+)$ ]]; then\n  echo \"VERSION must use X.Y.Z format\" >&2\n  exit 1\nfi",
-		"if git rev-parse --verify --quiet \"refs/tags/${release_tag}\" >/dev/null; then\n  echo \"tag ${release_tag} already exists\" >&2\n  exit 1\nfi",
-	} {
-		if !strings.Contains(script, failurePath) {
-			t.Errorf("release script missing explicit failure path %q", failurePath)
-		}
-	}
-	for _, value := range []string{
-		`git merge-base --is-ancestor "$RELEASE_SHA" HEAD`,
-		`merge_parents=($(git rev-list --parents -n 1 HEAD))`,
-		`"${#merge_parents[@]}" -ne 3`,
-		`"${merge_parents[2]}" != "$RELEASE_SHA"`,
-	} {
-		if !strings.Contains(script, value) {
-			t.Errorf("release script missing out-of-order release protection %q", value)
-		}
-	}
-
-	for _, value := range []string{
-		`^([0-9]+)\.([0-9]+)\.([0-9]+)$`,
-		`LC_ALL=C grep -axE '[0-9]+\.[0-9]+\.[0-9]+' VERSION`,
-		`LC_ALL=C wc -c < VERSION`,
-		`release_tag="v${release_version}"`,
-		`git fetch origin main dev --tags`,
-		`refs/tags/${release_tag}`,
-		`git checkout -B main origin/main`,
-		`git merge --no-ff "$RELEASE_SHA"`,
-		`git tag -a "${release_tag}"`,
-		`git push --atomic origin main "${release_tag}"`,
-	} {
-		if !strings.Contains(script, value) {
-			t.Errorf("release script missing required contract %q", value)
-		}
-	}
-
-	for _, value := range []string{
-		"master",
-		"adapters/gin/v",
-		"adapters/redis/v",
-		"--force",
-		"continue-on-error",
-		"|| true",
-	} {
-		if strings.Contains(release, value) {
-			t.Errorf("release job contains forbidden behavior %q", value)
-		}
-	}
-}
-
-func releaseRunScript(t *testing.T, release string) string {
-	t.Helper()
-	script, err := extractReleaseRunScript(release)
+	raw, err := os.ReadFile(".github/workflows/ci.yml")
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("read workflow: %v", err)
 	}
-	return script
-}
-
-func extractReleaseRunScript(release string) (string, error) {
+	release := releaseJob(t, string(raw), "release")
 	lines := strings.Split(release, "\n")
-	runBlockCount := 0
-	stepIndex := -1
+	start := -1
 	for index, line := range lines {
 		if line == "        run: |" {
-			runBlockCount++
-		}
-		if line == "      - name: Merge dev and create version tag" {
-			if stepIndex >= 0 {
-				return "", fmt.Errorf("release job has multiple named merge/tag steps")
+			if start >= 0 {
+				t.Fatal("release job must contain exactly one run block")
 			}
-			stepIndex = index
-		}
-	}
-	if runBlockCount != 1 {
-		return "", fmt.Errorf("release job must contain exactly one run: | block, got %d", runBlockCount)
-	}
-	if stepIndex < 0 {
-		return "", fmt.Errorf("release job has no named merge/tag step")
-	}
-
-	start := -1
-	end := len(lines)
-	for index := stepIndex + 1; index < len(lines); index++ {
-		line := lines[index]
-		if strings.HasPrefix(line, "      - ") {
-			end = index
-			break
-		}
-		if line == "        run: |" {
 			start = index + 1
 		}
 	}
 	if start < 0 {
-		return "", fmt.Errorf("named merge/tag step has no run: | block")
+		t.Fatal("release job has no run block")
 	}
 	var script []string
-	for _, line := range lines[start:end] {
+	for _, line := range lines[start:] {
 		if line == "" {
 			script = append(script, line)
 			continue
@@ -316,33 +244,27 @@ func extractReleaseRunScript(release string) (string, error) {
 		}
 		script = append(script, strings.TrimPrefix(line, "          "))
 	}
-	if len(script) == 0 {
-		return "", fmt.Errorf("named merge/tag step run script is empty")
-	}
-	return strings.Join(script, "\n"), nil
+	return strings.Join(script, "\n")
 }
 
-func assertVersionRejectedBeforeGit(t *testing.T, script string, version []byte) {
-	t.Helper()
-	directory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(directory, "VERSION"), version, 0o600); err != nil {
-		t.Fatalf("write VERSION: %v", err)
-	}
+type releaseFixture struct {
+	version, repository                string
+	rootModule, ginModule, redisModule string
+	ginDependency, redisDependency     string
+	existingTag                        string
+	mergeBaseExit                      int
+}
 
-	gitLog := filepath.Join(directory, "git-called")
-	gitPath := filepath.Join(directory, "git")
-	if err := os.WriteFile(gitPath, []byte("#!/usr/bin/env bash\nprintf '%s\\n' \"$*\" >> \"$GIT_CALLED\"\nexit 99\n"), 0o700); err != nil {
-		t.Fatalf("write fake git: %v", err)
-	}
-
-	command := exec.Command("bash", "-c", script)
-	command.Dir = directory
-	command.Env = append(os.Environ(), "GIT_CALLED="+gitLog, "PATH="+directory+":"+os.Getenv("PATH"), "RELEASE_SHA=deadbeef")
-	if output, err := command.CombinedOutput(); err == nil {
-		t.Fatalf("malformed VERSION unexpectedly succeeded: %s", output)
-	}
-	if _, err := os.Stat(gitLog); !os.IsNotExist(err) {
-		t.Fatalf("malformed VERSION reached a Git operation: %v", err)
+func validReleaseFixture() releaseFixture {
+	return releaseFixture{
+		version:         "0.3.0\n",
+		repository:      repositoryName,
+		rootModule:      "module " + rootModule + "\n",
+		ginModule:       "module " + ginModule + "\n",
+		redisModule:     "module " + redisModule + "\n",
+		ginDependency:   rootModule + " v0.3.0",
+		redisDependency: rootModule + " v0.3.0",
+		mergeBaseExit:   1,
 	}
 }
 
@@ -351,52 +273,61 @@ type releaseScriptResult struct {
 	calls string
 }
 
-func releaseScriptFromWorkflow(t *testing.T) string {
-	t.Helper()
-	raw, err := os.ReadFile(".github/workflows/ci.yml")
-	if err != nil {
-		t.Fatalf("read workflow: %v", err)
-	}
-	return releaseRunScript(t, releaseJob(t, string(raw)))
-}
-
-func runReleaseScript(t *testing.T, script string, version []byte, fetchExit, mergeBaseExit int, revList string) releaseScriptResult {
+func runReleaseScriptFixture(t *testing.T, script string, fixture releaseFixture) releaseScriptResult {
 	t.Helper()
 	directory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(directory, "VERSION"), version, 0o600); err != nil {
-		t.Fatalf("write VERSION: %v", err)
-	}
+	writeFixtureFile(t, directory, "VERSION", []byte(fixture.version))
+	writeFixtureFile(t, directory, "go.mod", []byte(fixture.rootModule))
+	writeFixtureFile(t, directory, "runtime/adapters/gin/go.mod", []byte(fixture.ginModule+"\nrequire (\n\t"+fixture.ginDependency+"\n)\n"))
+	writeFixtureFile(t, directory, "runtime/adapters/redis/go.mod", []byte(fixture.redisModule+"\nrequire (\n\t"+fixture.redisDependency+"\n)\n"))
 
-	gitPath := filepath.Join(directory, "git")
 	gitScript := `#!/usr/bin/env bash
 printf '%s\n' "$*" >> "$GIT_CALLED"
-case "$1 $2" in
-  "fetch origin") exit "$GIT_FETCH_EXIT" ;;
-  "rev-parse --verify") exit 1 ;;
-  "merge-base --is-ancestor") exit "$GIT_MERGE_BASE_EXIT" ;;
-  "rev-list --parents") printf '%s\n' "$GIT_REV_LIST"; exit 0 ;;
-esac
+if [[ "$1" == "fetch" ]]; then exit 0; fi
+if [[ "$1" == "rev-parse" && "$2" == "--verify" && "$3" == "--quiet" ]]; then
+  if [[ "$4" == "refs/tags/$EXISTING_TAG" ]]; then exit 0; fi
+  exit 1
+fi
+if [[ "$1" == "merge-base" ]]; then exit "$GIT_MERGE_BASE_EXIT"; fi
+if [[ "$1" == "rev-list" && "$2" == "--parents" ]]; then printf 'merge parent deadbeef\n'; exit 0; fi
+if [[ "$1" == "rev-parse" && "$2" == "HEAD" ]]; then printf 'merge\n'; exit 0; fi
+if [[ "$1" == "rev-list" && "$2" == "-n" ]]; then printf 'merge\n'; exit 0; fi
 exit 0
 `
-	if err := os.WriteFile(gitPath, []byte(gitScript), 0o700); err != nil {
-		t.Fatalf("write fake git: %v", err)
+	writeFixtureFile(t, directory, "git", []byte(gitScript))
+	if err := os.Chmod(filepath.Join(directory, "git"), 0o700); err != nil {
+		t.Fatalf("chmod fake git: %v", err)
 	}
 
 	gitLog := filepath.Join(directory, "git-called")
 	command := exec.Command("bash", "-c", script)
 	command.Dir = directory
 	command.Env = append(os.Environ(),
+		"EXISTING_TAG="+fixture.existingTag,
 		"GIT_CALLED="+gitLog,
-		"GIT_FETCH_EXIT="+fmt.Sprint(fetchExit),
-		"GIT_MERGE_BASE_EXIT="+fmt.Sprint(mergeBaseExit),
-		"GIT_REV_LIST="+revList,
+		"GIT_MERGE_BASE_EXIT="+fmt.Sprint(fixture.mergeBaseExit),
 		"PATH="+directory+":"+os.Getenv("PATH"),
 		"RELEASE_SHA=deadbeef",
+		"REPOSITORY="+fixture.repository,
 	)
-	_, err := command.CombinedOutput()
+	output, err := command.CombinedOutput()
 	calls, readErr := os.ReadFile(gitLog)
 	if readErr != nil && !os.IsNotExist(readErr) {
 		t.Fatalf("read Git log: %v", readErr)
 	}
+	if err != nil {
+		err = fmt.Errorf("%w: %s", err, output)
+	}
 	return releaseScriptResult{err: err, calls: string(calls)}
+}
+
+func writeFixtureFile(t *testing.T, root, path string, contents []byte) {
+	t.Helper()
+	fullPath := filepath.Join(root, path)
+	if err := os.MkdirAll(filepath.Dir(fullPath), 0o700); err != nil {
+		t.Fatalf("create fixture directory: %v", err)
+	}
+	if err := os.WriteFile(fullPath, contents, 0o600); err != nil {
+		t.Fatalf("write %s: %v", path, err)
+	}
 }

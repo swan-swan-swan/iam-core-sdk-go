@@ -6,6 +6,34 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 - No changes yet.
 
+## v0.3.0
+
+### Breaking module layout
+
+- Renamed the repository and root Module to `github.com/swan-swan-swan/iam-core-sdk-go`.
+- Moved the existing public Runtime packages under `runtime/` and moved the independently versioned
+  Gin and Redis modules under `runtime/adapters/`; no deprecated import wrapper is provided.
+
+### Management
+
+- Added the six approved Management domains: `applications`, `oidcclients`, `admission`,
+  `groupmappings`, `catalog`, and `policies`, covering the frozen 42-endpoint IAM Core v1.8.1 contract.
+- Added an injected `TokenSource`, strict single-request Bearer transport, envelope metadata, bounded
+  response decoding, stable error kinds, and one terminal Observer event.
+- Management operations read one token and send at most one HTTP request; the SDK 不自动重试 and
+  does not refresh tokens or generate idempotency keys.
+- Modeled the credential-creation-only Secret with redacting `SensitiveString`; callers must invoke
+  `Reveal()` explicitly and later credential reads do not expose the Secret.
+- Added explicit revision/hash conflict models without local policy compilation, automatic
+  provisioning, cross-domain orchestration, or Runtime dependencies.
+
+### Delivery and unsupported surfaces
+
+- Added a safe Management example, the v0.2-to-v0.3 migration guide, compatibility matrix, and
+  three-module atomic release gate.
+- RPC, users, organizations, global roles, Cloud Provider, admission/authorization audits, and
+  automatic provisioning remain unsupported.
+
 ## v0.2.0
 
 ### Breaking rewrite

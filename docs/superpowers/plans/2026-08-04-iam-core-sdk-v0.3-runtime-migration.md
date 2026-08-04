@@ -39,7 +39,7 @@
 | `go.mod`, `go.work` | modified in place | New root module and nested module workspace |
 | `.github/workflows/ci.yml` | modified in place | New nested module and example paths |
 
-### Task 1: Freeze the New Module and Layout Contract
+### Task 1: Freeze the New Module Contract and Migrate Runtime Packages
 
 **Files:**
 - Create: `module_layout_v030_test.go`
@@ -48,7 +48,7 @@
 
 **Interfaces:**
 - Consumes: repository filesystem, `go.mod`, nested `go.mod`, `go.work`, `VERSION`.
-- Produces: a failing executable contract for the new module and directory layout.
+- Produces: an executable contract for the new module and directory layout, made green by the migration in this same task.
 
 - [ ] **Step 1: Write the failing layout test**
 
@@ -101,14 +101,11 @@ Run: `go test . -run 'TestV030ModuleLayout' -count=1`
 
 Expected: FAIL because the root module and directories still use the v0.2 layout.
 
-- [ ] **Step 4: Commit the red contract test**
+- [ ] **Step 4: Record the RED result and continue without committing**
 
-```bash
-git add module_layout_v030_test.go release_workflow_test.go
-git commit -m "test: freeze v0.3 runtime module layout"
-```
+Do not commit a knowingly failing branch state. Preserve the RED output as TDD evidence, then complete the package migration below before committing the task.
 
-### Task 2: Move Runtime Packages and Rewrite Root Imports
+#### Part 2: Move Runtime Packages and Rewrite Root Imports
 
 **Files:**
 - Move: `core/` → `runtime/core/`
@@ -215,7 +212,7 @@ git add go.mod go.sum doc.go documentation_test.go module_layout_v030_test.go ru
 git commit -m "refactor(runtime): move v0.2 APIs under runtime"
 ```
 
-### Task 3: Move Gin and Redis Adapter Modules
+### Task 2: Move Gin and Redis Adapter Modules
 
 **Files:**
 - Move: `adapters/gin/` → `runtime/adapters/gin/`
@@ -255,16 +252,16 @@ module github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis
 
 Its root dependency and all source imports must use `runtime/core` and `runtime/bff/session`. Preserve encryption, generation fencing, server-time leases, validation, and secret-sanitization tests unchanged apart from imports.
 
-- [ ] **Step 4: Tidy and verify both standalone modules**
+- [ ] **Step 4: Tidy and verify both modules in the development workspace**
 
 Run:
 
 ```bash
-(cd runtime/adapters/gin && GOWORK=off go mod tidy && GOWORK=off go test ./... -count=1 && GOWORK=off go test -race ./... -count=1 && GOWORK=off go vet ./...)
-(cd runtime/adapters/redis && GOWORK=off go mod tidy && GOWORK=off go test ./... -count=1 && GOWORK=off go test -race ./... -count=1 && GOWORK=off go vet ./...)
+(cd runtime/adapters/gin && go mod tidy && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
+(cd runtime/adapters/redis && go mod tidy && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
 ```
 
-Expected: both modules build and test without the workspace.
+Expected: both modules build and test against the local v0.3 root through `go.work`. Do not use `GOWORK=off` before `v0.3.0` exists remotely; standalone module resolution is a post-tag release verification.
 
 - [ ] **Step 5: Commit adapter migration**
 
@@ -273,7 +270,7 @@ git add runtime/adapters
 git commit -m "refactor(runtime): move adapter modules"
 ```
 
-### Task 4: Move Runtime Examples and Update Integration Module
+### Task 3: Move Runtime Examples and Update Integration Module
 
 **Files:**
 - Move: `examples/bff/` → `examples/runtime/bff/`
@@ -339,7 +336,7 @@ Run:
 ```bash
 go build ./examples/runtime/...
 go test ./examples/runtime/... -count=1
-(cd integration && GOWORK=off go mod tidy && go test ./redis -run '^$' -count=1)
+(cd integration && go mod tidy && go test ./redis -run '^$' -count=1)
 ```
 
 Expected: examples PASS; the integration package compiles without starting Docker when `-run '^$'` selects no tests.
@@ -351,7 +348,7 @@ git add examples/runtime integration go.work go.work.sum
 git commit -m "refactor(runtime): migrate examples and integration paths"
 ```
 
-### Task 5: Update CI Paths and Add Runtime Migration Gates
+### Task 4: Update CI Paths and Add Runtime Migration Gates
 
 **Files:**
 - Modify: `.github/workflows/ci.yml`
@@ -375,9 +372,9 @@ adapters/redis     -> runtime/adapters/redis
 
 Keep normal, race, vet, standalone, and dependency-boundary steps. Extend the root forbidden dependency regex to reject `dubbo|triple` while allowing Testcontainers' transitive gRPC only inside `integration`.
 
-- [ ] **Step 2: Make release tests expect three eventual tags**
+- [ ] **Step 2: Keep release assertions green until the final release task**
 
-Update the release workflow tests so the final Management plan must create these tags from a single release revision:
+Update only path-sensitive release fixtures needed by the Runtime move. Do not make this task assert unreleased v0.3 metadata or tags. The final Management release task owns the exact three-tag contract:
 
 ```text
 v0.3.0
@@ -385,7 +382,7 @@ runtime/adapters/gin/v0.3.0
 runtime/adapters/redis/v0.3.0
 ```
 
-At this stage the release workflow may still be red because `VERSION` remains `0.2.0`; keep the tag assertions in the test and let the Management release task make them green.
+Keep `VERSION` at `0.2.0` and every committed test green. Management Task 11 adds the final tag assertions and changes `VERSION` atomically.
 
 - [ ] **Step 3: Add a no-RPC public surface check**
 
@@ -412,13 +409,13 @@ git add .github/workflows/ci.yml release_workflow_test.go documentation_test.go 
 git commit -m "ci: validate v0.3 runtime layout"
 ```
 
-### Task 6: Runtime Migration Review Gate
+### Task 5: Runtime Migration Review Gate
 
 **Files:**
 - Verify only; modify files only to fix failures introduced by Tasks 1–5.
 
 **Interfaces:**
-- Consumes: complete migrated Runtime tree.
+- Consumes: complete migrated Runtime tree from Tasks 1–4.
 - Produces: a stable base for the Management implementation plan.
 
 - [ ] **Step 1: Search for unexpected old imports**
@@ -439,9 +436,9 @@ Expected: no output.
 go test ./... -count=1
 go test -race ./... -count=1
 go vet ./...
-(cd runtime/adapters/gin && GOWORK=off go test ./... -count=1 && GOWORK=off go vet ./...)
-(cd runtime/adapters/redis && GOWORK=off go test ./... -count=1 && GOWORK=off go vet ./...)
-(cd integration && GOWORK=off go test ./redis -run '^$' -count=1 && GOWORK=off go vet ./...)
+(cd runtime/adapters/gin && go test ./... -count=1 && go vet ./...)
+(cd runtime/adapters/redis && go test ./... -count=1 && go vet ./...)
+(cd integration && go test ./redis -run '^$' -count=1 && go vet ./...)
 git diff --check
 ```
 

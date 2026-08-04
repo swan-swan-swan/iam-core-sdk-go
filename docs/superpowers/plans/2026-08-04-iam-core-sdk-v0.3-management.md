@@ -907,18 +907,20 @@ go test ./... -count=1
 go test -race ./... -count=1
 go vet ./...
 go build ./examples/...
-(cd runtime/adapters/gin && GOWORK=off go test ./... -count=1 && GOWORK=off go test -race ./... -count=1 && GOWORK=off go vet ./...)
-(cd runtime/adapters/redis && GOWORK=off go test ./... -count=1 && GOWORK=off go test -race ./... -count=1 && GOWORK=off go vet ./...)
-(cd integration && GOWORK=off go test ./redis -run '^$' -count=1 && GOWORK=off go vet ./...)
+(cd runtime/adapters/gin && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
+(cd runtime/adapters/redis && go test ./... -count=1 && go test -race ./... -count=1 && go vet ./...)
+(cd integration && go test ./redis -run '^$' -count=1 && go vet ./...)
 git diff --check
 ```
 
 On a Docker-enabled runner also run:
 
 ```bash
-(cd integration && GOWORK=off go test ./redis -count=1)
-(cd integration && GOWORK=off go test -race ./redis -count=1)
+(cd integration && go test ./redis -count=1)
+(cd integration && go test -race ./redis -count=1)
 ```
+
+After the three v0.3.0 tags are published, a separate post-release job must verify consumers can resolve each published module with `GOWORK=off`; this check is intentionally not a pre-tag developer-workstation gate.
 
 - [ ] **Step 6: Search final forbidden surfaces**
 

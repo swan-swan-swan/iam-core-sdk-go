@@ -63,8 +63,7 @@ func TestV030ModuleLayout(t *testing.T) {
 
 	required := []string{
 		"runtime/core", "runtime/bff", "runtime/httpauthz", "runtime/testkit",
-		"runtime/adapters/gin/go.mod", "runtime/adapters/redis/go.mod",
-		"examples/runtime/bff", "examples/runtime/nethttp",
+		"runtime/internal/nilcheck", "runtime/internal/random",
 	}
 	for _, path := range required {
 		if _, err := os.Stat(path); err != nil {
@@ -72,7 +71,7 @@ func TestV030ModuleLayout(t *testing.T) {
 		}
 	}
 
-	forbidden := []string{"core", "bff", "httpauthz", "testkit", "adapters/gin", "adapters/redis", "rpc"}
+	forbidden := []string{"core", "bff", "httpauthz", "testkit", "rpc"}
 	for _, path := range forbidden {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("legacy or forbidden path still exists: %s", path)
@@ -83,17 +82,15 @@ func TestV030ModuleLayout(t *testing.T) {
 
 Add local `readFile(t, path)` and `repositoryRoot(t)` helpers; do not import implementation packages from the old module path.
 
-- [ ] **Step 2: Add module-content assertions**
+- [ ] **Step 2: Add task-scoped module-content assertions**
 
-Assert the nested module declarations are exactly:
+Assert the root module declaration is exactly:
 
 ```text
-module github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin
-module github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis
-module github.com/swan-swan-swan/iam-core-sdk-go/integration
+module github.com/swan-swan-swan/iam-core-sdk-go
 ```
 
-Assert every `go.mod`, non-historical Go source file, current README, current compatibility document, and GitHub workflow contains no import of `github.com/swan-swan-swan/iam-core-client-sdk-go`. Exclude `docs/superpowers/`, `CHANGELOG.md` historical release text, and the v0.2-to-v0.3 migration guide because those files must name the old module.
+Assert the moved `runtime/` Go sources and root Go files contain no import of `github.com/swan-swan-swan/iam-core-client-sdk-go`. This task deliberately excludes adapters, examples, integration, README/compatibility documents, and GitHub workflows because their paths and imports are owned by Tasks 2–4.
 
 - [ ] **Step 3: Run the focused tests and verify failure**
 
@@ -218,6 +215,7 @@ git commit -m "refactor(runtime): move v0.2 APIs under runtime"
 - Move: `adapters/gin/` → `runtime/adapters/gin/`
 - Move: `adapters/redis/` → `runtime/adapters/redis/`
 - Modify: both nested `go.mod` and `go.sum` files.
+- Modify: `module_layout_v030_test.go`
 - Test: all adapter tests and examples.
 
 **Interfaces:**
@@ -252,6 +250,8 @@ module github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis
 
 Its root dependency and all source imports must use `runtime/core` and `runtime/bff/session`. Preserve encryption, generation fencing, server-time leases, validation, and secret-sanitization tests unchanged apart from imports.
 
+Extend `module_layout_v030_test.go` to require both new adapter `go.mod` paths, forbid the old `adapters/gin` and `adapters/redis` paths, and assert both nested module declarations exactly match their new module paths.
+
 - [ ] **Step 4: Tidy and verify both modules in the development workspace**
 
 Run:
@@ -277,6 +277,7 @@ git commit -m "refactor(runtime): move adapter modules"
 - Move: `examples/nethttp/` → `examples/runtime/nethttp/`
 - Modify: `integration/go.mod`, `integration/redis/redis_test.go`
 - Modify: `go.work`, `go.work.sum`
+- Modify: `module_layout_v030_test.go`
 - Test: example tests and Redis integration tests.
 
 **Interfaces:**
@@ -307,6 +308,8 @@ require (
 ```
 
 Keep existing Testcontainers versions. Update Redis integration imports to `runtime/bff/session`, `runtime/bff/session/sessiontest`, and `runtime/adapters/redis`.
+
+Extend `module_layout_v030_test.go` to require both new example directories and assert the integration module declaration is exactly `module github.com/swan-swan-swan/iam-core-sdk-go/integration`.
 
 - [ ] **Step 3: Rewrite the workspace**
 

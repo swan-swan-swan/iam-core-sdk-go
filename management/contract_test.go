@@ -70,6 +70,63 @@ type contractEndpoint struct {
 	Path   string `json:"path"`
 }
 
+type operationRegistration struct {
+	Domain    string
+	Method    string
+	Path      string
+	Operation string
+}
+
+var implementedManagementOperations = []operationRegistration{
+	{"applications", "GET", "/api/v1/applications", "management.applications.list"},
+	{"applications", "POST", "/api/v1/applications", "management.applications.create"},
+	{"applications", "GET", "/api/v1/applications/{application_open_id}", "management.applications.get"},
+	{"applications", "PUT", "/api/v1/applications/{application_open_id}", "management.applications.update"},
+	{"applications", "PUT", "/api/v1/applications/{application_open_id}/status", "management.applications.set_enabled"},
+	{"applications", "DELETE", "/api/v1/applications/{application_open_id}", "management.applications.hard_delete"},
+
+	{"oidcclients", "GET", "/api/v1/applications/{application_open_id}/oidc-clients", "management.oidcclients.list"},
+	{"oidcclients", "POST", "/api/v1/applications/{application_open_id}/oidc-clients", "management.oidcclients.create"},
+	{"oidcclients", "GET", "/api/v1/oidc-clients/{client_id}", "management.oidcclients.get"},
+	{"oidcclients", "GET", "/api/v1/oidc-clients/{client_id}/security", "management.oidcclients.get_security"},
+	{"oidcclients", "PUT", "/api/v1/oidc-clients/{client_id}/security", "management.oidcclients.update_security"},
+	{"oidcclients", "POST", "/api/v1/oidc-clients/{client_id}/credentials", "management.oidcclients.create_credential"},
+	{"oidcclients", "DELETE", "/api/v1/oidc-clients/{client_id}/credentials/{credential_id}", "management.oidcclients.revoke_credential"},
+
+	{"admission", "GET", "/api/v1/applications/{application_open_id}/login-admission-rules", "management.admission.list"},
+	{"admission", "POST", "/api/v1/applications/{application_open_id}/login-admission-rules", "management.admission.create"},
+	{"admission", "PUT", "/api/v1/applications/{application_open_id}/login-admission-rules/{rule_open_id}", "management.admission.update"},
+	{"admission", "DELETE", "/api/v1/applications/{application_open_id}/login-admission-rules/{rule_open_id}", "management.admission.soft_delete"},
+	{"admission", "GET", "/api/v1/applications/{application_open_id}/oidc-clients/{client_id}/login-admission-rules", "management.admission.list"},
+	{"admission", "POST", "/api/v1/applications/{application_open_id}/oidc-clients/{client_id}/login-admission-rules", "management.admission.create"},
+	{"admission", "PUT", "/api/v1/applications/{application_open_id}/oidc-clients/{client_id}/login-admission-rules/{rule_open_id}", "management.admission.update"},
+	{"admission", "DELETE", "/api/v1/applications/{application_open_id}/oidc-clients/{client_id}/login-admission-rules/{rule_open_id}", "management.admission.soft_delete"},
+
+	{"groupmappings", "GET", "/api/v1/applications/{application_open_id}/oidc-clients/{client_id}/group-mappings", "management.groupmappings.get"},
+	{"groupmappings", "POST", "/api/v1/applications/{application_open_id}/oidc-clients/{client_id}/group-mappings", "management.groupmappings.create"},
+	{"groupmappings", "PUT", "/api/v1/applications/{application_open_id}/oidc-clients/{client_id}/group-mappings/{role_open_id}", "management.groupmappings.update"},
+	{"groupmappings", "DELETE", "/api/v1/applications/{application_open_id}/oidc-clients/{client_id}/group-mappings/{role_open_id}", "management.groupmappings.soft_delete"},
+
+	{"catalog", "GET", "/api/v1/applications/{application_open_id}/http-resource-catalog", "management.catalog.get"},
+	{"catalog", "POST", "/api/v1/applications/{application_open_id}/http-resource-servers", "management.catalog.create_resource_server"},
+	{"catalog", "PUT", "/api/v1/applications/{application_open_id}/http-resource-servers/{resource_server_open_id}", "management.catalog.update_resource_server"},
+	{"catalog", "POST", "/api/v1/applications/{application_open_id}/http-resources", "management.catalog.create_resource"},
+	{"catalog", "PUT", "/api/v1/applications/{application_open_id}/http-resources/{resource_open_id}", "management.catalog.update_resource"},
+	{"catalog", "POST", "/api/v1/applications/{application_open_id}/http-actions", "management.catalog.create_action"},
+	{"catalog", "PUT", "/api/v1/applications/{application_open_id}/http-actions/{action_open_id}", "management.catalog.update_action"},
+	{"catalog", "PUT", "/api/v1/applications/{application_open_id}/http-method-mappings", "management.catalog.put_method_mapping"},
+	{"catalog", "POST", "/api/v1/applications/{application_open_id}/http-resource-catalog/publish", "management.catalog.publish"},
+	{"catalog", "DELETE", "/api/v1/applications/{application_open_id}/http-resource-catalog/{entity_type}/{entity_open_id}", "management.catalog.deactivate"},
+
+	{"policies", "GET", "/api/v1/policy-documents", "management.policies.list"},
+	{"policies", "GET", "/api/v1/policy-documents/{policy_document_open_id}", "management.policies.get"},
+	{"policies", "POST", "/api/v1/policy-documents", "management.policies.create"},
+	{"policies", "PUT", "/api/v1/policy-documents/{policy_document_open_id}", "management.policies.update"},
+	{"policies", "POST", "/api/v1/policy-documents/preview", "management.policies.preview"},
+	{"policies", "PUT", "/api/v1/policy-documents/{policy_document_open_id}/bindings", "management.policies.set_bindings"},
+	{"policies", "GET", "/api/v1/policy-compiled-rules", "management.policies.list_compiled_rules"},
+}
+
 func TestApprovedManagementContract(t *testing.T) {
 	contents, err := os.ReadFile("testdata/contract-v1.8.1.json")
 	if err != nil {
@@ -88,6 +145,46 @@ func TestApprovedManagementContract(t *testing.T) {
 		key := endpoint.Domain + " " + endpoint.Method + " " + endpoint.Path
 		if _, ok := approvedManagementEndpointKeys[key]; !ok {
 			t.Fatalf("unapproved endpoint %s", key)
+		}
+	}
+}
+
+func TestImplementedManagementOperationsExactlyMatchApprovedContract(t *testing.T) {
+	contents, err := os.ReadFile("testdata/contract-v1.8.1.json")
+	if err != nil {
+		t.Fatalf("read approved management contract: %v", err)
+	}
+	var approved []contractEndpoint
+	if err := json.Unmarshal(contents, &approved); err != nil {
+		t.Fatalf("decode approved management contract: %v", err)
+	}
+
+	want := make(map[string]struct{}, len(approved))
+	for _, endpoint := range approved {
+		want[endpoint.Domain+" "+endpoint.Method+" "+endpoint.Path] = struct{}{}
+	}
+	got := make(map[string]string, len(implementedManagementOperations))
+	for _, operation := range implementedManagementOperations {
+		key := operation.Domain + " " + operation.Method + " " + operation.Path
+		if previous, duplicate := got[key]; duplicate {
+			t.Fatalf("endpoint %s registered more than once (%s and %s)", key, previous, operation.Operation)
+		}
+		if !strings.HasPrefix(operation.Operation, "management."+operation.Domain+".") {
+			t.Fatalf("endpoint %s has invalid operation %q", key, operation.Operation)
+		}
+		got[key] = operation.Operation
+	}
+	if len(got) != approvedManagementEndpointCount {
+		t.Fatalf("registered endpoint count = %d, want %d", len(got), approvedManagementEndpointCount)
+	}
+	for key := range want {
+		if _, ok := got[key]; !ok {
+			t.Errorf("approved endpoint is not registered: %s", key)
+		}
+	}
+	for key := range got {
+		if _, ok := want[key]; !ok {
+			t.Errorf("unapproved endpoint is registered: %s", key)
 		}
 	}
 }

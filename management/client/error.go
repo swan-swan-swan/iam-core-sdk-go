@@ -58,6 +58,27 @@ func (e *Error) GoString() string {
 	return e.Error()
 }
 
+// MarshalJSON preserves stable, non-sensitive error metadata while excluding
+// structured Data, which may contain server-supplied diagnostic values.
+func (e *Error) MarshalJSON() ([]byte, error) {
+	if e == nil {
+		return []byte("null"), nil
+	}
+	return json.Marshal(struct {
+		Kind       Kind   `json:"kind"`
+		Operation  string `json:"operation"`
+		StatusCode int    `json:"status_code"`
+		IAMCode    int    `json:"iam_code"`
+		Retryable  bool   `json:"retryable"`
+		RequestID  string `json:"request_id,omitempty"`
+		TraceID    string `json:"trace_id,omitempty"`
+	}{
+		Kind: e.Kind, Operation: e.Operation, StatusCode: e.StatusCode,
+		IAMCode: e.IAMCode, Retryable: e.Retryable,
+		RequestID: e.RequestID, TraceID: e.TraceID,
+	})
+}
+
 // Format keeps all common fmt verbs on errors limited to Error's safe
 // operation, kind, and status summary.
 func (e *Error) Format(state fmt.State, verb rune) {

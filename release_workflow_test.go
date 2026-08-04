@@ -1,6 +1,7 @@
 package iamcore_test
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -27,11 +28,15 @@ func TestDevPushReleaseWorkflowContract(t *testing.T) {
 	script := releaseRunScript(t, release)
 	for _, test := range []struct {
 		name    string
-		contents string
+		contents []byte
 	}{
-		{name: "split line", contents: "0.2\n.0\n"},
-		{name: "extra blank line", contents: "0.2.0\n\n"},
-		{name: "carriage return", contents: "0.2.0\r\n"},
+		{name: "split line", contents: []byte("0.2\n.0\n")},
+		{name: "extra blank line", contents: []byte("0.2.0\n\n")},
+		{name: "carriage return", contents: []byte("0.2.0\r\n")},
+		{name: "NUL byte", contents: []byte("0.2\x00.0\n")},
+		{name: "missing newline", contents: []byte("0.2.0")},
+		{name: "multiple valid lines", contents: []byte("0.2.0\n0.2.1\n")},
+		{name: "trailing data", contents: []byte("0.2.0\nextra\n")},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			assertVersionRejectedBeforeGit(t, script, test.contents)
@@ -39,7 +44,7 @@ func TestDevPushReleaseWorkflowContract(t *testing.T) {
 	}
 }
 
-func TestReleaseJobScopeStopsAtNextSibling(t *testing.T) {
+func TestReleaseJobExtractionIgnoresSiblingStep(t *testing.T) {
 	workflow := `jobs:
   release:
     name: Release
@@ -56,7 +61,8 @@ func TestReleaseJobScopeStopsAtNextSibling(t *testing.T) {
     permissions:
       contents: write
     steps:
-      - run: |
+      - name: Merge dev and create version tag
+        run: |
           set -euo pipefail
           git push --atomic origin main "${release_tag}"
 `
@@ -71,6 +77,44 @@ func TestReleaseJobScopeStopsAtNextSibling(t *testing.T) {
 		if strings.Contains(release, value) {
 			t.Fatalf("release job extraction included trailing sibling requirement %q", value)
 		}
+	}
+	if _, err := extractReleaseRunScript(release); err == nil {
+		t.Fatal("release run-script extraction accepted the trailing sibling step")
+	}
+}
+
+func TestReleaseRunScriptRequiresNamedSingleBlockStep(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		release string
+	}{
+		{
+			name: "earlier unrelated run block",
+			release: `  release:
+    steps:
+      - name: Earlier step
+        run: |
+          echo earlier
+      - name: Merge dev and create version tag
+        shell: bash`,
+		},
+		{
+			name: "future unrelated run block",
+			release: `  release:
+    steps:
+      - name: Merge dev and create version tag
+        run: |
+          echo release
+      - name: Future step
+        run: |
+          echo future`,
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := extractReleaseRunScript(test.release); err == nil {
+				t.Fatal("release run-script extraction accepted an unrelated run block")
+			}
+		})
 	}
 }
 
@@ -130,6 +174,8 @@ func assertReleaseJobContract(t *testing.T, release string) {
 
 	for _, value := range []string{
 		`^([0-9]+)\.([0-9]+)\.([0-9]+)$`,
+		`LC_ALL=C grep -axE '[0-9]+\.[0-9]+\.[0-9]+' VERSION`,
+		`LC_ALL=C wc -c < VERSION`,
 		`release_tag="v${release_version}"`,
 		`git fetch origin main dev --tags`,
 		`refs/tags/${release_tag}`,
@@ -159,20 +205,52 @@ func assertReleaseJobContract(t *testing.T, release string) {
 
 func releaseRunScript(t *testing.T, release string) string {
 	t.Helper()
+	script, err := extractReleaseRunScript(release)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return script
+}
+
+func extractReleaseRunScript(release string) (string, error) {
 	lines := strings.Split(release, "\n")
-	start := -1
+	runBlockCount := 0
+	stepIndex := -1
 	for index, line := range lines {
 		if line == "        run: |" {
-			start = index + 1
+			runBlockCount++
+		}
+		if line == "      - name: Merge dev and create version tag" {
+			if stepIndex >= 0 {
+				return "", fmt.Errorf("release job has multiple named merge/tag steps")
+			}
+			stepIndex = index
+		}
+	}
+	if runBlockCount != 1 {
+		return "", fmt.Errorf("release job must contain exactly one run: | block, got %d", runBlockCount)
+	}
+	if stepIndex < 0 {
+		return "", fmt.Errorf("release job has no named merge/tag step")
+	}
+
+	start := -1
+	end := len(lines)
+	for index := stepIndex + 1; index < len(lines); index++ {
+		line := lines[index]
+		if strings.HasPrefix(line, "      - ") {
+			end = index
 			break
+		}
+		if line == "        run: |" {
+			start = index + 1
 		}
 	}
 	if start < 0 {
-		t.Fatal("release job has no run script")
+		return "", fmt.Errorf("named merge/tag step has no run: | block")
 	}
-
 	var script []string
-	for _, line := range lines[start:] {
+	for _, line := range lines[start:end] {
 		if line == "" {
 			script = append(script, line)
 			continue
@@ -183,15 +261,15 @@ func releaseRunScript(t *testing.T, release string) string {
 		script = append(script, strings.TrimPrefix(line, "          "))
 	}
 	if len(script) == 0 {
-		t.Fatal("release job run script is empty")
+		return "", fmt.Errorf("named merge/tag step run script is empty")
 	}
-	return strings.Join(script, "\n")
+	return strings.Join(script, "\n"), nil
 }
 
-func assertVersionRejectedBeforeGit(t *testing.T, script, version string) {
+func assertVersionRejectedBeforeGit(t *testing.T, script string, version []byte) {
 	t.Helper()
 	directory := t.TempDir()
-	if err := os.WriteFile(filepath.Join(directory, "VERSION"), []byte(version), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(directory, "VERSION"), version, 0o600); err != nil {
 		t.Fatalf("write VERSION: %v", err)
 	}
 

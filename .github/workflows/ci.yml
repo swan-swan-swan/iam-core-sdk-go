@@ -169,15 +169,18 @@ jobs:
           RELEASE_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          release_version_lines=()
-          while IFS= read -r release_version_line || [[ -n "${release_version_line}" ]]; do
-            release_version_lines+=("${release_version_line}")
-          done < VERSION
-          if [[ "${#release_version_lines[@]}" -eq 1 ]]; then
-            release_version="${release_version_lines[0]}"
-          else
-            release_version=""
+          if ! LC_ALL=C grep -axEq '[0-9]+\.[0-9]+\.[0-9]+' VERSION; then
+            echo "VERSION must use X.Y.Z format" >&2
+            exit 1
           fi
+          version_byte_count=$(LC_ALL=C wc -c < VERSION)
+          matching_version_byte_count=$(LC_ALL=C grep -axE '[0-9]+\.[0-9]+\.[0-9]+' VERSION | LC_ALL=C wc -c)
+          matching_version_line_count=$(LC_ALL=C grep -axE '[0-9]+\.[0-9]+\.[0-9]+' VERSION | LC_ALL=C wc -l)
+          if [[ "${matching_version_line_count}" -ne 1 || "${matching_version_byte_count}" -ne "${version_byte_count}" ]]; then
+            echo "VERSION must contain exactly one X.Y.Z line" >&2
+            exit 1
+          fi
+          IFS= read -r release_version < VERSION
           if [[ ! "${release_version}" =~ ^([0-9]+)\.([0-9]+)\.([0-9]+)$ ]]; then
             echo "VERSION must use X.Y.Z format" >&2
             exit 1

@@ -35,7 +35,7 @@ jobs:
       - name: Root vet
         run: go vet ./...
       - name: Root examples
-        run: go build ./examples/...
+        run: go build ./examples/runtime/...
       - name: Standalone root tests
         run: GOWORK=off go test ./... -count=1
       - name: Standalone root race tests
@@ -46,11 +46,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          if GOWORK=off go list -m all | grep -Eiq '(gin-gonic|go-redis|docker|moby|testcontainers)'; then
+          if GOWORK=off go list -m all | grep -Eiq '(gin-gonic|go-redis|docker|moby|testcontainers|dubbo|triple|google\.golang\.org/grpc)'; then
             echo "forbidden module in root dependency graph" >&2
             exit 1
           fi
-          if GOWORK=off go list -deps ./... | grep -Eiq '(gin-gonic|go-redis|docker|moby|testcontainers)'; then
+          if GOWORK=off go list -deps ./... | grep -Eiq '(gin-gonic|go-redis|docker|moby|testcontainers|dubbo|triple|google\.golang\.org/grpc)'; then
             echo "forbidden package in root dependency graph" >&2
             exit 1
           fi
@@ -74,21 +74,21 @@ jobs:
         with:
           go-version: "1.24.x"
           cache: true
-          cache-dependency-path: adapters/gin/go.sum
+          cache-dependency-path: runtime/adapters/gin/go.sum
       - name: Download Gin modules
-        working-directory: adapters/gin
+        working-directory: runtime/adapters/gin
         run: go mod download
       - name: Gin tests
-        working-directory: adapters/gin
+        working-directory: runtime/adapters/gin
         run: go test ./... -count=1
       - name: Gin race tests
-        working-directory: adapters/gin
+        working-directory: runtime/adapters/gin
         run: go test -race ./... -count=1
       - name: Gin vet
-        working-directory: adapters/gin
+        working-directory: runtime/adapters/gin
         run: go vet ./...
       - name: Gin example
-        working-directory: adapters/gin
+        working-directory: runtime/adapters/gin
         run: go build -o /tmp/iamcore-gin-example ./example
 
   redis:
@@ -103,21 +103,21 @@ jobs:
         with:
           go-version: "1.24.x"
           cache: true
-          cache-dependency-path: adapters/redis/go.sum
+          cache-dependency-path: runtime/adapters/redis/go.sum
       - name: Download Redis adapter modules
-        working-directory: adapters/redis
+        working-directory: runtime/adapters/redis
         run: go mod download
       - name: Redis adapter tests
-        working-directory: adapters/redis
+        working-directory: runtime/adapters/redis
         run: go test ./... -count=1
       - name: Redis adapter race tests
-        working-directory: adapters/redis
+        working-directory: runtime/adapters/redis
         run: go test -race ./... -count=1
       - name: Redis adapter vet
-        working-directory: adapters/redis
+        working-directory: runtime/adapters/redis
         run: go vet ./...
       - name: Redis adapter example
-        working-directory: adapters/redis
+        working-directory: runtime/adapters/redis
         run: go build -o /tmp/iamcore-redis-example ./example
 
   integration:

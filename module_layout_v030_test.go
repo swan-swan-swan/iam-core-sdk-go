@@ -83,6 +83,126 @@ func TestV030ModuleLayout(t *testing.T) {
 			}
 		}
 	}
+
+	assertNoRPCPublicSurface(t, root)
+}
+
+func TestV030ModuleLayoutParsesCommentedRequireBlocks(t *testing.T) {
+	moduleFile := filepath.Join(t.TempDir(), "go.mod")
+	contents := `module example.com/fixture
+
+go 1.24.0
+
+require ( // direct dependencies
+	example.com/dubbo v1.0.0 // indirectly required by policy
+	google.golang.org/grpc v1.70.0 //indirect; transitive test dependency
+) // end dependencies
+
+require( // another direct dependency block
+	example.com/triple v1.0.0
+)
+`
+	if err := os.WriteFile(moduleFile, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write fixture go.mod: %v", err)
+	}
+
+	got := strings.Join(directGoModRequirements(t, moduleFile), ",")
+	const want = "example.com/dubbo,example.com/triple"
+	if got != want {
+		t.Fatalf("direct requirements = %q, want %q", got, want)
+	}
+}
+
+func assertNoRPCPublicSurface(t *testing.T, root string) {
+	t.Helper()
+	historicalDirectories := map[string]bool{
+		".git":         true,
+		".superpowers": true,
+		".worktrees":   true,
+		"docs":         true,
+		"releases":     true,
+		"vendor":       true,
+	}
+	err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			relative, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return relErr
+			}
+			if path != root && !strings.Contains(relative, string(filepath.Separator)) && historicalDirectories[relative] {
+				return filepath.SkipDir
+			}
+			if entry.Name() == "rpc" {
+				t.Errorf("RPC package directory is forbidden: %s", relative)
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if entry.Name() != "go.mod" {
+			return nil
+		}
+
+		relative, err := filepath.Rel(root, path)
+		if err != nil {
+			return err
+		}
+		for _, modulePath := range directGoModRequirements(t, path) {
+			lowerPath := strings.ToLower(modulePath)
+			if strings.Contains(lowerPath, "dubbo") || strings.Contains(lowerPath, "triple") {
+				t.Errorf("%s directly requires forbidden RPC module %q", relative, modulePath)
+			}
+			if relative == "go.mod" && modulePath == "google.golang.org/grpc" {
+				t.Errorf("root go.mod directly requires forbidden gRPC module %q", modulePath)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk no-RPC public surface: %v", err)
+	}
+}
+
+func directGoModRequirements(t *testing.T, path string) []string {
+	t.Helper()
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+
+	var requirements []string
+	inRequireBlock := false
+	for _, line := range strings.Split(string(raw), "\n") {
+		trimmed := strings.TrimSpace(line)
+		syntax := trimmed
+		var commentFields []string
+		if comment := strings.Index(syntax, "//"); comment >= 0 {
+			commentFields = strings.Fields(strings.TrimSpace(syntax[comment+2:]))
+			syntax = strings.TrimSpace(syntax[:comment])
+		}
+		fields := strings.Fields(syntax)
+		switch {
+		case syntax == "require(" || len(fields) == 2 && fields[0] == "require" && fields[1] == "(":
+			inRequireBlock = true
+			continue
+		case inRequireBlock && len(fields) == 1 && fields[0] == ")":
+			inRequireBlock = false
+			continue
+		}
+		if len(commentFields) == 1 && commentFields[0] == "indirect" ||
+			len(commentFields) > 1 && commentFields[0] == "indirect;" {
+			continue
+		}
+		if inRequireBlock && len(fields) >= 2 {
+			requirements = append(requirements, fields[0])
+		}
+		if !inRequireBlock && len(fields) >= 3 && fields[0] == "require" {
+			requirements = append(requirements, fields[1])
+		}
+	}
+	return requirements
 }
 
 func taskScopedGoSources(t *testing.T, root string) []string {

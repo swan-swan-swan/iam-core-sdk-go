@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-func TestV02DocumentationContract(t *testing.T) {
+func TestDocumentationContract(t *testing.T) {
 	read := func(path string) string {
 		t.Helper()
 		raw, err := os.ReadFile(path)
@@ -186,12 +186,14 @@ func TestV02DocumentationContract(t *testing.T) {
 		"go test ./... -count=1",
 		"go test -race ./... -count=1",
 		"go vet ./...",
-		"go build ./examples/...",
+		"go build ./examples/runtime/...",
 		"GOWORK=off go test ./... -count=1",
 		"GOWORK=off go test -race ./... -count=1",
 		"GOWORK=off go vet ./...",
-		"working-directory: adapters/gin",
-		"working-directory: adapters/redis",
+		"cache-dependency-path: runtime/adapters/gin/go.sum",
+		"working-directory: runtime/adapters/gin",
+		"cache-dependency-path: runtime/adapters/redis/go.sum",
+		"working-directory: runtime/adapters/redis",
 		"go build -o /tmp/iamcore-gin-example ./example",
 		"go build -o /tmp/iamcore-redis-example ./example",
 		"working-directory: integration",
@@ -199,8 +201,14 @@ func TestV02DocumentationContract(t *testing.T) {
 		"GOTOOLCHAIN=local go test -race ./redis -count=1",
 		"GOTOOLCHAIN=local go vet ./...",
 		"Redis 6.2/7.4",
+		"dubbo|triple|google\\.golang\\.org/grpc",
 	)
 	forbidAll("CI workflow", workflow,
+		"go build ./examples/...",
+		"cache-dependency-path: adapters/gin/go.sum",
+		"working-directory: adapters/gin",
+		"cache-dependency-path: adapters/redis/go.sum",
+		"working-directory: adapters/redis",
 		"continue-on-error",
 		"|| true",
 		"-short",

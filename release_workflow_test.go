@@ -249,6 +249,8 @@ func assertReleaseJobContract(t *testing.T, release string) {
 		"master",
 		"adapters/gin/v",
 		"adapters/redis/v",
+		"runtime/adapters/gin/v",
+		"runtime/adapters/redis/v",
 		"--force",
 		"continue-on-error",
 		"|| true",

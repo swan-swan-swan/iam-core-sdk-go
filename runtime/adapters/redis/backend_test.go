@@ -15,8 +15,8 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/bff/session"
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/bff/session/sessiontest"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session/sessiontest"
 )
 
 func TestBackendConformanceAgainstLogicalClassificationHarness(t *testing.T) {

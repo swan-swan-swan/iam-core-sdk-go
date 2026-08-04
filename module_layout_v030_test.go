@@ -21,6 +21,7 @@ func TestV030ModuleLayout(t *testing.T) {
 	required := []string{
 		"runtime/core", "runtime/bff", "runtime/httpauthz", "runtime/testkit",
 		"runtime/internal/nilcheck", "runtime/internal/random",
+		"runtime/adapters/gin/go.mod", "runtime/adapters/redis/go.mod",
 	}
 	for _, path := range required {
 		if _, err := os.Stat(filepath.Join(root, path)); err != nil {
@@ -28,7 +29,10 @@ func TestV030ModuleLayout(t *testing.T) {
 		}
 	}
 
-	forbidden := []string{"core", "bff", "httpauthz", "testkit", "rpc"}
+	forbidden := []string{
+		"core", "bff", "httpauthz", "testkit", "rpc",
+		"adapters/gin", "adapters/redis",
+	}
 	for _, path := range forbidden {
 		if _, err := os.Stat(filepath.Join(root, path)); !errors.Is(err, os.ErrNotExist) {
 			t.Errorf("legacy or forbidden path still exists: %s", path)
@@ -37,6 +41,26 @@ func TestV030ModuleLayout(t *testing.T) {
 
 	if declaration := strings.SplitN(rootModule, "\n", 2)[0]; declaration != "module github.com/swan-swan-swan/iam-core-sdk-go" {
 		t.Errorf("root module declaration = %q, want %q", declaration, "module github.com/swan-swan-swan/iam-core-sdk-go")
+	}
+
+	adapterModules := []struct {
+		path        string
+		declaration string
+	}{
+		{
+			path:        "runtime/adapters/gin/go.mod",
+			declaration: "module github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin",
+		},
+		{
+			path:        "runtime/adapters/redis/go.mod",
+			declaration: "module github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis",
+		},
+	}
+	for _, adapterModule := range adapterModules {
+		moduleFile := readFile(t, adapterModule.path)
+		if declaration := strings.SplitN(moduleFile, "\n", 2)[0]; declaration != adapterModule.declaration {
+			t.Errorf("%s module declaration = %q, want %q", adapterModule.path, declaration, adapterModule.declaration)
+		}
 	}
 
 	const legacyModule = "github.com/swan-swan-swan/iam-core-client-sdk-go"

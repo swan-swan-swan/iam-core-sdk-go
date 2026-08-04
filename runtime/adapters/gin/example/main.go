@@ -11,9 +11,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	ginadapter "github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/gin"
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/httpauthz"
+	ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/httpauthz"
 )
 
 const startupTimeout = 10 * time.Second

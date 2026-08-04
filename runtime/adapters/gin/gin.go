@@ -5,8 +5,8 @@ import (
 	"net/http"
 
 	"github.com/gin-gonic/gin"
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/core"
-	"github.com/swan-swan-swan/iam-core-client-sdk-go/httpauthz"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/httpauthz"
 )
 
 type admissionWriter struct {

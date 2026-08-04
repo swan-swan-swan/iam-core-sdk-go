@@ -10,7 +10,7 @@ import (
 	"sync"
 	"testing"
 
-	redisadapter "github.com/swan-swan-swan/iam-core-client-sdk-go/adapters/redis"
+	redisadapter "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis"
 )
 
 func TestCodecEncryptsVerifierAndTokens(t *testing.T) {

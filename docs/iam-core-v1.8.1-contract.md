@@ -1,7 +1,7 @@
-# IAM Core v1.8.1 Client Contract
+# IAM Core v1.8.1 SDK Contract
 
-本文冻结 IAM Core Go Client SDK v0.2 实际实现的 v1.8.1 HTTP 契约。它是客户端边界，
-不是 IAM Core 管理面 API 清单。RPC 不在本 SDK v0.2 的支持范围内。
+本文冻结 IAM Core Go SDK v0.3 的 IAM Core v1.8.1 Runtime 契约与 Management 契约。
+Runtime 覆盖 OIDC/BFF 和 HTTP PDP；Management 覆盖已批准的平台接入控制面。RPC 暂不支持。
 
 ## Discovery 与端点
 
@@ -128,15 +128,44 @@ SDK 不缓存 allow/deny，不使用陈旧 allow、groups 或本地规则降级�
 SessionResolver 的 Bearer-only Service 不检查浏览器 Session，只解析 Authorization Header
 并忽略无关 Cookie。
 
+## Management 契约
+
+Management 冻结 42 个 IAM Core v1.8.1 HTTP 端点，分布在 `applications`、`oidcclients`、
+`admission`、`groupmappings`、`catalog` 和 `policies` 六个领域。领域 Client 只依赖共享
+`management/client` Transport，不相互依赖，也不依赖 Runtime。
+
+共享 Client 只接受调用方注入的 `TokenSource`。每次调用读取一次 Access Token，最多发送
+一次 HTTP 请求，不刷新 Token、不自动重试，也不自动生成幂等键。生产 Base URL 必须使用
+HTTPS；仅 loopback 测试允许 HTTP。Client 复制注入的 `http.Client`、清除 Cookie Jar、
+禁止重定向，并应用有限总超时。
+
+所有响应都必须是统一 envelope，并包含 `code`、`message` 和 `data`。成功响应要求 HTTP 2xx、
+`code=0` 和方法所需的数据；错误响应不解码领域结果。解码拒绝重复 JSON key、尾随 JSON、
+类型错误、超限 body 和缺失必需字段，但允许同一 IAM Core v1.8.x 增加不冲突字段。
+`request_id` 与 `trace_id` 仅作为低敏元数据返回。
+
+revision/hash 是对应写方法的显式输入或输出。409 冲突保留服务端明确提供的最新 revision/hash
+和脱敏影响摘要；SDK 不自动重新读取或再次提交。Catalog 发布是无请求体的单次 POST，
+不从 Runtime Manifest 自动写入。Policy Document 作为完整对象传递，SDK 不实现本地编译器、
+Casbin evaluator 或降级授权。
+
+OIDC Credential Secret 只在创建响应建模为 `SensitiveString`。`String()`、`GoString()`、
+默认格式化和 JSON 均输出 `[REDACTED]`；调用方必须显式调用 `Reveal()`。后续凭据查询不包含
+Secret，Observer、错误和元数据也不会复制它。
+
+Management 不包括 users、organizations、global roles、Cloud Provider、登录准入 audits 或
+授权决策 audits；不提供跨领域一键 Provision，也不在普通业务请求链路或业务启动时写 IAM。
+
 ## 数据与可观测性边界
 
 普通业务 Context 只公开强类型 AuthContext/Decision。Access Token 仅经受控 TokenSource
-在请求生命周期内使用。Token、Authorization Header、Client Secret、授权码、PKCE
+在请求生命周期内使用。Token、Authorization Header、Client Secret、OIDC Credential Secret、授权码、PKCE
 verifier、Cookie、Session/Flow ID、nonce/state 与完整 URL query 不得进入错误、日志、
 Hook、Trace baggage 或 metrics label。
 
 HTTP Service 只记录稳定的 `httpauthz.service.authenticate` / `httpauthz.service.require`
 操作、终态 outcome、credential source 与 duration；不会记录凭证、标识符、完整错误或 URL。
 
-IAM Application、OIDC Client、Resource Catalog、Policy、用户、组织、角色与审计查询/管理
-接口都不属于本 SDK。SDK 不自动创建、修改或注册任何管理面对象。
+Management Observer 只公开稳定 operation、终态 outcome、status、IAM code、request ID、
+trace ID 和 duration；每次调用最多产生一个终态事件。Observer panic 被隔离，不改变调用结果，
+也不会触发额外 HTTP 请求。

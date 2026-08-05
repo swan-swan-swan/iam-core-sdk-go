@@ -4,8 +4,7 @@ go 1.24.0
 
 require (
 	github.com/redis/go-redis/v9 v9.21.0
-	github.com/swan-swan-swan/iam-core-sdk-go v0.3.0
-	github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis v0.3.0
+	github.com/swan-swan-swan/iam-core-sdk-go v0.4.0
 	github.com/testcontainers/testcontainers-go v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/redis v0.40.0
 )

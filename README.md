@@ -1,13 +1,15 @@
 # IAM Core Go SDK
 
-本仓库提供面向 IAM Core v1.8.1 的 Go SDK。`v0.3.0` 使用新 Module
-`github.com/swan-swan-swan/iam-core-sdk-go`，并在同一仓库中明确划分两类能力：
+本仓库提供面向 IAM Core v1.8.1 的 Go SDK。`v0.4.0` 使用单一 Go Module
+`github.com/swan-swan-swan/iam-core-sdk-go`，并在同一版本中明确划分两类能力：
 
 - `runtime/*`：业务请求链路中的 OIDC/BFF、HTTP Resource Server、Gin 与 Redis adapter。
 - `management/*`：受控管理服务、专用 CLI 或 CI/CD 使用的平台接入控制面 Client。
 
-`v0.3.0` 是破坏性升级，没有旧 import wrapper。请按
-[v0.2 → v0.3 迁移指南](docs/migration-v0.2-to-v0.3.md)一次性替换 Module 与 import。
+`v0.4.0` 将 Gin 和 Redis Adapter 合并进根 Module，公开 import 路径保持不变。升级前请阅读
+[v0.3 → v0.4 迁移指南](docs/migration-v0.3-to-v0.4.md)并删除旧的 Adapter Module 依赖。
+从旧仓库名迁移时，另请参考
+[v0.2 → v0.3 迁移指南](docs/migration-v0.2-to-v0.3.md)。
 RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 
 最低 Go 版本为 1.24。协议边界见
@@ -16,16 +18,15 @@ RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 
 ## 安装
 
-根 Module 同时包含 Runtime 与 Management。Gin 和 Redis 是两个独立 Module，按需安装：
+根 Module 同时包含 Runtime、Management、Gin Adapter 与 Redis Adapter，只需安装一个版本：
 
 ```bash
-go get github.com/swan-swan-swan/iam-core-sdk-go@v0.3.0
-go get github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin@v0.3.0
-go get github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis@v0.3.0
+go get github.com/swan-swan-swan/iam-core-sdk-go@v0.4.0
 ```
 
-根 Module 不会传递引入 Gin、go-redis、Docker、Moby 或 Testcontainers。三个 Module 分别由
-`v0.3.0`、`runtime/adapters/gin/v0.3.0` 和 `runtime/adapters/redis/v0.3.0` 标记。
+根 Module 的依赖图包含 Gin 和 go-redis，但未 import 对应 Adapter 的程序不会编译或链接这些
+package。Docker、Moby 和 Testcontainers 仍只属于仓库内 integration 测试 Module。SDK 每个版本
+只创建一个根标签，例如 `v0.4.0`。
 
 ## 能力边界
 
@@ -144,7 +145,8 @@ go vet ./...
 go build ./examples/...
 ```
 
-Gin、Redis 与 integration 是独立 Module，需要分别验证。Redis 6.2/7.4 conformance 依赖
-Docker-enabled runner。发布 workflow 在全部模块通过后，才为同一 release merge commit
-原子创建并推送根、Gin 和 Redis 三个标签；开发工作站不创建或推送发布标签。真实发布前
-GitHub repository metadata 必须已是 `swan-swan-swan/iam-core-sdk-go`。
+Runtime、Management、Gin 和 Redis Adapter 都由根 Module 的普通测试、race 和 vet 覆盖。
+integration 是不发布的测试 Module；其 Redis 6.2/7.4 conformance 依赖 Docker-enabled runner。
+发布 workflow 在根 Module 和 integration 全部通过后，只为 release merge commit 创建并推送
+一个根标签；开发工作站不创建或推送发布标签。真实发布前 GitHub repository metadata 必须已是
+`swan-swan-swan/iam-core-sdk-go`。

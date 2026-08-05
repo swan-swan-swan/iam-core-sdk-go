@@ -6,6 +6,17 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 - No changes yet.
 
+## v0.4.0
+
+### Single-module delivery
+
+- Consolidated Runtime, Management, Gin Adapter, and Redis Adapter into a single root Module while
+  keeping all public import paths unchanged.
+- Removed the nested Gin and Redis `go.mod` files. Consumers install every SDK package through
+  `github.com/swan-swan-swan/iam-core-sdk-go@v0.4.0`.
+- Simplified release automation to create, verify, and push only the root `v0.4.0` tag.
+- Kept Docker, Moby, and Testcontainers isolated in the unpublished integration test Module.
+
 ## v0.3.0
 
 ### Breaking module layout

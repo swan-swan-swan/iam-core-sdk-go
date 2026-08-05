@@ -2,11 +2,7 @@ go 1.24.0
 
 use (
 	.
-	./runtime/adapters/gin
-	./runtime/adapters/redis
 	./integration
 )
 
-replace github.com/swan-swan-swan/iam-core-sdk-go v0.3.0 => .
-
-replace github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis v0.3.0 => ./runtime/adapters/redis
+replace github.com/swan-swan-swan/iam-core-sdk-go v0.4.0 => .

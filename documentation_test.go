@@ -35,6 +35,8 @@ func TestDocumentationContract(t *testing.T) {
 	readme := read("README.md")
 	requireAll("README", readme,
 		"IAM Core Go SDK",
+		"v0.4.0",
+		"单一 Go Module",
 		"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core",
 		"github.com/swan-swan-swan/iam-core-sdk-go/management/client",
 		"github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin",
@@ -81,6 +83,7 @@ func TestDocumentationContract(t *testing.T) {
 		"github.com/swan-swan-swan/iam-core-client-sdk-go",
 		"Runtime only",
 		"v0.3.x",
+		"v0.4.x",
 		"github.com/swan-swan-swan/iam-core-sdk-go",
 		"Runtime + approved platform-integration Management",
 		"IAM Core v1.8.1",
@@ -88,6 +91,8 @@ func TestDocumentationContract(t *testing.T) {
 
 	changelog := read("CHANGELOG.md")
 	requireAll("CHANGELOG", changelog,
+		"v0.4.0",
+		"single root Module",
 		"v0.3.0",
 		"Breaking",
 		"applications",
@@ -132,14 +137,14 @@ func TestDocumentationContract(t *testing.T) {
 		"go vet ./...",
 		"go build ./examples/...",
 		"GOWORK=off go test ./... -count=1",
-		"working-directory: runtime/adapters/gin",
-		"working-directory: runtime/adapters/redis",
 		"working-directory: integration",
 		"GOTOOLCHAIN=local go test ./redis -count=1",
 		"GOTOOLCHAIN=local go test -race ./redis -count=1",
-		"Verify published v0.3.0 modules",
+		"Verify published v0.4.0 module",
 	)
 	forbidAll("CI workflow", workflow,
+		"runtime/adapters/gin/v0.4.0",
+		"runtime/adapters/redis/v0.4.0",
 		"continue-on-error",
 		"|| true",
 		"release paused",

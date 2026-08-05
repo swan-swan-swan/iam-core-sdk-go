@@ -6,13 +6,14 @@ import (
 	"go/token"
 	"io/fs"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
 )
 
-func TestV030ModuleLayout(t *testing.T) {
+func TestV040ModuleLayout(t *testing.T) {
 	root := repositoryRoot(t)
 	rootModule := readFile(t, "go.mod")
 	if !strings.Contains(rootModule, "module github.com/swan-swan-swan/iam-core-sdk-go\n") {
@@ -22,7 +23,7 @@ func TestV030ModuleLayout(t *testing.T) {
 	required := []string{
 		"runtime/core", "runtime/bff", "runtime/httpauthz", "runtime/testkit",
 		"runtime/internal/nilcheck", "runtime/internal/random",
-		"runtime/adapters/gin/go.mod", "runtime/adapters/redis/go.mod",
+		"runtime/adapters/gin", "runtime/adapters/redis",
 		"examples/runtime/bff", "examples/runtime/nethttp",
 	}
 	for _, path := range required {
@@ -34,6 +35,8 @@ func TestV030ModuleLayout(t *testing.T) {
 	forbidden := []string{
 		"core", "bff", "httpauthz", "testkit", "rpc",
 		"adapters/gin", "adapters/redis",
+		"runtime/adapters/gin/go.mod", "runtime/adapters/gin/go.sum",
+		"runtime/adapters/redis/go.mod", "runtime/adapters/redis/go.sum",
 	}
 	for _, path := range forbidden {
 		if _, err := os.Stat(filepath.Join(root, path)); !errors.Is(err, os.ErrNotExist) {
@@ -43,26 +46,6 @@ func TestV030ModuleLayout(t *testing.T) {
 
 	if declaration := strings.SplitN(rootModule, "\n", 2)[0]; declaration != "module github.com/swan-swan-swan/iam-core-sdk-go" {
 		t.Errorf("root module declaration = %q, want %q", declaration, "module github.com/swan-swan-swan/iam-core-sdk-go")
-	}
-
-	adapterModules := []struct {
-		path        string
-		declaration string
-	}{
-		{
-			path:        "runtime/adapters/gin/go.mod",
-			declaration: "module github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin",
-		},
-		{
-			path:        "runtime/adapters/redis/go.mod",
-			declaration: "module github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis",
-		},
-	}
-	for _, adapterModule := range adapterModules {
-		moduleFile := readFile(t, adapterModule.path)
-		if declaration := strings.SplitN(moduleFile, "\n", 2)[0]; declaration != adapterModule.declaration {
-			t.Errorf("%s module declaration = %q, want %q", adapterModule.path, declaration, adapterModule.declaration)
-		}
 	}
 
 	integrationModule := readFile(t, "integration/go.mod")
@@ -81,7 +64,24 @@ func TestV030ModuleLayout(t *testing.T) {
 	assertNoRPCPublicSurface(t, root)
 }
 
-func TestV030ModuleLayoutUnquotesLegacyImportLiterals(t *testing.T) {
+func TestV040AdaptersResolveFromRootModuleWithoutWorkspace(t *testing.T) {
+	command := exec.Command(
+		"go", "list", "-f", "{{.Module.Path}}",
+		"./runtime/adapters/gin",
+		"./runtime/adapters/redis",
+	)
+	command.Env = append(os.Environ(), "GOWORK=off")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("list adapters from root module: %v\n%s", err, output)
+	}
+	const want = "github.com/swan-swan-swan/iam-core-sdk-go\ngithub.com/swan-swan-swan/iam-core-sdk-go\n"
+	if string(output) != want {
+		t.Fatalf("adapter module paths = %q, want %q", output, want)
+	}
+}
+
+func TestV040ModuleLayoutUnquotesLegacyImportLiterals(t *testing.T) {
 	fixture := filepath.Join(t.TempDir(), "legacy_import_literals.go")
 	contents := "package fixture\n\nimport (\n" +
 		"\t_ `github.com/swan-swan-swan/iam-core-client-sdk-go/core`\n" +
@@ -119,7 +119,7 @@ func legacyImportsInGoFile(t *testing.T, path, legacyModule string) []string {
 	return legacyImports
 }
 
-func TestV030ModuleLayoutParsesCommentedRequireBlocks(t *testing.T) {
+func TestV040ModuleLayoutParsesCommentedRequireBlocks(t *testing.T) {
 	moduleFile := filepath.Join(t.TempDir(), "go.mod")
 	contents := `module example.com/fixture
 
@@ -145,7 +145,7 @@ require( // another direct dependency block
 	}
 }
 
-func TestV030ModuleLayoutUnquotesDirectRequirements(t *testing.T) {
+func TestV040ModuleLayoutUnquotesDirectRequirements(t *testing.T) {
 	moduleFile := filepath.Join(t.TempDir(), "go.mod")
 	contents := `module example.com/fixture
 

@@ -6,6 +6,13 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 - No changes yet.
 
+## v0.4.1
+
+### Security
+
+- Updated `github.com/go-jose/go-jose/v4` to v4.1.4 to address the published JWE denial-of-service advisory.
+- Updated the Gin-transitive HTTP/3 dependencies `github.com/quic-go/quic-go` to v0.59.1 and `github.com/quic-go/qpack` to v0.6.0 to address published QPACK denial-of-service advisories.
+
 ## v0.4.0
 
 ### Single-module delivery

@@ -327,7 +327,7 @@ func (b *Backend) AcquireRefreshLease(ctx context.Context, sessionID string, dur
 		if pttlErr != nil {
 			return pttlErr
 		}
-		if sessionPTTL == -time.Millisecond {
+		if sessionPTTL == time.Duration(-1) {
 			return ErrDecodeFailed
 		}
 		if sessionPTTL <= 0 {
@@ -340,7 +340,7 @@ func (b *Backend) AcquireRefreshLease(ctx context.Context, sessionID string, dur
 		if leasePTTL > 0 {
 			return session.ErrConflict
 		}
-		if leasePTTL != -2*time.Millisecond && leasePTTL != 0 {
+		if leasePTTL != time.Duration(-2) && leasePTTL != 0 {
 			return ErrDecodeFailed
 		}
 		nextFence, incrementErr := incrementFence(stored.lastFence)

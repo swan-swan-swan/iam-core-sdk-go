@@ -308,6 +308,22 @@ func TestNativeLeaseFenceExhaustionInstallsNoLease(t *testing.T) {
 	}
 }
 
+func TestNativeLeaseAcquireAcceptsGoRedisMissingPTTLSentinel(t *testing.T) {
+	clock, _, backend := newBackendFixture(t, bytes.NewReader(bytes.Repeat([]byte{49}, 512)))
+	ctx := context.Background()
+	item := testSession("missing-pttl-sentinel", clock.Now())
+	if err := backend.Create(ctx, item); err != nil {
+		t.Fatal(err)
+	}
+	leaseValue, err := backend.AcquireRefreshLease(ctx, item.ID, time.Minute)
+	if err != nil {
+		t.Fatalf("first acquire with go-redis PTTL -2ns sentinel: %v", err)
+	}
+	if leaseValue == nil || !leaseValue.Valid(ctx) {
+		t.Fatal("first acquire did not install a valid lease")
+	}
+}
+
 func TestKeysAreNamespacedDigestsAndClusterCompatible(t *testing.T) {
 	backend := &Backend{prefix: "tenant:iam"}
 	raw := "raw-session-secret"
@@ -691,10 +707,10 @@ func (c *fakeRedisClient) pttlLocked(key string) time.Duration {
 	c.expireLocked(key)
 	value := c.values[key]
 	if value == nil {
-		return -2 * time.Millisecond
+		return time.Duration(-2)
 	}
 	if value.expiresAt.IsZero() {
-		return -time.Millisecond
+		return time.Duration(-1)
 	}
 	remaining := value.expiresAt.Sub(c.serverTimeLocked())
 	return time.Duration(remaining.Milliseconds()) * time.Millisecond

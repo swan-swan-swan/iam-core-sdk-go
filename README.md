@@ -63,8 +63,10 @@ Gin adapter 是 `net/http` 授权服务的薄适配层：
 import ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin"
 ```
 
-Redis adapter 实现加密的 BFF Session Backend，并使用 generation-bound、fenced、server-time
-lease 保护 refresh 原子提交：
+Redis adapter 是可选的 BFF Session 存储，实现加密的 Backend，并使用 generation-bound、fenced、
+server-time lease 保护 refresh 原子提交。应用必须提供自己的 go-redis
+Client、FailoverClient 或 ClusterClient；服务端要求 Redis 6.2+。adapter 只使用 Redis 原生命令和
+事务，不执行 Lua evaluation：
 
 ```go
 import redisadapter "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis"

@@ -51,6 +51,10 @@ func TestDocumentationContract(t *testing.T) {
 		"TokenSource",
 		"不自动重试",
 		"42",
+		"可选的 BFF Session 存储",
+		"Client、FailoverClient 或 ClusterClient",
+		"Redis 6.2+",
+		"不执行 Lua",
 	)
 	forbidAll("README", readme,
 		"IAM Core Go Client SDK",
@@ -91,6 +95,8 @@ func TestDocumentationContract(t *testing.T) {
 
 	changelog := read("CHANGELOG.md")
 	requireAll("CHANGELOG", changelog,
+		"operationally breaking",
+		"Lua evaluation",
 		"v0.4.0",
 		"single root Module",
 		"v0.3.0",

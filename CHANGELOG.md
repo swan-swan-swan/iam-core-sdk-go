@@ -4,7 +4,11 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
-- No changes yet.
+### Redis adapter
+
+- Replaced Lua evaluation with Redis 6.2+ native commands and transactions, including Redis Cluster
+  support. This is an operationally breaking change for deployments running Redis 6.0 or older;
+  applications continue to supply their own go-redis Client, FailoverClient, or ClusterClient.
 
 ## v0.4.1
 

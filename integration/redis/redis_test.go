@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"net/url"
 	"strconv"
 	"strings"
@@ -24,6 +25,8 @@ import (
 )
 
 func TestRedisConformance(t *testing.T) {
+	testcontainers.SkipIfProviderIsNotHealthy(t)
+
 	for _, image := range []string{"redis:6.2-alpine", "redis:7.4-alpine"} {
 		t.Run(image, func(t *testing.T) {
 			container, err := rediscontainer.Run(t.Context(), image)
@@ -41,6 +44,7 @@ func TestRedisConformance(t *testing.T) {
 				t.Fatal("parse Redis connection string:", err)
 			}
 			client := goredis.NewClient(options)
+			client.AddHook(rejectLuaHook{})
 			t.Cleanup(func() {
 				if err := client.Close(); err != nil {
 					t.Error("close Redis client:", err)
@@ -94,6 +98,41 @@ func TestRedisConformance(t *testing.T) {
 	}
 }
 
+type rejectLuaHook struct{}
+
+func (rejectLuaHook) DialHook(next goredis.DialHook) goredis.DialHook {
+	return next
+}
+
+func (rejectLuaHook) ProcessHook(next goredis.ProcessHook) goredis.ProcessHook {
+	return func(ctx context.Context, cmd goredis.Cmder) error {
+		if err := rejectLuaCommand(cmd); err != nil {
+			return err
+		}
+		return next(ctx, cmd)
+	}
+}
+
+func (rejectLuaHook) ProcessPipelineHook(next goredis.ProcessPipelineHook) goredis.ProcessPipelineHook {
+	return func(ctx context.Context, cmds []goredis.Cmder) error {
+		for _, cmd := range cmds {
+			if err := rejectLuaCommand(cmd); err != nil {
+				return err
+			}
+		}
+		return next(ctx, cmds)
+	}
+}
+
+func rejectLuaCommand(cmd goredis.Cmder) error {
+	switch strings.ToLower(cmd.Name()) {
+	case "eval", "evalsha", "script":
+		return fmt.Errorf("forbidden Redis command: %s", cmd.Name())
+	default:
+		return nil
+	}
+}
+
 type leaseIdentity struct {
 	owner      string
 	fence      string
@@ -102,7 +141,7 @@ type leaseIdentity struct {
 }
 
 func (i leaseIdentity) valid() bool {
-	return i.owner != "" && i.fence != "" && i.generation != "" && i.expiresAt != ""
+	return i.owner != "" && i.fence != "" && i.generation != ""
 }
 
 type logicalLeaseRecord struct {
@@ -116,7 +155,7 @@ type leaseConditionalExpirer func(context.Context, string, leaseIdentity) (bool,
 // logicalLeaseBackend maps the conformance clock's instantaneous Advance onto
 // conditional physical expiry of only the exact real Redis lease it recorded.
 // It then delegates acquisition to the published adapter, so Redis executes the
-// real lease Lua against the real Session and metadata.
+// real native lease transaction against the real Session and metadata.
 type logicalLeaseBackend struct {
 	session.Backend
 	prefix string
@@ -127,6 +166,30 @@ type logicalLeaseBackend struct {
 
 	mu      sync.Mutex
 	records map[string]logicalLeaseRecord
+}
+
+type logicalLease struct {
+	backend   *logicalLeaseBackend
+	delegate  session.Lease
+	sessionID string
+	identity  leaseIdentity
+	deadline  time.Time
+}
+
+func (l *logicalLease) Valid(ctx context.Context) bool {
+	return l != nil && l.backend != nil && l.delegate != nil &&
+		l.backend.clock.Now().Before(l.deadline) && l.delegate.Valid(ctx)
+}
+
+func (l *logicalLease) Release(ctx context.Context) error {
+	if l == nil || l.backend == nil || l.delegate == nil || !l.backend.clock.Now().Before(l.deadline) {
+		return session.ErrLeaseLost
+	}
+	err := l.delegate.Release(ctx)
+	if err == nil {
+		l.backend.forgetLogicalLease(l.sessionID, l.identity)
+	}
+	return err
 }
 
 func TestLogicalLeaseBackendPreservesDelegateConcurrency(t *testing.T) {
@@ -637,12 +700,73 @@ func (b *logicalLeaseBackend) AcquireRefreshLease(
 	if b.records == nil {
 		b.records = make(map[string]logicalLeaseRecord)
 	}
+	deadline := b.clock.Now().Add(duration)
 	b.records[sessionID] = logicalLeaseRecord{
 		identity: identity,
-		deadline: b.clock.Now().Add(duration),
+		deadline: deadline,
 	}
 	b.mu.Unlock()
-	return lease, nil
+	return &logicalLease{
+		backend:   b,
+		delegate:  lease,
+		sessionID: sessionID,
+		identity:  identity,
+		deadline:  deadline,
+	}, nil
+}
+
+func (b *logicalLeaseBackend) CompareAndSwapWithLease(
+	ctx context.Context,
+	lease session.Lease,
+	id string,
+	expectedVersion uint64,
+	next *session.Session,
+) error {
+	logical, ok := b.unwrapLogicalLease(lease, id)
+	if !ok {
+		return b.Backend.CompareAndSwapWithLease(ctx, lease, id, expectedVersion, next)
+	}
+	if !b.clock.Now().Before(logical.deadline) {
+		return b.Backend.CompareAndSwapWithLease(ctx, nil, id, expectedVersion, next)
+	}
+	err := b.Backend.CompareAndSwapWithLease(ctx, logical.delegate, id, expectedVersion, next)
+	if err == nil {
+		b.forgetLogicalLease(id, logical.identity)
+	}
+	return err
+}
+
+func (b *logicalLeaseBackend) DeleteWithLease(
+	ctx context.Context,
+	lease session.Lease,
+	id string,
+	expectedVersion uint64,
+) error {
+	logical, ok := b.unwrapLogicalLease(lease, id)
+	if !ok {
+		return b.Backend.DeleteWithLease(ctx, lease, id, expectedVersion)
+	}
+	if !b.clock.Now().Before(logical.deadline) {
+		return b.Backend.DeleteWithLease(ctx, nil, id, expectedVersion)
+	}
+	err := b.Backend.DeleteWithLease(ctx, logical.delegate, id, expectedVersion)
+	if err == nil {
+		b.forgetLogicalLease(id, logical.identity)
+	}
+	return err
+}
+
+func (b *logicalLeaseBackend) unwrapLogicalLease(candidate session.Lease, id string) (*logicalLease, bool) {
+	lease, ok := candidate.(*logicalLease)
+	return lease, ok && lease != nil && lease.backend == b && lease.sessionID == id && lease.delegate != nil
+}
+
+func (b *logicalLeaseBackend) forgetLogicalLease(id string, identity leaseIdentity) {
+	b.mu.Lock()
+	if current, ok := b.records[id]; ok && current.identity == identity {
+		delete(b.records, id)
+	}
+	b.mu.Unlock()
 }
 
 func logicalLeaseBridgeError(err error) error {
@@ -665,42 +789,27 @@ func cleanupGrantedLease(lease session.Lease) {
 	_ = lease.Release(ctx)
 }
 
-var expireRecordedLeaseScript = goredis.NewScript(`
--- iam-core-integration:expire-recorded-lease
-local current = redis.call(
-	"HMGET", KEYS[1], "owner", "fence", "generation", "expires_at"
-)
-for index = 1, 4 do
-	if current[index] ~= ARGV[index] then
-		return 0
-	end
-end
-return redis.call("DEL", KEYS[1])
-`)
-
 func readRedisLeaseIdentity(
 	ctx context.Context,
-	client *goredis.Client,
+	client goredis.UniversalClient,
 	key string,
 ) (leaseIdentity, error) {
-	values, err := client.HMGet(ctx, key, "owner", "fence", "generation", "expires_at").Result()
+	values, err := client.HMGet(ctx, key, "owner", "fence", "generation").Result()
 	if err != nil {
 		return leaseIdentity{}, err
 	}
-	if len(values) != 4 {
+	if len(values) != 3 {
 		return leaseIdentity{}, errLogicalLeaseBridge
 	}
 	owner, ownerOK := redisLeaseText(values[0])
 	fence, fenceOK := redisLeaseText(values[1])
 	generation, generationOK := redisLeaseText(values[2])
-	expiresAt, expiresAtOK := redisLeaseText(values[3])
 	identity := leaseIdentity{
 		owner:      owner,
 		fence:      fence,
 		generation: generation,
-		expiresAt:  expiresAt,
 	}
-	if !ownerOK || !fenceOK || !generationOK || !expiresAtOK || !identity.valid() {
+	if !ownerOK || !fenceOK || !generationOK || !identity.valid() {
 		return leaseIdentity{}, errLogicalLeaseBridge
 	}
 	return identity, nil
@@ -708,30 +817,44 @@ func readRedisLeaseIdentity(
 
 func expireRedisLeaseIdentity(
 	ctx context.Context,
-	client *goredis.Client,
+	client goredis.UniversalClient,
 	key string,
 	identity leaseIdentity,
 ) (bool, error) {
-	status, err := expireRecordedLeaseScript.Run(
-		ctx,
-		client,
-		[]string{key},
-		identity.owner,
-		identity.fence,
-		identity.generation,
-		identity.expiresAt,
-	).Int64()
-	if err != nil {
-		return false, err
+	for range 16 {
+		deleted := false
+		err := client.Watch(ctx, func(tx *goredis.Tx) error {
+			values, err := tx.HMGet(ctx, key, "owner", "fence", "generation").Result()
+			if err != nil {
+				return err
+			}
+			if len(values) != 3 {
+				return errLogicalLeaseBridge
+			}
+			owner, ownerOK := redisLeaseText(values[0])
+			fence, fenceOK := redisLeaseText(values[1])
+			generation, generationOK := redisLeaseText(values[2])
+			if !ownerOK || !fenceOK || !generationOK ||
+				owner != identity.owner || fence != identity.fence || generation != identity.generation {
+				return nil
+			}
+			_, err = tx.TxPipelined(ctx, func(pipe goredis.Pipeliner) error {
+				pipe.Del(ctx, key)
+				return nil
+			})
+			deleted = err == nil
+			return err
+		}, key)
+		switch {
+		case errors.Is(err, goredis.TxFailedErr):
+			continue
+		case err != nil:
+			return false, err
+		default:
+			return deleted, nil
+		}
 	}
-	switch status {
-	case 0:
-		return false, nil
-	case 1:
-		return true, nil
-	default:
-		return false, errLogicalLeaseBridge
-	}
+	return false, goredis.TxFailedErr
 }
 
 func redisLeaseText(value any) (string, bool) {
@@ -745,7 +868,7 @@ func redisLeaseText(value any) (string, bool) {
 	}
 }
 
-func testRawRedisLeaseExpiry(t *testing.T, client *goredis.Client) {
+func testRawRedisLeaseExpiry(t *testing.T, client goredis.UniversalClient) {
 	t.Helper()
 	clock := new(sessiontest.Clock)
 	now := time.Now().UTC().Truncate(time.Millisecond)

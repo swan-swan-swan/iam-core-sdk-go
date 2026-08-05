@@ -4,6 +4,8 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v0.5.0
+
 ### Redis adapter
 
 - Replaced Lua evaluation with Redis 6.2+ native commands and transactions, including Redis Cluster

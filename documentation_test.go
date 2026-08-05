@@ -35,7 +35,7 @@ func TestDocumentationContract(t *testing.T) {
 	readme := read("README.md")
 	requireAll("README", readme,
 		"IAM Core Go SDK",
-		"v0.4.1",
+		"v0.5.0",
 		"单一 Go Module",
 		"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core",
 		"github.com/swan-swan-swan/iam-core-sdk-go/management/client",

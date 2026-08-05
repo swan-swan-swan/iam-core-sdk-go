@@ -51,7 +51,7 @@ func TestReleaseScriptMergesDevCommitAndCreatesVersionTag(t *testing.T) {
 	for _, call := range []string{
 		"fetch origin main --tags",
 		"checkout -B main origin/main",
-		"merge --no-ff deadbeef -m chore(release): v1.2.3",
+		"merge --ff-only deadbeef",
 		"tag -a v1.2.3 -m IAM Core SDK v1.2.3",
 		"push --atomic origin main v1.2.3",
 	} {

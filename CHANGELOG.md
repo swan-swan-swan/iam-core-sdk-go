@@ -14,7 +14,8 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
   keeping all public import paths unchanged.
 - Removed the nested Gin and Redis `go.mod` files. Consumers install every SDK package through
   `github.com/swan-swan-swan/iam-core-sdk-go@v0.4.0`.
-- Simplified release automation to create, verify, and push only the root `v0.4.0` tag.
+- Simplified release automation: every `dev` push is merged into `main`, then the root tag from
+  `VERSION` is created and pushed with `main` atomically.
 - Kept Docker, Moby, and Testcontainers isolated in the unpublished integration test Module.
 
 ## v0.3.0

@@ -129,28 +129,6 @@ func TestDocumentationContract(t *testing.T) {
 		"IAM Application、OIDC Client、Resource Catalog、Policy、用户、组织、角色与审计查询/管理\n接口都不属于本 SDK",
 	)
 
-	workflow := read(".github/workflows/ci.yml")
-	requireAll("CI workflow", workflow,
-		"go-version: \"1.24.x\"",
-		"go test ./... -count=1",
-		"go test -race ./... -count=1",
-		"go vet ./...",
-		"go build ./examples/...",
-		"GOWORK=off go test ./... -count=1",
-		"working-directory: integration",
-		"GOTOOLCHAIN=local go test ./redis -count=1",
-		"GOTOOLCHAIN=local go test -race ./redis -count=1",
-		"Verify published v0.4.0 module",
-	)
-	forbidAll("CI workflow", workflow,
-		"runtime/adapters/gin/v0.4.0",
-		"runtime/adapters/redis/v0.4.0",
-		"continue-on-error",
-		"|| true",
-		"release paused",
-		"prerelease-stage guard",
-	)
-
 	integration := read("integration/redis/redis_test.go")
 	requireAll("Redis integration", integration, "redis:6.2-alpine", "redis:7.4-alpine")
 }

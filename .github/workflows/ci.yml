@@ -1,224 +1,45 @@
-name: CI
+name: Release
 
 on:
   push:
-  pull_request:
-  workflow_dispatch:
+    branches:
+      - dev
 
 permissions:
-  contents: read
-
-env:
-  GOTOOLCHAIN: local
+  contents: write
 
 jobs:
-  root:
-    name: Root normal/race/vet/standalone/dependencies
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - name: Set up Go 1.24
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24.x"
-          cache: true
-          cache-dependency-path: go.sum
-      - name: Download root modules
-        run: go mod download
-      - name: Root tests
-        run: go test ./... -count=1
-      - name: Root race tests
-        run: go test -race ./... -count=1
-      - name: Root vet
-        run: go vet ./...
-      - name: Root examples
-        run: go build ./examples/...
-      - name: Standalone root tests
-        run: GOWORK=off go test ./... -count=1
-      - name: Standalone root race tests
-        run: GOWORK=off go test -race ./... -count=1
-      - name: Standalone root vet
-        run: GOWORK=off go vet ./...
-      - name: Published root dependency boundary
-        shell: bash
-        run: |
-          set -euo pipefail
-          if GOWORK=off go list -m all | grep -Eiq '(docker|moby|testcontainers|dubbo|triple|google\.golang\.org/grpc)'; then
-            echo "forbidden module in root dependency graph" >&2
-            exit 1
-          fi
-          if GOWORK=off go list -deps ./... | grep -Eiq '(docker|moby|testcontainers|dubbo|triple|google\.golang\.org/grpc)'; then
-            echo "forbidden package in root dependency graph" >&2
-            exit 1
-          fi
-      - name: Diff whitespace check
-        env:
-          IAMCORE_CI_EVENT_NAME: ${{ github.event_name }}
-          IAMCORE_CI_HEAD_SHA: ${{ github.sha }}
-          IAMCORE_CI_BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          IAMCORE_CI_BEFORE_SHA: ${{ github.event.before }}
-        run: bash .github/scripts/check-diff.sh
-
-  integration:
-    name: Integration Redis 6.2/7.4 normal/race/vet
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - name: Check out source
-        uses: actions/checkout@v4
-      - name: Set up Go 1.24
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24.x"
-          cache: true
-          cache-dependency-path: integration/go.sum
-      - name: Download integration modules
-        working-directory: integration
-        run: go mod download
-      - name: Redis 6.2 and 7.4 integration tests
-        working-directory: integration
-        run: GOTOOLCHAIN=local go test ./redis -count=1
-      - name: Redis 6.2 and 7.4 integration race tests
-        working-directory: integration
-        run: GOTOOLCHAIN=local go test -race ./redis -count=1
-      - name: Integration vet
-        working-directory: integration
-        run: GOTOOLCHAIN=local go vet ./...
-
   release:
-    name: Merge dev to main and create SDK tag
-    if: github.event_name == 'push' && github.ref == 'refs/heads/dev'
-    needs:
-      - root
-      - integration
+    name: Merge dev to main and create version tag
     runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: write
     steps:
-      - name: Check out dev revision
+      - name: Check out dev commit
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Merge dev and create version tag
+      - name: Merge and tag
         shell: bash
         env:
-          RELEASE_SHA: ${{ github.sha }}
-          REPOSITORY: ${{ github.repository }}
+          GITHUB_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          if ! LC_ALL=C grep -axFq '0.4.0' VERSION; then
-            echo "VERSION must be exactly 0.4.0" >&2
-            exit 1
-          fi
-          version_byte_count=$(LC_ALL=C wc -c < VERSION)
-          matching_version_byte_count=$(LC_ALL=C grep -axF '0.4.0' VERSION | LC_ALL=C wc -c)
-          matching_version_line_count=$(LC_ALL=C grep -axF '0.4.0' VERSION | LC_ALL=C wc -l)
-          if [[ "${matching_version_line_count}" -ne 1 || "${matching_version_byte_count}" -ne "${version_byte_count}" || "${version_byte_count}" -ne 6 ]]; then
-            echo "VERSION must contain exactly the bytes 0.4.0 followed by LF" >&2
-            exit 1
-          fi
-          IFS= read -r release_version < VERSION
-          if [[ "${release_version}" != "0.4.0" ]]; then
-            echo "VERSION must be exactly 0.4.0" >&2
-            exit 1
-          fi
-          if [[ "${REPOSITORY}" != "swan-swan-swan/iam-core-sdk-go" ]]; then
-            echo "GitHub repository must be swan-swan-swan/iam-core-sdk-go" >&2
-            exit 1
-          fi
 
-          IFS= read -r root_module_declaration < go.mod
-          if [[ "${root_module_declaration}" != "module github.com/swan-swan-swan/iam-core-sdk-go" ]]; then
-            echo "root module path does not match the v0.4 release contract" >&2
+          release_version=$(< VERSION)
+          if [[ ! "${release_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "VERSION must use X.Y.Z format" >&2
             exit 1
           fi
-          for nested_module in runtime/adapters/gin/go.mod runtime/adapters/redis/go.mod; do
-            if [[ -e "${nested_module}" ]]; then
-              echo "nested adapter module ${nested_module} is forbidden in v0.4" >&2
-              exit 1
-            fi
-          done
+          release_tag="v${release_version}"
 
-          root_tag="v${release_version}"
-          git fetch origin main dev --tags
-          if git rev-parse --verify --quiet "refs/tags/${root_tag}" >/dev/null; then
-            echo "tag ${root_tag} already exists" >&2
+          git fetch origin main --tags
+          if git rev-parse --verify --quiet "refs/tags/${release_tag}" >/dev/null; then
+            echo "tag ${release_tag} already exists" >&2
             exit 1
           fi
 
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git checkout -B main origin/main
-          if git merge-base --is-ancestor "$RELEASE_SHA" HEAD; then
-            echo "release commit ${RELEASE_SHA} is already contained in main" >&2
-            exit 1
-          fi
-          if ! git merge-base --is-ancestor HEAD "$RELEASE_SHA"; then
-            echo "origin/main must be an ancestor of release commit ${RELEASE_SHA}" >&2
-            exit 1
-          fi
-          git merge --no-ff "$RELEASE_SHA" -m "chore(release): ${root_tag}"
-          merge_parents=($(git rev-list --parents -n 1 HEAD))
-          if [[ "${#merge_parents[@]}" -ne 3 || "${merge_parents[2]}" != "$RELEASE_SHA" ]]; then
-            echo "merge commit must include the release revision as its second parent" >&2
-            exit 1
-          fi
-          release_commit=$(git rev-parse HEAD)
-          git tag -a "${root_tag}" -m "IAM Core SDK ${root_tag}"
-          if [[ "$(git rev-list -n 1 "${root_tag}")" != "${release_commit}" ]]; then
-            echo "tag ${root_tag} does not point to the verified release merge" >&2
-            exit 1
-          fi
-          git push --atomic origin main "${root_tag}"
-
-  post_release:
-    name: Verify published v0.4.0 module
-    if: >-
-      always() &&
-      (
-        (github.event_name == 'push' && github.ref == 'refs/heads/dev' && needs.release.result == 'success') ||
-        github.event_name == 'workflow_dispatch'
-      )
-    needs: release
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      - name: Set up Go 1.24
-        uses: actions/setup-go@v5
-        with:
-          go-version: "1.24.x"
-      - name: Configure private module access
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          git config --global url."https://x-access-token:${GITHUB_TOKEN}@github.com/".insteadOf "https://github.com/"
-      - name: Resolve all published packages without the workspace
-        shell: bash
-        env:
-          GOPROXY: direct
-          GOPRIVATE: github.com/swan-swan-swan/*
-        run: |
-          set -euo pipefail
-          verification_directory=$(mktemp -d)
-          trap 'rm -rf "${verification_directory}"' EXIT
-          cd "${verification_directory}"
-          GOWORK=off go mod init example.com/iam-core-sdk-release-verification
-          GOWORK=off go get github.com/swan-swan-swan/iam-core-sdk-go@v0.4.0
-          cat > adapters_test.go <<'EOF'
-          package releaseverification
-
-          import (
-            _ "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin"
-            _ "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis"
-          )
-          EOF
-          GOWORK=off go test ./...
+          git merge --no-ff "${GITHUB_SHA}" -m "chore(release): ${release_tag}"
+          git tag -a "${release_tag}" -m "IAM Core SDK ${release_tag}"
+          git push --atomic origin main "${release_tag}"

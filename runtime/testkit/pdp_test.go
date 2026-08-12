@@ -276,6 +276,10 @@ func TestPDPInvalidRequestsDoNotRecordOrConsumeQueuedDecision(t *testing.T) {
 		{name: "padded", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":" orders_api","resource":"orders","http_method":"GET"}`},
 		{name: "lowercase method", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource":"orders","http_method":"get"}`},
 		{name: "nonstandard method", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource":"orders","http_method":"PROPFIND"}`},
+		{name: "two segment expected action", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource":"orders","http_method":"GET","expected_action":"orders:read"}`},
+		{name: "uppercase expected action", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource":"orders","http_method":"GET","expected_action":"orders:orders:Read"}`},
+		{name: "padded expected action", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource":"orders","http_method":"GET","expected_action":"orders:orders:read "}`},
+		{name: "control expected action", method: http.MethodPost, contentType: "application/json", body: `{"resource_server":"orders_api","resource":"orders","http_method":"GET","expected_action":"orders:orders:read\u0001"}`},
 		{name: "oversized", method: http.MethodPost, contentType: "application/json", body: strings.Repeat("x", (1<<20)+1)},
 	}
 	for _, test := range tests {

@@ -192,7 +192,8 @@ func decodePDPCall(request *http.Request) (PDPCall, error) {
 		return PDPCall{}, errors.New("invalid body")
 	}
 	resourceServer, resource, method := values["resource_server"], values["resource"], values["http_method"]
-	if !validPDPValue(resourceServer) || !validPDPValue(resource) || !validPDPMethod(method) {
+	if !validPDPValue(resourceServer) || !validPDPValue(resource) || !validPDPMethod(method) ||
+		(values["expected_action"] != "" && !validPDPAction(values["expected_action"])) {
 		return PDPCall{}, errors.New("invalid decision coordinates")
 	}
 	return PDPCall{
@@ -214,4 +215,22 @@ func validPDPMethod(method string) bool {
 	default:
 		return false
 	}
+}
+
+func validPDPAction(action string) bool {
+	parts := strings.Split(action, ":")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || part[0] < 'a' || part[0] > 'z' {
+			return false
+		}
+		for _, character := range part[1:] {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+				return false
+			}
+		}
+	}
+	return true
 }

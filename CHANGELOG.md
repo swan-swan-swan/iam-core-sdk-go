@@ -4,6 +4,17 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v0.6.0
+
+### HTTP authorization
+
+- Added an optional canonical three-level `RouteSpec.Action`. The SDK sends it as
+  `expected_action` and rejects an allowed decision when IAM Core omits or returns a
+  different derived Action.
+- Preserved v0.5 request compatibility when Action is empty and preserved denied
+  decision reason codes while exposing IAM Core's derived Action.
+- Aligned the in-process PDP testkit with IAM Core's strict three-level Action format.
+
 ## v0.5.0
 
 ### Redis adapter

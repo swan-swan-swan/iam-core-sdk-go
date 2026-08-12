@@ -34,6 +34,26 @@ func TestManifestAcceptsEveryStandardMethod(t *testing.T) {
 	}
 }
 
+func TestManifestPreservesCanonicalOptionalAction(t *testing.T) {
+	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
+		Name:           "list_orders",
+		Method:         "GET",
+		ResourceServer: "orders_api",
+		Resource:       "orders",
+		Action:         "orders:orders:list",
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	route, err := manifest.NewBinder().Bind("list_orders")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := route.Action(); got != "orders:orders:list" {
+		t.Fatalf("route Action() = %q", got)
+	}
+}
+
 func TestManifestRejectsInvalidOrDuplicateRoutes(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -58,6 +78,11 @@ func TestManifestRejectsInvalidOrDuplicateRoutes(t *testing.T) {
 		{"trimmed resource", []httpauthz.RouteSpec{{Name: "list", Method: "GET", ResourceServer: "orders_api", Resource: " orders"}}, " orders"},
 		{"control resource", []httpauthz.RouteSpec{{Name: "list", Method: "GET", ResourceServer: "orders_api", Resource: "orders\t"}}, "orders\t"},
 		{"invalid utf8 resource", []httpauthz.RouteSpec{{Name: "list", Method: "GET", ResourceServer: "orders_api", Resource: string([]byte{0xff})}}, string([]byte{0xff})},
+		{"two-level action", []httpauthz.RouteSpec{{Name: "list", Method: "GET", ResourceServer: "orders_api", Resource: "orders", Action: "orders:list"}}, "orders:list"},
+		{"four-level action", []httpauthz.RouteSpec{{Name: "list", Method: "GET", ResourceServer: "orders_api", Resource: "orders", Action: "orders:orders:list:all"}}, "orders:orders:list:all"},
+		{"upper-case action", []httpauthz.RouteSpec{{Name: "list", Method: "GET", ResourceServer: "orders_api", Resource: "orders", Action: "orders:orders:List"}}, "orders:orders:List"},
+		{"action with underscore", []httpauthz.RouteSpec{{Name: "list", Method: "GET", ResourceServer: "orders_api", Resource: "orders", Action: "orders_api:orders:list"}}, "orders_api:orders:list"},
+		{"action with hyphen", []httpauthz.RouteSpec{{Name: "list", Method: "GET", ResourceServer: "orders_api", Resource: "orders", Action: "orders-api:orders:list"}}, "orders-api:orders:list"},
 		{"duplicate name", []httpauthz.RouteSpec{{Name: "list", Method: "GET", ResourceServer: "orders_api", Resource: "orders"}, {Name: "list", Method: "POST", ResourceServer: "orders_api", Resource: "orders"}}, "list"},
 		{"duplicate canonical binding", []httpauthz.RouteSpec{{Name: "one", Method: "GET", ResourceServer: "orders_api", Resource: "orders"}, {Name: "two", Method: "GET", ResourceServer: "orders_api", Resource: "orders"}}, "orders_api"},
 	}
@@ -66,6 +91,15 @@ func TestManifestRejectsInvalidOrDuplicateRoutes(t *testing.T) {
 			_, err := httpauthz.CompileManifest(test.specs)
 			assertSanitizedInvalidConfig(t, err, test.sensitive)
 		})
+	}
+}
+
+func TestManifestRejectsBlankAction(t *testing.T) {
+	_, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
+		Name: "list", Method: "GET", ResourceServer: "orders_api", Resource: "orders", Action: " ",
+	}})
+	if err == nil {
+		t.Fatal("CompileManifest() error = nil")
 	}
 }
 

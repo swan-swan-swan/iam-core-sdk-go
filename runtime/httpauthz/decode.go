@@ -21,6 +21,7 @@ type decisionEnvelope struct {
 		DecisionID string `json:"decision_id"`
 		Allowed    bool   `json:"allowed"`
 		ReasonCode string `json:"reason_code"`
+		Action     string `json:"action"`
 	} `json:"data"`
 	RequestID string `json:"request_id"`
 	TraceID   string `json:"trace_id"`
@@ -50,6 +51,7 @@ func decodeDecision(body []byte) (Decision, error) {
 	if decodeRequiredString(data, "decision_id", &envelope.Data.DecisionID, false) != nil ||
 		decodeRequiredBool(data, "allowed", &envelope.Data.Allowed) != nil ||
 		decodeRequiredString(data, "reason_code", &envelope.Data.ReasonCode, false) != nil ||
+		decodeOptionalString(data, "action", &envelope.Data.Action) != nil ||
 		decodeOptionalString(root, "request_id", &envelope.RequestID) != nil ||
 		decodeOptionalString(root, "trace_id", &envelope.TraceID) != nil {
 		return Decision{}, errInvalidDecisionResponse
@@ -58,6 +60,7 @@ func decodeDecision(body []byte) (Decision, error) {
 		ID:         envelope.Data.DecisionID,
 		Allowed:    envelope.Data.Allowed,
 		ReasonCode: envelope.Data.ReasonCode,
+		Action:     envelope.Data.Action,
 		RequestID:  envelope.RequestID,
 		TraceID:    envelope.TraceID,
 	}, nil
@@ -84,7 +87,7 @@ var rootDecisionFields = map[string]struct{}{
 }
 
 var dataDecisionFields = map[string]struct{}{
-	"decision_id": {}, "allowed": {}, "reason_code": {},
+	"decision_id": {}, "allowed": {}, "reason_code": {}, "action": {},
 }
 
 func walkObject(decoder *json.Decoder, canonical map[string]struct{}, root bool) error {

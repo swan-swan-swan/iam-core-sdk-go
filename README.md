@@ -57,6 +57,10 @@ HTTP Resource Server 使用显式 Route Manifest。每个已通过本地认证�
 一次 PDP；deny、401、5xx、超时、网络错误和畸形 envelope 都失败关闭。授权结果不缓存，
 也不会使用 groups 或本地规则降级。PDP 401 不刷新凭证、不重试 PDP。
 
+迁移后的路由应提供三级 `Action`（例如 `orders:orders:list`）。SDK 将它发送为可选的
+`expected_action`，并在允许结果中核对 IAM Core 返回的实际 `action`；缺失或不匹配会按协议
+错误失败关闭。未迁移路由可暂时省略 `Action`，保持旧请求与响应兼容行为。
+
 Gin adapter 是 `net/http` 授权服务的薄适配层：
 
 ```go

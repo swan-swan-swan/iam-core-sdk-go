@@ -1,6 +1,7 @@
 package httpauthz
 
 import (
+	"strings"
 	"sync"
 
 	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
@@ -13,6 +14,7 @@ type RouteSpec struct {
 	Method         string
 	ResourceServer string
 	Resource       string
+	Action         string
 }
 
 type Manifest struct {
@@ -36,7 +38,8 @@ func CompileManifest(specs []RouteSpec) (*Manifest, error) {
 	tuples := make(map[routeTuple]struct{}, len(specs))
 	for _, spec := range specs {
 		if !validRouteValue(spec.Name) || !validRouteMethod(spec.Method) ||
-			!validRouteValue(spec.ResourceServer) || !validRouteValue(spec.Resource) {
+			!validRouteValue(spec.ResourceServer) || !validRouteValue(spec.Resource) ||
+			(spec.Action != "" && !validRouteAction(spec.Action)) {
 			return nil, invalidManifestError()
 		}
 		if _, exists := routes[spec.Name]; exists {
@@ -50,11 +53,30 @@ func CompileManifest(specs []RouteSpec) (*Manifest, error) {
 			method:         spec.Method,
 			resourceServer: spec.ResourceServer,
 			resource:       spec.Resource,
+			action:         spec.Action,
 			compiled:       true,
 		}
 		tuples[tuple] = struct{}{}
 	}
 	return &Manifest{routes: routes}, nil
+}
+
+func validRouteAction(action string) bool {
+	parts := strings.Split(action, ":")
+	if len(parts) != 3 {
+		return false
+	}
+	for _, part := range parts {
+		if part == "" || part[0] < 'a' || part[0] > 'z' {
+			return false
+		}
+		for _, character := range part[1:] {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func (m *Manifest) NewBinder() *Binder {

@@ -104,6 +104,7 @@ func (c *PDPClient) Decide(ctx context.Context, tokens core.TokenSource, route R
 		ResourceServer: route.resourceServer,
 		Resource:       route.resource,
 		HTTPMethod:     route.method,
+		ExpectedAction: route.action,
 	})
 	if err != nil {
 		return Decision{}, newPDPError(core.KindProtocol, decideOperation, 0, false)
@@ -148,6 +149,9 @@ func (c *PDPClient) Decide(ctx context.Context, tokens core.TokenSource, route R
 	}
 	decision, err = decodeDecision(body)
 	if err != nil {
+		return Decision{}, newPDPError(core.KindProtocol, decideOperation, response.StatusCode, false)
+	}
+	if decision.Allowed && route.action != "" && decision.Action != route.action {
 		return Decision{}, newPDPError(core.KindProtocol, decideOperation, response.StatusCode, false)
 	}
 	return decision, nil
@@ -204,7 +208,8 @@ func validRoute(route Route) bool {
 	if !route.compiled || !validRouteMethod(route.method) {
 		return false
 	}
-	return validRouteValue(route.resourceServer) && validRouteValue(route.resource)
+	return validRouteValue(route.resourceServer) && validRouteValue(route.resource) &&
+		(route.action == "" || validRouteAction(route.action))
 }
 
 func validRouteMethod(method string) bool {

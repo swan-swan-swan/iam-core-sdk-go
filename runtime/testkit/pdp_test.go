@@ -130,6 +130,32 @@ func TestPDPRecordsExactCallsAndReturnsDefensiveCopies(t *testing.T) {
 	}
 }
 
+func TestPDPAcceptsOptionalExpectedActionAndReturnsConfiguredAction(t *testing.T) {
+	fake := testkit.NewPDP(t)
+	defer fake.Close()
+	fake.Enqueue(testkit.HTTPDecision{DecisionID: "decision-action", Allowed: true, ReasonCode: "policy_allow", Action: "orders:orders:list"})
+	response, err := http.Post(fake.URL()+"/authorization/v1/decisions", "application/json", strings.NewReader(`{"resource_server":"orders_api","resource":"orders","http_method":"GET","expected_action":"orders:orders:list"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer response.Body.Close()
+	var envelope struct {
+		Data struct {
+			Action string `json:"action"`
+		} `json:"data"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Data.Action != "orders:orders:list" {
+		t.Fatalf("response action = %q", envelope.Data.Action)
+	}
+	calls := fake.Calls()
+	if len(calls) != 1 || calls[0].ExpectedAction != "orders:orders:list" {
+		t.Fatalf("calls = %#v", calls)
+	}
+}
+
 func TestPDPQueueAndCallsAreConcurrentSafe(t *testing.T) {
 	fake := testkit.NewPDP(t)
 	defer fake.Close()

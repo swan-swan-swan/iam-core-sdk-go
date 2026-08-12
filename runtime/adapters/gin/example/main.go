@@ -39,7 +39,7 @@ func run() error {
 	}
 
 	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
-		Name: "list_orders", Method: http.MethodGet, ResourceServer: "orders_api", Resource: "orders",
+		Name: "list_orders", Method: http.MethodGet, ResourceServer: "orders_api", Resource: "orders", Action: "orders:orders:list",
 	}})
 	if err != nil {
 		return errors.New("resource server route configuration is invalid")

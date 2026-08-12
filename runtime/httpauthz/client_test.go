@@ -32,6 +32,67 @@ func TestRouteExposesOnlyCompiledDecisionCoordinates(t *testing.T) {
 	}
 }
 
+func TestDecideSendsConfiguredRouteActionAndVerifiesAllowedResponse(t *testing.T) {
+	var body map[string]json.RawMessage
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow","action":"orders:orders:list"}}`)
+	}))
+	defer server.Close()
+	client, err := NewPDPClient(PDPConfig{IssuerURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision, err := client.Decide(t.Context(), staticToken("access-token"), compiledRouteWithAction())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Action != "orders:orders:list" {
+		t.Fatalf("Decision.Action = %q", decision.Action)
+	}
+	if got := slices.Sorted(maps.Keys(body)); !slices.Equal(got, []string{"expected_action", "http_method", "resource", "resource_server"}) {
+		t.Fatalf("request keys = %v", got)
+	}
+	var expectedAction string
+	if err := json.Unmarshal(body["expected_action"], &expectedAction); err != nil || expectedAction != "orders:orders:list" {
+		t.Fatalf("expected_action = %q, %v", expectedAction, err)
+	}
+}
+
+func TestDecideFailsClosedWhenAllowedActionDrifts(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "missing action", body: `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow"}}`},
+		{name: "mismatched action", body: `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow","action":"orders:orders:write"}}`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := newDecisionTestClient(t, http.StatusOK, "application/json", test.body)
+			decision, err := client.Decide(t.Context(), staticToken("token"), compiledRouteWithAction())
+			if decision != (Decision{}) {
+				t.Fatalf("Decide() decision = %#v", decision)
+			}
+			assertCoreError(t, err, core.KindProtocol, http.StatusOK, false)
+		})
+	}
+}
+
+func TestDecidePreservesAllowedDenyResponseWhenActionDrifts(t *testing.T) {
+	client := newDecisionTestClient(t, http.StatusOK, "application/json", `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":false,"reason_code":"action_mismatch","action":"orders:orders:write"}}`)
+	decision, err := client.Decide(t.Context(), staticToken("token"), compiledRouteWithAction())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if decision.Allowed || decision.ReasonCode != "action_mismatch" || decision.Action != "orders:orders:write" {
+		t.Fatalf("Decision = %#v", decision)
+	}
+}
+
 func TestDecideSendsOnlyFrozenThreeFields(t *testing.T) {
 	var body map[string]json.RawMessage
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -711,6 +772,10 @@ func TestNewPDPClientTreatsTypedNilObserverAsAbsent(t *testing.T) {
 
 func compiledRoute() Route {
 	return Route{method: "GET", resourceServer: "orders_api", resource: "orders", compiled: true}
+}
+
+func compiledRouteWithAction() Route {
+	return Route{method: "GET", resourceServer: "orders_api", resource: "orders", action: "orders:orders:list", compiled: true}
 }
 
 func staticToken(token string) core.TokenSource {

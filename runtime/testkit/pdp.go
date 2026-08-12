@@ -25,6 +25,7 @@ type HTTPDecision struct {
 	DecisionID string
 	ReasonCode string
 	Allowed    bool
+	Action     string
 	Delay      time.Duration
 }
 
@@ -34,6 +35,7 @@ type PDPCall struct {
 	ResourceServer string
 	Resource       string
 	HTTPMethod     string
+	ExpectedAction string
 }
 
 // PDP is an in-process IAM Core authorization decision endpoint for tests.
@@ -141,6 +143,7 @@ func (p *PDP) handleDecision(w http.ResponseWriter, request *http.Request) {
 			"decision_id": decision.DecisionID,
 			"allowed":     decision.Allowed,
 			"reason_code": decision.ReasonCode,
+			"action":      decision.Action,
 		},
 	})
 }
@@ -159,7 +162,7 @@ func decodePDPCall(request *http.Request) (PDPCall, error) {
 	if err != nil || opening != json.Delim('{') {
 		return PDPCall{}, errors.New("invalid body")
 	}
-	values := make(map[string]string, 3)
+	values := make(map[string]string, 4)
 	for decoder.More() {
 		keyToken, err := decoder.Token()
 		key, ok := keyToken.(string)
@@ -170,7 +173,7 @@ func decodePDPCall(request *http.Request) (PDPCall, error) {
 			return PDPCall{}, errors.New("invalid body")
 		}
 		switch key {
-		case "resource_server", "resource", "http_method":
+		case "resource_server", "resource", "http_method", "expected_action":
 		default:
 			return PDPCall{}, errors.New("invalid body")
 		}
@@ -181,7 +184,7 @@ func decodePDPCall(request *http.Request) (PDPCall, error) {
 		values[key] = value
 	}
 	closing, err := decoder.Token()
-	if err != nil || closing != json.Delim('}') || len(values) != 3 {
+	if err != nil || closing != json.Delim('}') || len(values) < 3 {
 		return PDPCall{}, errors.New("invalid body")
 	}
 	var trailing any
@@ -194,7 +197,7 @@ func decodePDPCall(request *http.Request) (PDPCall, error) {
 	}
 	return PDPCall{
 		Authorization: request.Header.Get("Authorization"), ResourceServer: resourceServer,
-		Resource: resource, HTTPMethod: method,
+		Resource: resource, HTTPMethod: method, ExpectedAction: values["expected_action"],
 	}, nil
 }
 

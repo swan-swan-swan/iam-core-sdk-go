@@ -13,8 +13,8 @@ func TestDecodeDecisionAcceptsExactEnvelopeAndAdditiveFields(t *testing.T) {
 	}{
 		{
 			name: "allow",
-			body: validDecisionResponse,
-			want: Decision{ID: "dec-1", Allowed: true, ReasonCode: "policy_allow", RequestID: "req-1", TraceID: "trace-1"},
+			body: `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow","action":"orders:orders:list"},"request_id":"req-1","trace_id":"trace-1"}`,
+			want: Decision{ID: "dec-1", Allowed: true, ReasonCode: "policy_allow", Action: "orders:orders:list", RequestID: "req-1", TraceID: "trace-1"},
 		},
 		{
 			name: "deny",

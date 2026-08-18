@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -23,6 +24,42 @@ type captureTransport struct {
 	requests []management.Request
 	response any
 	err      error
+}
+
+type oidcStaticTokenSource string
+
+func (s oidcStaticTokenSource) AccessToken(context.Context) (string, error) { return string(s), nil }
+
+// TestClientAcceptsLegacyServerFieldsWithoutPublishingThem 验证滚动升级期间严格解码器可吞掉旧 Server 字段，但公共模型不再暴露它们。
+func TestClientAcceptsLegacyServerFieldsWithoutPublishingThem(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "application/json")
+		if request.URL.Path == "/api/v1/oidc-clients/ops-portal/security" {
+			_, _ = writer.Write([]byte(`{"code":0,"message":"ok","data":{"clientId":"ops-portal","clientType":"confidential","pkcePolicy":"recommended","allowedScopes":["openid","roles"],"accessTokenTtlSeconds":300,"idTokenTtlSeconds":300,"groupsTokenTtlSeconds":120,"legacyRolesClaim":true,"revision":7,"hash":"abc"}}`))
+			return
+		}
+		_, _ = writer.Write([]byte(`{"code":0,"message":"ok","data":{"id":"oc_1","applicationId":"op_app_1","clientId":"ops-portal","displayName":"Ops","description":"portal","pkcePolicy":"recommended","allowedScopes":["openid"],"redirectUris":["https://ops.example/callback"],"enabled":true,"createdAt":"2026-08-18T00:00:00Z","updatedAt":"2026-08-18T00:00:00Z"}}`))
+	}))
+	defer server.Close()
+
+	transport, err := management.New(management.Config{BaseURL: server.URL, TokenSource: oidcStaticTokenSource("token")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := New(transport)
+	if err != nil {
+		t.Fatal(err)
+	}
+	security, _, err := client.GetSecurity(context.Background(), "ops-portal")
+	if err != nil {
+		t.Fatalf("GetSecurity() error = %v", err)
+	}
+	if security.ClientID != "ops-portal" || !reflect.DeepEqual(security.AllowedScopes, []string{"openid"}) {
+		t.Fatalf("security = %#v", security)
+	}
+	if _, _, err := client.Get(context.Background(), "ops-portal"); err != nil {
+		t.Fatalf("Get() error = %v", err)
+	}
 }
 
 func (t *captureTransport) Do(_ context.Context, request management.Request, out any) (management.Metadata, error) {
@@ -56,15 +93,15 @@ func TestClientUsesExactOIDCContracts(t *testing.T) {
 	}{
 		{name: "list", response: []any{}, invoke: func(c *Client) error { _, _, err := c.List(context.Background(), testApplicationID); return err }, operation: "management.oidcclients.list", method: http.MethodGet, path: "/api/v1/applications/" + testApplicationID + "/oidc-clients"},
 		{name: "create", response: oidcClientResponse(), invoke: func(c *Client) error {
-			_, _, err := c.Create(context.Background(), testApplicationID, CreateInput{ClientID: testClientID, DisplayName: "Ops", Description: "portal", AllowedScopes: []string{"openid", "groups"}, RedirectURIs: []string{"https://ops.example/callback"}, PKCEPolicy: "required"})
+			_, _, err := c.Create(context.Background(), testApplicationID, CreateInput{ClientID: testClientID, DisplayName: "Ops", Description: "portal", AllowedScopes: []string{"openid", "groups"}, RedirectURIs: []string{"https://ops.example/callback"}})
 			return err
-		}, operation: "management.oidcclients.create", method: http.MethodPost, path: "/api/v1/applications/" + testApplicationID + "/oidc-clients", body: `{"clientId":"ops-portal","displayName":"Ops","description":"portal","allowedScopes":["openid","groups"],"redirectUris":["https://ops.example/callback"],"pkcePolicy":"required"}`},
+		}, operation: "management.oidcclients.create", method: http.MethodPost, path: "/api/v1/applications/" + testApplicationID + "/oidc-clients", body: `{"clientId":"ops-portal","displayName":"Ops","description":"portal","allowedScopes":["openid","groups"],"redirectUris":["https://ops.example/callback"]}`},
 		{name: "get", response: oidcClientResponse(), invoke: func(c *Client) error { _, _, err := c.Get(context.Background(), testClientID); return err }, operation: "management.oidcclients.get", method: http.MethodGet, path: "/api/v1/oidc-clients/" + testClientID},
 		{name: "get security", response: securityResponse(), invoke: func(c *Client) error { _, _, err := c.GetSecurity(context.Background(), testClientID); return err }, operation: "management.oidcclients.get_security", method: http.MethodGet, path: "/api/v1/oidc-clients/" + testClientID + "/security"},
 		{name: "update security", response: securityResponse(), invoke: func(c *Client) error {
-			_, _, err := c.UpdateSecurity(context.Background(), testClientID, UpdateSecurityInput{ClientType: "confidential", PKCEPolicy: "required", AllowedScopes: []string{"openid"}, AccessTokenTTLSeconds: 300, IDTokenTTLSeconds: 300, GroupsTokenTTLSeconds: 120, Revision: 7})
+			_, _, err := c.UpdateSecurity(context.Background(), testClientID, UpdateSecurityInput{ClientType: "confidential", AllowedScopes: []string{"openid"}, AccessTokenTTLSeconds: 300, IDTokenTTLSeconds: 300, GroupsTokenTTLSeconds: 120, Revision: 7})
 			return err
-		}, operation: "management.oidcclients.update_security", method: http.MethodPut, path: "/api/v1/oidc-clients/" + testClientID + "/security", body: `{"clientType":"confidential","pkcePolicy":"required","allowedScopes":["openid"],"accessTokenTtlSeconds":300,"idTokenTtlSeconds":300,"groupsTokenTtlSeconds":120,"legacyRolesClaim":false,"revision":7}`},
+		}, operation: "management.oidcclients.update_security", method: http.MethodPut, path: "/api/v1/oidc-clients/" + testClientID + "/security", body: `{"clientType":"confidential","allowedScopes":["openid"],"accessTokenTtlSeconds":300,"idTokenTtlSeconds":300,"groupsTokenTtlSeconds":120,"revision":7}`},
 		{name: "create credential", response: credentialResponse("secret-marker"), invoke: func(c *Client) error {
 			_, _, err := c.CreateCredential(context.Background(), testClientID, &expiresAt, WithIdempotencyKey("key-1"))
 			return err
@@ -113,15 +150,11 @@ func TestOIDCClientRejectsInvalidArgumentsBeforeTransport(t *testing.T) {
 			return err
 		},
 		func() error {
-			_, _, err := client.Create(context.Background(), testApplicationID, CreateInput{ClientID: testClientID, DisplayName: "Ops", AllowedScopes: []string{"openid"}, RedirectURIs: []string{"https://ops.example/callback"}, PKCEPolicy: "optional"})
-			return err
-		},
-		func() error {
 			_, _, err := client.UpdateSecurity(context.Background(), testClientID, UpdateSecurityInput{})
 			return err
 		},
 		func() error {
-			_, _, err := client.UpdateSecurity(context.Background(), testClientID, UpdateSecurityInput{ClientType: "public", PKCEPolicy: "required", AllowedScopes: []string{"openid"}, AccessTokenTTLSeconds: 1, IDTokenTTLSeconds: 1, GroupsTokenTTLSeconds: 301, Revision: 1})
+			_, _, err := client.UpdateSecurity(context.Background(), testClientID, UpdateSecurityInput{ClientType: "public", AllowedScopes: []string{"openid"}, AccessTokenTTLSeconds: 1, IDTokenTTLSeconds: 1, GroupsTokenTTLSeconds: 301, Revision: 1})
 			return err
 		},
 		func() error {

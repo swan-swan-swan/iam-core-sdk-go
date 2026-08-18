@@ -1,6 +1,7 @@
 package oidcclients
 
 import (
+	"slices"
 	"time"
 
 	management "github.com/swan-swan-swan/iam-core-sdk-go/management/client"
@@ -15,7 +16,6 @@ type OIDCClient struct {
 	Description   string
 	AllowedScopes []string
 	RedirectURIs  []string
-	PKCEPolicy    string
 	Enabled       bool
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
@@ -28,19 +28,16 @@ type CreateInput struct {
 	Description   string
 	AllowedScopes []string
 	RedirectURIs  []string
-	PKCEPolicy    string
 }
 
 // Security is the current non-sensitive security configuration.
 type Security struct {
 	ClientID              string
 	ClientType            string
-	PKCEPolicy            string
 	AllowedScopes         []string
 	AccessTokenTTLSeconds uint32
 	IDTokenTTLSeconds     uint32
 	GroupsTokenTTLSeconds uint32
-	LegacyRolesClaim      bool
 	Revision              uint64
 	Hash                  string
 }
@@ -48,12 +45,10 @@ type Security struct {
 // UpdateSecurityInput is a revision-controlled complete security update.
 type UpdateSecurityInput struct {
 	ClientType            string
-	PKCEPolicy            string
 	AllowedScopes         []string
 	AccessTokenTTLSeconds uint32
 	IDTokenTTLSeconds     uint32
 	GroupsTokenTTLSeconds uint32
-	LegacyRolesClaim      bool
 	Revision              uint64
 }
 
@@ -81,9 +76,9 @@ type oidcClientWire struct {
 	ClientID      string    `json:"clientId"`
 	DisplayName   string    `json:"displayName"`
 	Description   string    `json:"description"`
+	PKCEPolicy    string    `json:"pkcePolicy"`
 	AllowedScopes []string  `json:"allowedScopes"`
 	RedirectURIs  []string  `json:"redirectUris"`
-	PKCEPolicy    string    `json:"pkcePolicy"`
 	Enabled       bool      `json:"enabled"`
 	CreatedAt     time.Time `json:"createdAt"`
 	UpdatedAt     time.Time `json:"updatedAt"`
@@ -93,10 +88,10 @@ func (wire oidcClientWire) client() OIDCClient {
 	return OIDCClient{
 		ID: wire.ID, ApplicationID: wire.ApplicationID, ClientID: wire.ClientID,
 		DisplayName: wire.DisplayName, Description: wire.Description,
-		AllowedScopes: append([]string(nil), wire.AllowedScopes...),
+		AllowedScopes: manageableScopes(wire.AllowedScopes),
 		RedirectURIs:  append([]string(nil), wire.RedirectURIs...),
-		PKCEPolicy:    wire.PKCEPolicy, Enabled: wire.Enabled,
-		CreatedAt: wire.CreatedAt, UpdatedAt: wire.UpdatedAt,
+		Enabled:       wire.Enabled,
+		CreatedAt:     wire.CreatedAt, UpdatedAt: wire.UpdatedAt,
 	}
 }
 
@@ -115,12 +110,24 @@ type securityWire struct {
 
 func (wire securityWire) security() Security {
 	return Security{
-		ClientID: wire.ClientID, ClientType: wire.ClientType, PKCEPolicy: wire.PKCEPolicy,
-		AllowedScopes:         append([]string(nil), wire.AllowedScopes...),
+		ClientID:              wire.ClientID,
+		ClientType:            wire.ClientType,
+		AllowedScopes:         manageableScopes(wire.AllowedScopes),
 		AccessTokenTTLSeconds: wire.AccessTokenTTLSeconds, IDTokenTTLSeconds: wire.IDTokenTTLSeconds,
-		GroupsTokenTTLSeconds: wire.GroupsTokenTTLSeconds, LegacyRolesClaim: wire.LegacyRolesClaim,
-		Revision: wire.Revision, Hash: wire.Hash,
+		GroupsTokenTTLSeconds: wire.GroupsTokenTTLSeconds,
+		Revision:              wire.Revision, Hash: wire.Hash,
 	}
+}
+
+func manageableScopes(scopes []string) []string {
+	result := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		if scope == "roles" || slices.Contains(result, scope) {
+			continue
+		}
+		result = append(result, scope)
+	}
+	return result
 }
 
 type credentialWire struct {

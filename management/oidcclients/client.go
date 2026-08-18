@@ -52,7 +52,7 @@ func (c *Client) List(ctx context.Context, applicationOpenID string) ([]OIDCClie
 // Create creates an OIDC client under an application.
 func (c *Client) Create(ctx context.Context, applicationOpenID string, input CreateInput) (OIDCClient, management.Metadata, error) {
 	const operation = "management.oidcclients.create"
-	if !validApplicationOpenID(applicationOpenID) || !validClientID(input.ClientID) || !validRequired(input.DisplayName) || !validStringList(input.AllowedScopes) || !validStringList(input.RedirectURIs) || input.PKCEPolicy != "" && input.PKCEPolicy != "required" {
+	if !validApplicationOpenID(applicationOpenID) || !validClientID(input.ClientID) || !validRequired(input.DisplayName) || !validStringList(input.AllowedScopes) || !validStringList(input.RedirectURIs) {
 		return OIDCClient{}, management.Metadata{}, invalidArgument(operation)
 	}
 	body := struct {
@@ -61,11 +61,9 @@ func (c *Client) Create(ctx context.Context, applicationOpenID string, input Cre
 		Description   string   `json:"description"`
 		AllowedScopes []string `json:"allowedScopes"`
 		RedirectURIs  []string `json:"redirectUris"`
-		PKCEPolicy    string   `json:"pkcePolicy"`
 	}{
 		ClientID: input.ClientID, DisplayName: input.DisplayName, Description: input.Description,
 		AllowedScopes: append([]string(nil), input.AllowedScopes...), RedirectURIs: append([]string(nil), input.RedirectURIs...),
-		PKCEPolicy: input.PKCEPolicy,
 	}
 	var response oidcClientWire
 	metadata, err := c.transport.Do(ctx, management.Request{
@@ -118,19 +116,17 @@ func (c *Client) UpdateSecurity(ctx context.Context, clientID string, input Upda
 	}
 	body := struct {
 		ClientType            string   `json:"clientType"`
-		PKCEPolicy            string   `json:"pkcePolicy"`
 		AllowedScopes         []string `json:"allowedScopes"`
 		AccessTokenTTLSeconds uint32   `json:"accessTokenTtlSeconds"`
 		IDTokenTTLSeconds     uint32   `json:"idTokenTtlSeconds"`
 		GroupsTokenTTLSeconds uint32   `json:"groupsTokenTtlSeconds"`
-		LegacyRolesClaim      bool     `json:"legacyRolesClaim"`
 		Revision              uint64   `json:"revision"`
 	}{
-		ClientType: input.ClientType, PKCEPolicy: input.PKCEPolicy,
+		ClientType:            input.ClientType,
 		AllowedScopes:         append([]string(nil), input.AllowedScopes...),
 		AccessTokenTTLSeconds: input.AccessTokenTTLSeconds, IDTokenTTLSeconds: input.IDTokenTTLSeconds,
-		GroupsTokenTTLSeconds: input.GroupsTokenTTLSeconds, LegacyRolesClaim: input.LegacyRolesClaim,
-		Revision: input.Revision,
+		GroupsTokenTTLSeconds: input.GroupsTokenTTLSeconds,
+		Revision:              input.Revision,
 	}
 	var response securityWire
 	metadata, err := c.transport.Do(ctx, management.Request{
@@ -246,9 +242,6 @@ func validStringList(values []string) bool {
 
 func validSecurityInput(input UpdateSecurityInput) bool {
 	if input.ClientType != "public" && input.ClientType != "confidential" {
-		return false
-	}
-	if input.PKCEPolicy != "required" && input.PKCEPolicy != "recommended" {
 		return false
 	}
 	return validStringList(input.AllowedScopes) && input.AccessTokenTTLSeconds > 0 && input.IDTokenTTLSeconds > 0 && input.GroupsTokenTTLSeconds > 0 && input.GroupsTokenTTLSeconds <= 300

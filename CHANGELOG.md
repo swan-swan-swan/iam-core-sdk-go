@@ -4,6 +4,26 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v0.8.0
+
+### HTTP Resource Catalog
+
+- Added `runtime/httpcatalog` for startup collection and complete-manifest registration of
+  application-owned HTTP routes.
+- Required action-aligned catalog coordinates: `ResourceServer` is the first Action segment and
+  `Resource` joins the second and third segments with an underscore.
+- Added fail-closed health state, deterministic route ordering, idempotent duplicate collection,
+  dedicated `*-catalog-registrar` Basic credentials, bounded responses, and sanitized failures.
+- Kept retry scheduling and lifecycle ownership in the consuming service; the SDK sends one request
+  per `Sync` call and does not provision Applications, OIDC Clients, policies, roles, or users.
+
+## v0.7.0
+
+### OIDC security
+
+- Contracted PKCE, OIDC Client security, roles management, and credential handling surfaces used by
+  IAM Core v1.8.1 consumers.
+
 ## v0.6.0
 
 ### HTTP authorization

@@ -1,12 +1,12 @@
 # IAM Core Go SDK
 
-本仓库提供面向 IAM Core v1.8.1 的 Go SDK。`v0.6.0` 使用单一 Go Module
+本仓库提供面向 IAM Core v1.8.1 的 Go SDK。`v0.8.0` 使用单一 Go Module
 `github.com/swan-swan-swan/iam-core-sdk-go`，并在同一版本中明确划分两类能力：
 
 - `runtime/*`：业务请求链路中的 OIDC/BFF、HTTP Resource Server、Gin 与 Redis adapter。
 - `management/*`：受控管理服务、专用 CLI 或 CI/CD 使用的平台接入控制面 Client。
 
-`v0.6.0` 保持 Gin 和 Redis Adapter 合并进根 Module，公开 import 路径不变。升级前请阅读
+`v0.8.0` 保持 Gin 和 Redis Adapter 合并进根 Module，公开 import 路径不变。升级前请阅读
 [v0.3 → v0.4 迁移指南](docs/migration-v0.3-to-v0.4.md)并删除旧的 Adapter Module 依赖。
 从旧仓库名迁移时，另请参考
 [v0.2 → v0.3 迁移指南](docs/migration-v0.2-to-v0.3.md)。
@@ -21,12 +21,12 @@ RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 根 Module 同时包含 Runtime、Management、Gin Adapter 与 Redis Adapter，只需安装一个版本：
 
 ```bash
-go get github.com/swan-swan-swan/iam-core-sdk-go@v0.6.0
+go get github.com/swan-swan-swan/iam-core-sdk-go@v0.8.0
 ```
 
 根 Module 的依赖图包含 Gin 和 go-redis，但未 import 对应 Adapter 的程序不会编译或链接这些
 package。Docker、Moby 和 Testcontainers 仍只属于仓库内 integration 测试 Module。SDK 每个版本
-只创建一个根标签，例如 `v0.6.0`。
+只创建一个根标签，例如 `v0.8.0`。
 
 ## 能力边界
 
@@ -36,8 +36,9 @@ package。Docker、Moby 和 Testcontainers 仍只属于仓库内 integration 测
 | 受控管理服务、专用 CLI、CI/CD | `management/*` | 调用方注入高权限 Token；显式执行单个管理操作 |
 | Go 脚手架无鉴权模式 | 不初始化 SDK | `auth.mode=none` 时不初始化 Runtime SDK，也不建立本地账号体系或伪造 IAM 身份 |
 
-management 不参与普通业务请求链路。业务应用启动时不自动 Provision，不自动创建 Application、
-OIDC Client、Catalog 或 Policy。无鉴权模式是调用方运行策略，不是 SDK 内的降级开关。
+management 不参与普通业务请求链路。`runtime/httpcatalog` 只允许业务应用启动时同步代码拥有的
+HTTP Catalog；它不创建 Application、OIDC Client、Policy、角色绑定或用户授权。无鉴权模式是
+调用方运行策略，不是 SDK 内的降级开关。
 
 ## Runtime
 
@@ -46,6 +47,7 @@ Runtime 的公开入口位于：
 - `github.com/swan-swan-swan/iam-core-sdk-go/runtime/core`
 - `github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff`
 - `github.com/swan-swan-swan/iam-core-sdk-go/runtime/httpauthz`
+- `github.com/swan-swan-swan/iam-core-sdk-go/runtime/httpcatalog`
 - `github.com/swan-swan-swan/iam-core-sdk-go/runtime/testkit`
 
 浏览器 BFF 示例位于 [`examples/runtime/bff`](examples/runtime/bff)，Bearer-only HTTP Resource
@@ -66,6 +68,10 @@ Gin adapter 是 `net/http` 授权服务的薄适配层：
 ```go
 import ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin"
 ```
+
+`runtime/httpcatalog` 收集代码拥有的 `RouteSpec`，要求 `ResourceServer` 等于三级 Action 第一段、
+`Resource` 等于后两段以下划线连接，并使用独立的 `*-catalog-registrar` OIDC Client Basic 凭据
+执行单次启动同步。Registry 在同步成功前保持 health down；重试调度由业务进程 lifecycle 负责。
 
 Redis adapter 是可选的 BFF Session 存储，实现加密的 Backend，并使用 generation-bound、fenced、
 server-time lease 保护 refresh 原子提交。应用必须提供自己的 go-redis

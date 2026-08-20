@@ -35,7 +35,7 @@ func TestDocumentationContract(t *testing.T) {
 	readme := read("README.md")
 	requireAll("README", readme,
 		"IAM Core Go SDK",
-		"v0.8.0",
+		"v0.9.0",
 		"单一 Go Module",
 		"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core",
 		"github.com/swan-swan-swan/iam-core-sdk-go/management/client",
@@ -44,6 +44,7 @@ func TestDocumentationContract(t *testing.T) {
 		"management 不参与普通业务请求链路",
 		"RPC 暂不支持",
 		"runtime/httpcatalog",
+		"runtime/applicationhandoff",
 		"不创建 Application、OIDC Client、Policy",
 		"auth.mode=none",
 		"不初始化 Runtime SDK",
@@ -93,6 +94,7 @@ func TestDocumentationContract(t *testing.T) {
 		"v0.6.x",
 		"v0.7.x",
 		"v0.8.x",
+		"v0.9.x",
 		"github.com/swan-swan-swan/iam-core-sdk-go",
 		"Runtime + approved platform-integration Management",
 		"IAM Core v1.8.1",
@@ -140,6 +142,19 @@ func TestDocumentationContract(t *testing.T) {
 	)
 	forbidAll("v1.8.1 contract", contract,
 		"IAM Application、OIDC Client、Resource Catalog、Policy、用户、组织、角色与审计查询/管理\n接口都不属于本 SDK",
+	)
+
+	handoffContract := read("docs/iam-core-v1.9.0-contract.md")
+	requireAll("v1.9.0 contract", handoffContract,
+		"Application Handoff",
+		"runtime/applicationhandoff",
+		"POST /api/v1/application-handoffs",
+		"TokenSource",
+		"协议不接受 Subject",
+		"application-handoff:create",
+		"不管理目标系统权限",
+		"60 秒",
+		"不跟随",
 	)
 
 	integration := read("integration/redis/redis_test.go")

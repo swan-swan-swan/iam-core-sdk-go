@@ -30,7 +30,7 @@ func TestCreateUsesRequestScopedBearerAndExactWireContract(t *testing.T) {
 			t.Fatalf("body = %s", got)
 		}
 		writer.Header().Set("Content-Type", "application/json")
-		_, _ = writer.Write([]byte(`{"code":0,"message":"ok","data":{"handoffId":"op_hnd_0123456789abcdefghj","launchUrl":"https://jms.example.test/custom-sso?token=one-time","expiresIn":60}}`))
+		_, _ = writer.Write([]byte(`{"code":0,"message":"ok","data":{"handoffId":"op_hnd_0123456789abcdefghjkmnpqrs","launchUrl":"https://jms.example.test/custom-sso?token=one-time","expiresIn":60}}`))
 	}))
 	defer server.Close()
 
@@ -45,7 +45,7 @@ func TestCreateUsesRequestScopedBearerAndExactWireContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if tokenCalls.Load() != 1 || output.HandoffID != "op_hnd_0123456789abcdefghj" || output.ExpiresIn != time.Minute || !strings.HasPrefix(output.LaunchURL, "https://jms.example.test/") {
+	if tokenCalls.Load() != 1 || output.HandoffID != "op_hnd_0123456789abcdefghjkmnpqrs" || output.ExpiresIn != time.Minute || !strings.HasPrefix(output.LaunchURL, "https://jms.example.test/") {
 		t.Fatalf("calls/output = %d / %#v", tokenCalls.Load(), output)
 	}
 }

@@ -137,11 +137,24 @@ func validInput(input CreateInput) bool {
 }
 
 func validCreateResponse(response createResponse) bool {
-	if !validOpenID(response.HandoffID, "op_hnd_") || response.ExpiresIn <= 0 || response.ExpiresIn > 300 {
+	if !validHandoffOpenID(response.HandoffID) || response.ExpiresIn <= 0 || response.ExpiresIn > 300 {
 		return false
 	}
 	parsed, err := url.Parse(response.LaunchURL)
 	return err == nil && parsed.IsAbs() && parsed.Host != "" && parsed.User == nil && parsed.Fragment == "" && (parsed.Scheme == "https" || isLoopbackHTTP(parsed))
+}
+
+func validHandoffOpenID(value string) bool {
+	const prefix = "op_hnd_"
+	if len(value) != len(prefix)+26 || !strings.HasPrefix(value, prefix) {
+		return false
+	}
+	for _, character := range value[len(prefix):] {
+		if !((character >= 'a' && character <= 'z') || (character >= '0' && character <= '9')) {
+			return false
+		}
+	}
+	return true
 }
 
 func validOpenID(value, prefix string) bool {

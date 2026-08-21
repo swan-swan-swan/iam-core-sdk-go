@@ -4,6 +4,13 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v0.9.2
+
+### Application Handoff
+
+- Accepted IAM Core's canonical `op_hnd_` identifier with a full 26-character ULID suffix instead
+  of the shortened test-only fixture used by v0.9.1.
+
 ## v0.9.1
 
 ### Application Handoff

@@ -4,6 +4,13 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v0.9.1
+
+### Application Handoff
+
+- Accepted IAM Core PDP `dec_` decision identifiers while keeping `op_cor_` correlation identifiers
+  independently validated, so consumers can pass the authorization receipt without rewriting it.
+
 ## v0.8.0
 
 ### HTTP Resource Catalog

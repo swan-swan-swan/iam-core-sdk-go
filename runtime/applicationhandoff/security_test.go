@@ -121,5 +121,5 @@ func staticToken(value string) core.TokenSource {
 }
 
 func validCreateInput() CreateInput {
-	return CreateInput{ApplicationOpenID: testApplicationOpenID, DecisionID: "op_dec_1", CorrelationID: "op_cor_1"}
+	return CreateInput{ApplicationOpenID: testApplicationOpenID, DecisionID: "dec_0123456789abcdef0123456789abcdef", CorrelationID: "op_cor_1"}
 }

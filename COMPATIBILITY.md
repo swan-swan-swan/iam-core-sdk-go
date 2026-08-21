@@ -26,3 +26,5 @@ RPC、users、organizations、global roles、Cloud Provider、audits、SPA/移�
 通过 `runtime/httpcatalog` 自动同步代码拥有的 HTTP Catalog。v0.9.x 新增的
 `runtime/applicationhandoff` 只签发当前用户的一次性登录交接，不管理目标系统权限。同一 IAM Core
 兼容版本可以增加不冲突的 JSON 元数据，但不能改变必需字段、类型、签名算法、revision/hash 或失败关闭语义。
+Handoff 的 `decisionId` 原样使用 PDP 返回的 `dec_` 标识，`correlationId` 使用独立的 `op_cor_` 标识；
+消费方不得改写决策审计 ID。

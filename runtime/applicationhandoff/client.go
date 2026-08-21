@@ -25,7 +25,10 @@ const (
 	configureOperation   = "applicationhandoff.configure"
 )
 
-var contextIDPattern = regexp.MustCompile(`^op_[a-z]{3}_[A-Za-z0-9_-]{1,52}$`)
+var (
+	decisionIDPattern    = regexp.MustCompile(`^dec_[A-Za-z0-9_-]{1,60}$`)
+	correlationIDPattern = regexp.MustCompile(`^op_cor_[A-Za-z0-9_-]{1,52}$`)
+)
 
 // Config 定义 Application Handoff Client 的不可变运行配置。
 type Config struct {
@@ -130,7 +133,7 @@ func (client *Client) Create(ctx context.Context, tokens core.TokenSource, input
 }
 
 func validInput(input CreateInput) bool {
-	return validOpenID(input.ApplicationOpenID, "op_app_") && contextIDPattern.MatchString(input.DecisionID) && contextIDPattern.MatchString(input.CorrelationID)
+	return validOpenID(input.ApplicationOpenID, "op_app_") && decisionIDPattern.MatchString(input.DecisionID) && correlationIDPattern.MatchString(input.CorrelationID)
 }
 
 func validCreateResponse(response createResponse) bool {

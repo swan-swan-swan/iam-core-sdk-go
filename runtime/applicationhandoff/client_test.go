@@ -26,7 +26,7 @@ func TestCreateUsesRequestScopedBearerAndExactWireContract(t *testing.T) {
 			t.Fatalf("Authorization = %q", got)
 		}
 		body, _ := io.ReadAll(request.Body)
-		if got := string(body); got != `{"applicationOpenId":"op_app_0123456789abcdefghj","decisionId":"op_dec_1","correlationId":"op_cor_1"}` {
+		if got := string(body); got != `{"applicationOpenId":"op_app_0123456789abcdefghj","decisionId":"dec_0123456789abcdef0123456789abcdef","correlationId":"op_cor_1"}` {
 			t.Fatalf("body = %s", got)
 		}
 		writer.Header().Set("Content-Type", "application/json")
@@ -41,7 +41,7 @@ func TestCreateUsesRequestScopedBearerAndExactWireContract(t *testing.T) {
 	output, err := client.Create(t.Context(), core.TokenSourceFunc(func(context.Context) (string, error) {
 		tokenCalls.Add(1)
 		return "user-access-token", nil
-	}), CreateInput{ApplicationOpenID: testApplicationOpenID, DecisionID: "op_dec_1", CorrelationID: "op_cor_1"})
+	}), CreateInput{ApplicationOpenID: testApplicationOpenID, DecisionID: "dec_0123456789abcdef0123456789abcdef", CorrelationID: "op_cor_1"})
 	if err != nil {
 		t.Fatal(err)
 	}

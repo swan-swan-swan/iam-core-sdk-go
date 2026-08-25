@@ -7,8 +7,8 @@ scope:
     - backend
   description: "IAM Core Go SDK，包含请求链路 Runtime 与受控 Management Client"
 workflow:
-  product_source: hybrid
+  product_source: standalone
   issue:
     provider: github
     local_store: ""
-    remote_repo: "git@github.com:swan-swan-swan/iam-core-design.git"
+    remote_repo: "git@github.com:swan-swan-swan/iam-core-sdk-go.git"

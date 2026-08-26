@@ -31,11 +31,14 @@ func TestDocumentationContract(t *testing.T) {
 			}
 		}
 	}
+	if version := read("VERSION"); version != "0.10.0\n" {
+		t.Errorf("VERSION = %q, want %q", version, "0.10.0\\n")
+	}
 
 	readme := read("README.md")
 	requireAll("README", readme,
 		"IAM Core Go SDK",
-		"v0.9.2",
+		"v0.10.0",
 		"单一 Go Module",
 		"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core",
 		"github.com/swan-swan-swan/iam-core-sdk-go/management/client",
@@ -57,6 +60,9 @@ func TestDocumentationContract(t *testing.T) {
 		"Client、FailoverClient 或 ClusterClient",
 		"Redis 6.2+",
 		"不执行 Lua",
+		"GlobalLogoutHandler",
+		"FrontchannelLogoutHandler",
+		"绝对有效期为七天、空闲有效期为十二小时",
 	)
 	forbidAll("README", readme,
 		"IAM Core Go Client SDK",
@@ -95,6 +101,7 @@ func TestDocumentationContract(t *testing.T) {
 		"v0.7.x",
 		"v0.8.x",
 		"v0.9.x",
+		"v0.10.x",
 		"github.com/swan-swan-swan/iam-core-sdk-go",
 		"Runtime + approved platform-integration Management",
 		"IAM Core v1.8.1",
@@ -102,6 +109,8 @@ func TestDocumentationContract(t *testing.T) {
 
 	changelog := read("CHANGELOG.md")
 	requireAll("CHANGELOG", changelog,
+		"v0.10.0",
+		"Browser global logout",
 		"operationally breaking",
 		"Lua evaluation",
 		"v0.8.0",

@@ -13,7 +13,7 @@ import (
 	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
 )
 
-var frontchannelPlatformPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,63}$`)
+var frontchannelPlatformPattern = regexp.MustCompile(`^[a-z][a-z0-9]{2,63}$`)
 
 type FrontchannelLogoutConfig struct {
 	PlatformID string

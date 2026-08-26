@@ -1,13 +1,13 @@
 # IAM Core Go SDK
 
-本仓库提供面向 IAM Core v1.9.0（兼容既有 v1.8.1 Runtime/Management 契约）的 Go SDK。`v0.9.2` 使用单一 Go Module
+本仓库提供面向 IAM Core v1.9.0（兼容既有 v1.8.1 Runtime/Management 契约）的 Go SDK。`v0.10.0` 使用单一 Go Module
 `github.com/swan-swan-swan/iam-core-sdk-go`，并在同一版本中明确划分两类能力：
 
 - `runtime/*`：业务请求链路中的 OIDC/BFF、HTTP Resource Server、Gin 与 Redis adapter。
 - `management/*`：受控管理服务、专用 CLI 或 CI/CD 使用的平台接入控制面 Client。
 
-`v0.9.2` 保持 Gin 和 Redis Adapter 合并进根 Module，公开 import 路径不变，并新增单用途
-Application Handoff Runtime Client。升级前请阅读
+`v0.10.0` 保持 Gin 和 Redis Adapter 合并进根 Module，公开 import 路径不变，并在 Application
+Handoff Runtime Client 之上新增浏览器全局退出与绝对/空闲 Session 策略。升级前请阅读
 [v0.3 → v0.4 迁移指南](docs/migration-v0.3-to-v0.4.md)并删除旧的 Adapter Module 依赖。
 从旧仓库名迁移时，另请参考
 [v0.2 → v0.3 迁移指南](docs/migration-v0.2-to-v0.3.md)。
@@ -22,12 +22,12 @@ RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 根 Module 同时包含 Runtime、Management、Gin Adapter 与 Redis Adapter，只需安装一个版本：
 
 ```bash
-go get github.com/swan-swan-swan/iam-core-sdk-go@v0.9.2
+go get github.com/swan-swan-swan/iam-core-sdk-go@v0.10.0
 ```
 
 根 Module 的依赖图包含 Gin 和 go-redis，但未 import 对应 Adapter 的程序不会编译或链接这些
 package。Docker、Moby 和 Testcontainers 仍只属于仓库内 integration 测试 Module。SDK 每个版本
-只创建一个根标签，例如 `v0.9.2`。
+只创建一个根标签，例如 `v0.10.0`。
 
 ## 能力边界
 
@@ -169,15 +169,17 @@ integration 是不发布的测试 Module；其 Redis 6.2/7.4 conformance 依赖 
 发布 workflow 在根 Module 和 integration 全部通过后，只为 release merge commit 创建并推送
 一个根标签；开发工作站不创建或推送发布标签。真实发布前 GitHub repository metadata 必须已是
 `swan-swan-swan/iam-core-sdk-go`。
-## Browser global logout
 
-bff.Client.GlobalLogoutHandler clears the local BFF session and returns a
-top-level 303 See Other to the trusted IAM end-session endpoint. Applications
-should submit this endpoint with a same-origin POST form instead of fetch, so
-the browser can continue the IAM front-channel flow.
+## 浏览器全局退出与 Session 策略
 
-bff.Client.FrontchannelLogoutHandler verifies a short-lived, audience-bound
-IAM logout token, clears the current host session, and posts a transaction-only
-result to the configured IAM origin. The default BFF session policy is an
-absolute seven days with a twelve-hour idle limit; callers may provide shorter
-positive values, but idle TTL cannot exceed absolute TTL.
+`bff.Client.GlobalLogoutHandler` 清理当前应用的本地 BFF Session，并以顶层 `303 See Other`
+跳转到 discovery 提供的可信 IAM end-session endpoint。应用应通过同源 POST form 提交该端点，
+不得使用 `fetch` 或 iframe 发起全局退出，以便浏览器继续执行 IAM 前端通道退出流程。
+
+`bff.Client.FrontchannelLogoutHandler` 验证 IAM 签发的短时、受 audience 约束的退出 token，
+幂等清理当前主机 Session，并仅向配置的 IAM Origin 回传交易结果。`PlatformID` 必须与 IAM 注册契约
+一致：以小写字母开头、只含小写字母和数字、长度 3-64。
+
+BFF Session 默认绝对有效期为七天、空闲有效期为十二小时。调用方可通过
+`SessionAbsoluteTTL` 和 `SessionIdleTTL` 配置正数时长；空闲有效期不得超过绝对有效期，
+活跃续期也不会突破绝对截止时间。

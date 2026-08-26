@@ -4,6 +4,17 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v0.10.0
+
+### Browser global logout
+
+- Added `bff.Client.GlobalLogoutHandler` for same-origin POST logout followed by a top-level redirect
+  to IAM's trusted end-session endpoint; local session cleanup is idempotent even when no session exists.
+- Added `bff.Client.FrontchannelLogoutHandler` with signed logout-token verification, Host-only Cookie
+  cleanup, bounded IAM-origin messaging, and platform identifiers aligned with the IAM registration contract.
+- Added configurable BFF session bounds with defaults of seven days absolute and twelve hours idle;
+  authenticated activity slides only the idle deadline and never extends the absolute deadline.
+
 ## v0.9.2
 
 ### Application Handoff

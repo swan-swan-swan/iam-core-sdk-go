@@ -60,6 +60,20 @@ func TestFrontchannelLogoutRejectsWrongAudienceWithoutClearingSession(t *testing
 	}
 }
 
+func TestFrontchannelLogoutRejectsPlatformIDOutsideRegistrationContract(t *testing.T) {
+	client, _, _ := newRefreshTestClient(t)
+	for _, platformID := range []string{"1ab", "ab", "ops_admin", "OPS", strings.Repeat("a", 65)} {
+		t.Run(platformID, func(t *testing.T) {
+			_, err := client.FrontchannelLogoutHandler(FrontchannelLogoutConfig{
+				PlatformID: platformID, IAMOrigin: "https://iam.example.test", Audience: testClientID,
+			})
+			if err == nil {
+				t.Fatalf("platform ID %q unexpectedly accepted", platformID)
+			}
+		})
+	}
+}
+
 func signFrontchannelToken(t *testing.T, issuer *refreshIssuer, audience, txID string, expiresAt time.Time) string {
 	t.Helper()
 	claims := jwt.MapClaims{

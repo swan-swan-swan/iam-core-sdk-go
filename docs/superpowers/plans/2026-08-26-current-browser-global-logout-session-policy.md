@@ -362,18 +362,18 @@ func (c *Client) FrontchannelLogoutHandler(cfg FrontchannelLogoutConfig) http.Ha
 func (r *Runtime) VerifyLogoutToken(ctx context.Context, raw, audience string) (txID string, err error)
 ```
 
-- [ ] **Step 1: RED** — 将默认 idle 从 8h 改为 12h，并添加 `idle > absolute` 构造失败用例；验证现有 session resolver 不越过绝对截止时间。
-- [ ] **Step 2: RED** — `GlobalLogoutHandler` 在有/无本地 session 时均清 Cookie并 `303` 到 discovery 中的受信任 end-session endpoint；不做 server-to-server Cookie 退出。保留 `LocalLogoutHandler` 与旧 `CentralLogoutHandler` 兼容行为。
-- [ ] **Step 3: RED** — receiver 拒绝伪造签名、错误 issuer/aud/purpose、过期 token；成功时幂等删除 session、清 Host-only Cookie，并只向配置的 IAM Origin postMessage `{type, platform, tx_id, status}`。
-- [ ] **Step 4: 运行 RED**
+- [x] **Step 1: RED** — 将默认 idle 从 8h 改为 12h，并添加 `idle > absolute` 构造失败用例；验证现有 session resolver 不越过绝对截止时间。
+- [x] **Step 2: RED** — `GlobalLogoutHandler` 在有/无本地 session 时均清 Cookie并 `303` 到 discovery 中的受信任 end-session endpoint；不做 server-to-server Cookie 退出。保留 `LocalLogoutHandler` 与旧 `CentralLogoutHandler` 兼容行为。
+- [x] **Step 3: RED** — receiver 拒绝伪造签名、错误 issuer/aud/purpose、过期 token；成功时幂等删除 session、清 Host-only Cookie，并只向配置的 IAM Origin postMessage `{type, platform, tx_id, status}`。
+- [x] **Step 4: 运行 RED**
 
   ```bash
   cd iam-core-sdk-go
   go test ./runtime/bff ./runtime/core -run 'Test.*(SessionTTL|GlobalLogout|Frontchannel|LogoutToken)' -count=1
   ```
 
-- [ ] **Step 5: GREEN** — 实现上述公开接口、no-store 响应和受限 HTML；所有 URL 来自 discovery/config，不接受请求覆盖。
-- [ ] **Step 6: VERIFY**
+- [x] **Step 5: GREEN** — 实现上述公开接口、no-store 响应和受限 HTML；所有 URL 来自 discovery/config，不接受请求覆盖。
+- [x] **Step 6: VERIFY**
 
   ```bash
   gofmt -w runtime/bff runtime/core
@@ -382,7 +382,7 @@ func (r *Runtime) VerifyLogoutToken(ctx context.Context, raw, audience string) (
   git diff --check
   ```
 
-- [ ] **Step 7: Commit and tag candidate**
+- [x] **Step 7: Commit and tag candidate**
 
   ```bash
   cd iam-core-sdk-go

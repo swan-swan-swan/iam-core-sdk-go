@@ -44,6 +44,37 @@ func TestVerifyAccessTokenReturnsTypedGroupsAndActualScope(t *testing.T) {
 	}
 }
 
+func TestVerifyLogoutTokenRequiresTargetAudiencePurposeAndTransaction(t *testing.T) {
+	runtime, signer := newCoreRuntime(t)
+	claims := signer.validClaims()
+	delete(claims, "sub")
+	delete(claims, "jti")
+	claims["aud"] = "portal"
+	claims["purpose"] = "frontchannel_logout"
+	claims["tx_id"] = "tx_123"
+	got, err := runtime.VerifyLogoutToken(t.Context(), signer.AccessToken(t, claims), "portal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.TxID != "tx_123" || got.Audience != "portal" {
+		t.Fatalf("claims=%#v", got)
+	}
+	for name, mutate := range map[string]func(map[string]any){
+		"audience":    func(v map[string]any) { v["aud"] = "admin" },
+		"purpose":     func(v map[string]any) { v["purpose"] = "access" },
+		"transaction": func(v map[string]any) { delete(v, "tx_id") },
+		"expired":     func(v map[string]any) { v["exp"] = time.Now().Add(-time.Minute).Unix() },
+	} {
+		t.Run(name, func(t *testing.T) {
+			bad := maps.Clone(claims)
+			mutate(bad)
+			if _, err := runtime.VerifyLogoutToken(t.Context(), signer.AccessToken(t, bad), "portal"); err == nil {
+				t.Fatal("VerifyLogoutToken() error = nil")
+			}
+		})
+	}
+}
+
 func TestVerifyAccessTokenInitializesEmptyGroupsWhenMappingIsAbsent(t *testing.T) {
 	runtime, signer := newCoreRuntime(t)
 	claims := signer.validClaims()

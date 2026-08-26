@@ -60,6 +60,7 @@ func TestNewRejectsInvalidBFFConfiguration(t *testing.T) {
 		"negative flow ttl":            func(config *Config) { config.FlowTTL = -time.Second },
 		"negative absolute ttl":        func(config *Config) { config.SessionAbsoluteTTL = -time.Second },
 		"negative idle ttl":            func(config *Config) { config.SessionIdleTTL = -time.Second },
+		"idle ttl beyond absolute":     func(config *Config) { config.SessionAbsoluteTTL, config.SessionIdleTTL = time.Hour, 2*time.Hour },
 		"negative refresh window":      func(config *Config) { config.RefreshBeforeExpiry = -time.Second },
 		"negative refresh lease":       func(config *Config) { config.RefreshLeaseTTL = -time.Second },
 		"negative token timeout":       func(config *Config) { config.TokenTimeout = -time.Second },
@@ -80,6 +81,17 @@ func TestNewRejectsInvalidBFFConfiguration(t *testing.T) {
 				t.Fatalf("New() error = %#v", err)
 			}
 		})
+	}
+}
+
+func TestNewDefaultsToTwelveHourIdleSession(t *testing.T) {
+	config, _, _ := newBFFTestConfig(t)
+	client, err := New(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if client.sessionAbsoluteTTL != 7*24*time.Hour || client.sessionIdleTTL != 12*time.Hour {
+		t.Fatalf("session policy = %s/%s", client.sessionAbsoluteTTL, client.sessionIdleTTL)
 	}
 }
 

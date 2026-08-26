@@ -169,3 +169,15 @@ integration 是不发布的测试 Module；其 Redis 6.2/7.4 conformance 依赖 
 发布 workflow 在根 Module 和 integration 全部通过后，只为 release merge commit 创建并推送
 一个根标签；开发工作站不创建或推送发布标签。真实发布前 GitHub repository metadata 必须已是
 `swan-swan-swan/iam-core-sdk-go`。
+## Browser global logout
+
+bff.Client.GlobalLogoutHandler clears the local BFF session and returns a
+top-level 303 See Other to the trusted IAM end-session endpoint. Applications
+should submit this endpoint with a same-origin POST form instead of fetch, so
+the browser can continue the IAM front-channel flow.
+
+bff.Client.FrontchannelLogoutHandler verifies a short-lived, audience-bound
+IAM logout token, clears the current host session, and posts a transaction-only
+result to the configured IAM origin. The default BFF session policy is an
+absolute seven days with a twelve-hour idle limit; callers may provide shorter
+positive values, but idle TTL cannot exceed absolute TTL.

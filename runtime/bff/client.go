@@ -20,7 +20,7 @@ import (
 const (
 	defaultFlowTTL             = 10 * time.Minute
 	defaultSessionAbsoluteTTL  = 7 * 24 * time.Hour
-	defaultSessionIdleTTL      = 8 * time.Hour
+	defaultSessionIdleTTL      = 12 * time.Hour
 	defaultRefreshBeforeExpiry = time.Minute
 	defaultRefreshLeaseTTL     = 15 * time.Second
 	defaultTokenTimeout        = 5 * time.Second
@@ -138,7 +138,7 @@ func New(cfg Config) (*Client, error) {
 		return nil, configureError()
 	}
 	idleTTL, ok := positiveDurationOrDefault(cfg.SessionIdleTTL, defaultSessionIdleTTL)
-	if !ok {
+	if !ok || idleTTL > absoluteTTL {
 		return nil, configureError()
 	}
 	refreshBefore, ok := positiveDurationOrDefault(cfg.RefreshBeforeExpiry, defaultRefreshBeforeExpiry)

@@ -39,6 +39,51 @@ func (c *Client) CentralLogoutHandler() http.Handler {
 	})
 }
 
+// GlobalLogoutHandler clears the current application's local session and
+// redirects the top-level browser to the trusted IAM end-session endpoint.
+// Unlike CentralLogoutHandler it never performs a server-to-server request,
+// because only browser navigation can clear cookies owned by other origins.
+func (c *Client) GlobalLogoutHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
+		if !allowOnlyMethod(w, request, http.MethodPost) {
+			return
+		}
+		location, err := c.globalLogout(w, request)
+		if err != nil {
+			writeBFFError(w, err)
+			return
+		}
+		http.Redirect(w, request, location, http.StatusSeeOther)
+	})
+}
+
+func (c *Client) globalLogout(w http.ResponseWriter, request *http.Request) (string, error) {
+	const operation = "bff.global_logout"
+	c.clearCookie(w, c.sessionCookie)
+	endpoint, err := url.Parse(c.core.Metadata().EndSessionEndpoint)
+	if err != nil || endpoint.Scheme == "" || endpoint.Host == "" {
+		return "", bffError(core.KindProtocol, operation, 0, false)
+	}
+	sessionID, present, err := c.logoutSessionID(request)
+	if err != nil || !present {
+		return endpoint.String(), err
+	}
+	item, err := c.backend.Get(request.Context(), sessionID)
+	if err != nil && !errors.Is(err, session.ErrNotFound) && !errors.Is(err, session.ErrExpired) {
+		return "", c.sessionBackendError(operation, err)
+	}
+	if deleteErr := c.backend.Delete(request.Context(), sessionID); deleteErr != nil &&
+		!errors.Is(deleteErr, session.ErrNotFound) {
+		return "", c.sessionBackendError(operation, deleteErr)
+	}
+	if err == nil && strings.TrimSpace(item.Tokens.IDToken) != "" {
+		query := endpoint.Query()
+		query.Set("id_token_hint", item.Tokens.IDToken)
+		endpoint.RawQuery = query.Encode()
+	}
+	return endpoint.String(), nil
+}
+
 func (c *Client) localLogout(w http.ResponseWriter, request *http.Request) error {
 	const operation = "bff.local_logout"
 	c.clearCookie(w, c.sessionCookie)

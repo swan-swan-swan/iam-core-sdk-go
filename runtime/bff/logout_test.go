@@ -13,6 +13,37 @@ import (
 	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session"
 )
 
+func TestGlobalLogoutClearsLocalSessionAndRedirectsTopLevelToIAM(t *testing.T) {
+	client, backend, issuer := newRefreshTestClient(t)
+	item := seedValidSession(t, backend)
+	response := serveWithCookie(t, client.GlobalLogoutHandler(), item.ID)
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("status=%d", response.Code)
+	}
+	location := response.Header().Get("Location")
+	if !strings.HasPrefix(location, issuer.Server.URL+"/logout?") ||
+		!strings.Contains(location, "id_token_hint=") {
+		t.Fatalf("Location=%q", location)
+	}
+	if issuer.EndSessionCalls() != 0 {
+		t.Fatalf("server-to-server logout calls=%d", issuer.EndSessionCalls())
+	}
+	if _, err := backend.Get(t.Context(), item.ID); !errors.Is(err, session.ErrNotFound) {
+		t.Fatalf("session remained: %v", err)
+	}
+	assertSessionCookieCleared(t, response, client.sessionCookie.Name)
+}
+
+func TestGlobalLogoutWithoutSessionStillRedirectsForCompensation(t *testing.T) {
+	client, _, issuer := newRefreshTestClient(t)
+	response := httptest.NewRecorder()
+	client.GlobalLogoutHandler().ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/logout", nil))
+	if response.Code != http.StatusSeeOther || response.Header().Get("Location") != issuer.Server.URL+"/logout" {
+		t.Fatalf("status=%d location=%q", response.Code, response.Header().Get("Location"))
+	}
+	assertSessionCookieCleared(t, response, client.sessionCookie.Name)
+}
+
 func TestLocalLogoutNeverCallsEndSession(t *testing.T) {
 	client, backend, issuer := newRefreshTestClient(t)
 	item := seedValidSession(t, backend)

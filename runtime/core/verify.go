@@ -30,6 +30,73 @@ type tokenClaims struct {
 	Email       string          `json:"email"`
 }
 
+type logoutTokenClaims struct {
+	Issuer    string          `json:"iss"`
+	Audience  json.RawMessage `json:"aud"`
+	ExpiresAt json.RawMessage `json:"exp"`
+	TxID      string          `json:"tx_id"`
+	Purpose   string          `json:"purpose"`
+}
+
+// LogoutToken is the minimal verified transaction identity exposed to a
+// front-channel logout receiver. It intentionally contains no user or session
+// identifier.
+type LogoutToken struct {
+	Audience  string
+	TxID      string
+	ExpiresAt time.Time
+}
+
+// VerifyLogoutToken validates a short-lived, target-specific IAM logout token.
+func (r *Runtime) VerifyLogoutToken(ctx context.Context, raw, expectedAudience string) (token LogoutToken, resultErr error) {
+	const operation = "core.verify_logout_token"
+	if r == nil {
+		return LogoutToken{}, coreError(KindUnauthenticated, operation, 0, false)
+	}
+	started := r.clock.Now()
+	defer func() { r.record(ctx, operation, resultErr, started) }()
+	if ctx == nil || ctx.Err() != nil {
+		if ctx != nil {
+			return LogoutToken{}, ctx.Err()
+		}
+		return LogoutToken{}, coreError(KindUnauthenticated, operation, 0, false)
+	}
+	expectedAudience = strings.TrimSpace(expectedAudience)
+	if strings.TrimSpace(raw) == "" || expectedAudience == "" {
+		return LogoutToken{}, coreError(KindUnauthenticated, operation, 0, false)
+	}
+	payload, err := r.keys.verifySignature(ctx, raw)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return LogoutToken{}, err
+		}
+		if errors.Is(err, errJWKSUnavailable) {
+			return LogoutToken{}, coreError(KindIAMUnavailable, operation, 0, true)
+		}
+		return LogoutToken{}, coreError(KindUnauthenticated, operation, 0, false)
+	}
+	var claims logoutTokenClaims
+	if json.Unmarshal(payload, &claims) != nil {
+		return LogoutToken{}, coreError(KindUnauthenticated, operation, 0, false)
+	}
+	audiences, err := decodeAudience(claims.Audience)
+	if err != nil || len(audiences) != 1 || audiences[0] != expectedAudience {
+		return LogoutToken{}, coreError(KindUnauthenticated, operation, 0, false)
+	}
+	expiresAt, err := decodeNumericDate(claims.ExpiresAt, true)
+	if err != nil {
+		return LogoutToken{}, coreError(KindUnauthenticated, operation, 0, false)
+	}
+	now := r.clock.Now()
+	txID := strings.TrimSpace(claims.TxID)
+	if normalizeIssuer(claims.Issuer) != normalizeIssuer(r.metadata.Issuer) ||
+		claims.Purpose != "frontchannel_logout" || txID == "" || len(txID) > 128 ||
+		!expiresAt.asTime().After(now) || expiresAt.asTime().After(now.Add(5*time.Minute)) {
+		return LogoutToken{}, coreError(KindUnauthenticated, operation, 0, false)
+	}
+	return LogoutToken{Audience: expectedAudience, TxID: txID, ExpiresAt: expiresAt.asTime()}, nil
+}
+
 func (r *Runtime) VerifyAccessToken(ctx context.Context, raw string) (auth AuthContext, resultErr error) {
 	return r.verifyToken(ctx, raw, "core.verify_access_token", "", false)
 }

@@ -12,6 +12,7 @@
 | v0.8.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core HTTP Catalog registration extension | 1.24+ | Action-aligned startup Catalog registration |
 | v0.9.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 Application Handoff extension | 1.24+ | Request-scoped Application Handoff Runtime Client |
 | v0.10.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 browser logout/session extension | 1.24+ | Browser global logout、front-channel receiver、绝对/空闲 Session 策略 |
+| v1.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 stable Runtime/Management contract | 1.24+ | Stable single-Module Runtime、Management、Gin/Redis Adapter API |
 
 `v0.3.x` 不与 `v0.2.x` 源码兼容，也没有 deprecated wrapper；消费项目必须按迁移指南更换
 Module 和 import。Runtime 延续 PKCE S256、Client groups、真实 granted scopes、Manifest、
@@ -33,3 +34,6 @@ Handoff 的 `decisionId` 原样使用 PDP 返回的 `dec_` 标识，`correlation
 `v0.10.x` 在既有 BFF API 上增加浏览器全局退出和前端通道 receiver。默认 Session 策略为绝对七天、
 空闲十二小时；活跃请求只滑动空闲截止时间且不得突破绝对截止时间。平台标识必须与 IAM 注册值一致，
 并满足以小写字母开头、只含小写字母和数字、长度 3-64 的约束。
+
+`v1.x` 将上述单 Module API 提升为稳定语义化版本契约，延续 v0.10.x 的浏览器退出与 Session
+策略、公开 import 路径和失败关闭边界。

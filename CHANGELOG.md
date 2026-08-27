@@ -4,6 +4,15 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v1.0.0
+
+### Stable API
+
+- Promoted the single-Module Runtime、Management、Gin 和 Redis Adapter API to the first stable
+  semantic-version release for IAM Core v1.9.0 consumers.
+- Preserved the v0.10.0 browser global logout、front-channel receiver and absolute/idle Session
+  policy contracts without changing public import paths.
+
 ## v0.10.0
 
 ### Browser global logout

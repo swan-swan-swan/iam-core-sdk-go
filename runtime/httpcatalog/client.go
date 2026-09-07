@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
 )
 
 // Sync 将当前完整 Manifest 单次提交给 IAM Core；重试由业务启动生命周期负责。

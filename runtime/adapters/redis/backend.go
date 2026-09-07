@@ -17,8 +17,8 @@ import (
 	"time"
 
 	goredis "github.com/redis/go-redis/v9"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
 )
 
 var (

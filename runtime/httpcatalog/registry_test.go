@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/httpauthz"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/httpcatalog"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpauthz"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpcatalog"
 )
 
 // TestRegistrySyncSendsDeterministicV2Manifest 验证启动同步发送完整且确定性的代码路由清单。

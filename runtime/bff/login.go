@@ -9,9 +9,9 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
-	internalrandom "github.com/swan-swan-swan/iam-core-sdk-go/runtime/internal/random"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
+	internalrandom "github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/internal/random"
 )
 
 func (c *Client) LoginHandler() http.Handler {

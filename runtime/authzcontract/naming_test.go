@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/authzcontract"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/authzcontract"
 )
 
 func TestParseActionContract(t *testing.T) {

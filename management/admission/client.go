@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"strconv"
 
-	management "github.com/swan-swan-swan/iam-core-sdk-go/management/client"
+	management "github.com/swan-swan-swan/iam-core-sdk-go/v2/management/client"
 )
 
 // Client manages Application-level and OIDC Client-level login admission rules.

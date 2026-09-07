@@ -3,8 +3,8 @@ package httpauthz
 import (
 	"sync"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/authzcontract"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/authzcontract"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
 )
 
 const manifestOperation = "httpauthz.manifest"

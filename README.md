@@ -1,13 +1,14 @@
 # IAM Core Go SDK
 
-本仓库提供面向 IAM Core v1.9.0（兼容既有 v1.8.1 Runtime/Management 契约）的 Go SDK。`v1.0.0` 使用单一 Go Module
-`github.com/swan-swan-swan/iam-core-sdk-go`，并在同一版本中明确划分两类能力：
+本仓库提供面向 IAM Core v1.9.0 的 Go SDK。当前开发中的 `v2.0.0` 使用单一 Go Module
+`github.com/swan-swan-swan/iam-core-sdk-go/v2`，并在同一版本中明确划分两类能力：
 
 - `runtime/*`：业务请求链路中的 OIDC/BFF、HTTP Resource Server、Gin 与 Redis adapter。
 - `management/*`：受控管理服务、专用 CLI 或 CI/CD 使用的平台接入控制面 Client。
 
-`v1.0.0` 保持 Gin 和 Redis Adapter 合并进根 Module，公开 import 路径不变，并在 Application
-Handoff Runtime Client 之上新增浏览器全局退出与绝对/空闲 Session 策略。升级前请阅读
+已发布的 `v1.0.0` 提供 Gin/Redis Adapter、Application Handoff、浏览器全局退出与绝对/空闲 Session 策略。
+`v2.0.0` 继承这些能力并引入严格统一授权契约；全部 SDK import 必须在 module 名后增加 `/v2`，
+不同时依赖旧根 module，也不通过 replace 维持旧路径。更早版本升级还可参考
 [v0.3 → v0.4 迁移指南](docs/migration-v0.3-to-v0.4.md)并删除旧的 Adapter Module 依赖。
 从旧仓库名迁移时，另请参考
 [v0.2 → v0.3 迁移指南](docs/migration-v0.2-to-v0.3.md)。
@@ -19,15 +20,15 @@ RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 
 ## 安装
 
-根 Module 同时包含 Runtime、Management、Gin Adapter 与 Redis Adapter，只需安装一个版本：
+根 Module 同时包含 Runtime、Management、Gin Adapter 与 Redis Adapter。v2.0.0 正式发布后安装：
 
 ```bash
-go get github.com/swan-swan-swan/iam-core-sdk-go@v1.0.0
+go get github.com/swan-swan-swan/iam-core-sdk-go/v2@v2.0.0
 ```
 
 根 Module 的依赖图包含 Gin 和 go-redis，但未 import 对应 Adapter 的程序不会编译或链接这些
-package。Docker、Moby 和 Testcontainers 仍只属于仓库内 integration 测试 Module。SDK 每个版本
-只创建一个根标签，例如 `v1.0.0`。
+package。Docker、Moby 和 Testcontainers 仍只属于仓库内既有 integration 测试 Module，不发布。
+SDK 每个版本只创建一个根标签，例如 `v2.0.0`；当前 VERSION 仍保留已发布的 1.0.0，本地不创建标签。
 
 ## 能力边界
 
@@ -45,12 +46,12 @@ HTTP Catalog；它不创建 Application、OIDC Client、Policy、角色绑定或
 
 Runtime 的公开入口位于：
 
-- `github.com/swan-swan-swan/iam-core-sdk-go/runtime/core`
-- `github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff`
-- `github.com/swan-swan-swan/iam-core-sdk-go/runtime/httpauthz`
-- `github.com/swan-swan-swan/iam-core-sdk-go/runtime/httpcatalog`
-- `github.com/swan-swan-swan/iam-core-sdk-go/runtime/applicationhandoff`
-- `github.com/swan-swan-swan/iam-core-sdk-go/runtime/testkit`
+- `github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core`
+- `github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff`
+- `github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpauthz`
+- `github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpcatalog`
+- `github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/applicationhandoff`
+- `github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/testkit`
 
 浏览器 BFF 示例位于 [`examples/runtime/bff`](examples/runtime/bff)，Bearer-only HTTP Resource
 Server 示例位于 [`examples/runtime/nethttp`](examples/runtime/nethttp)。BFF 强制 PKCE S256，
@@ -74,7 +75,7 @@ Application 登录交接。输入不包含 Subject、目标系统角色或资产
 Gin adapter 是 `net/http` 授权服务的薄适配层：
 
 ```go
-import ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin"
+import ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/adapters/gin"
 ```
 
 `runtime/httpcatalog` 收集代码拥有的完整 `RouteSpec`，要求 `ResourceServer` 等于三级 Action 第一段，
@@ -144,7 +145,7 @@ Client、FailoverClient 或 ClusterClient；服务端要求 Redis 6.2+。adapter
 事务，不执行 Lua evaluation：
 
 ```go
-import redisadapter "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis"
+import redisadapter "github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/adapters/redis"
 ```
 
 ## Management
@@ -159,7 +160,7 @@ Management 由共享 Transport 和六个互不依赖的领域 Client 组成：
 - `management/policies`
 
 当前冻结 IAM Core v1.8.1 的 42 个管理端点。共享 Client 位于
-`github.com/swan-swan-swan/iam-core-sdk-go/management/client`，只接受调用方注入的
+`github.com/swan-swan-swan/iam-core-sdk-go/v2/management/client`，只接受调用方注入的
 `TokenSource`：
 
 ```go

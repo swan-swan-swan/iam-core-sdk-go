@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/testkit"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/testkit"
 )
 
 type zeroClock struct{}

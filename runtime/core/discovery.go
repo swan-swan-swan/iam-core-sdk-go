@@ -12,7 +12,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/internal/nilcheck"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/internal/nilcheck"
 )
 
 const (

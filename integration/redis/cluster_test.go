@@ -13,9 +13,9 @@ import (
 
 	goredis "github.com/redis/go-redis/v9"
 	"github.com/redis/go-redis/v9/maintnotifications"
-	redisadapter "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session/sessiontest"
+	redisadapter "github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/adapters/redis"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session/sessiontest"
 	"github.com/testcontainers/testcontainers-go"
 	tcnetwork "github.com/testcontainers/testcontainers-go/network"
 	"github.com/testcontainers/testcontainers-go/wait"

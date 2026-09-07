@@ -8,6 +8,7 @@
 - 版本遵循语义化版本。发布前运行 `go test ./... -count=1`、`go test -race ./... -count=1`、`go vet ./...` 和 `go build ./examples/...`；本地开发任务不得自行创建或推送 tag。
 - 只提交当前任务文件，保留工作区中与任务无关的用户改动。
 - 统一授权契约计划随 SDK v2.0.0 发布；Manifest v1 调用方在协调窗口迁移，不保留永久双轨。
+- v2 的根 module 固定为 `github.com/swan-swan-swan/iam-core-sdk-go/v2`；生产、测试和示例统一使用 `/v2` import，不增加旧路径兼容 module 或 replace。现有 integration 仅是非发布测试 module。
 - 公共命名必须复用 runtime/authzcontract：Action 为三段 lower_snake，总长不超过 64，token 正则为 `^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`，不得 trim 或 lowercase。
 - Action 动词仅允许 access、discover、select、create、update、delete、execute、preview、publish、approve、bind、revoke、rotate、reveal、export、import；读取不使用 list/get/read/view。
 - Route Name 匹配 `^[a-z0-9]+(?:\.[a-z0-9]+){2,}$`，总长不超过 64；Resource 只能将 Route Name 的点替换为下划线，不能手写覆盖。Route Template 必须是无 scheme/host/query/fragment 的绝对路径。

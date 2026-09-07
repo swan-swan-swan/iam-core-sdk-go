@@ -23,9 +23,9 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session/memory"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session/memory"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
 )
 
 var refreshTestNow = time.Unix(1_800_100_000, 0).UTC()

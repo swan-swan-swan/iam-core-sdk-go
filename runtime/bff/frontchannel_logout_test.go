@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session"
 )
 
 func TestFrontchannelLogoutVerifiesTokenClearsSessionAndConstrainsMessage(t *testing.T) {

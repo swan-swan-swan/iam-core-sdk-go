@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session/memory"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff/session/sessiontest"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session/memory"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session/sessiontest"
 )
 
 func TestMemoryBackendConformance(t *testing.T) {

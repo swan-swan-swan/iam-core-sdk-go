@@ -4,5 +4,3 @@ use (
 	.
 	./integration
 )
-
-replace github.com/swan-swan-swan/iam-core-sdk-go v0.4.0 => .

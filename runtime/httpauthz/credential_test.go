@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
 )
 
 func TestCredentialHeaderDistinguishesMissingFromValidBearer(t *testing.T) {

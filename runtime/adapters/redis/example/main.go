@@ -8,8 +8,8 @@ import (
 	"os"
 
 	goredis "github.com/redis/go-redis/v9"
-	redisadapter "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/redis"
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
+	redisadapter "github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/adapters/redis"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
 )
 
 var errInvalidEnvironment = errors.New("redis example: invalid environment")

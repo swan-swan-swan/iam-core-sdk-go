@@ -10,9 +10,9 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/management/admission"
-	"github.com/swan-swan-swan/iam-core-sdk-go/management/applications"
-	management "github.com/swan-swan-swan/iam-core-sdk-go/management/client"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/management/admission"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/management/applications"
+	management "github.com/swan-swan-swan/iam-core-sdk-go/v2/management/client"
 )
 
 type fixedTokenSource struct{ accessToken string }

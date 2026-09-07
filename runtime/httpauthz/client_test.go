@@ -20,7 +20,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
 )
 
 const validDecisionResponse = `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow"},"request_id":"req-1","trace_id":"trace-1"}`

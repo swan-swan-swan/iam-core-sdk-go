@@ -34,7 +34,7 @@ func TestManagementExcludesForbiddenPublicPackages(t *testing.T) {
 
 func TestManagementProductionImportsStayLightweight(t *testing.T) {
 	forbiddenFragments := []string{
-		"github.com/swan-swan-swan/iam-core-sdk-go/runtime",
+		"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime",
 		"github.com/gin-gonic/gin",
 		"github.com/redis/",
 		"github.com/go-redis/",

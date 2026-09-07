@@ -8,6 +8,9 @@ SDK v2.0.0 的统一授权扩展以下文 Manifest v2 为准；HTTP 路由字段
 
 ## 统一授权与 Manifest v2（SDK v2.0.0）
 
+本扩展使用 `github.com/swan-swan-swan/iam-core-sdk-go/v2` 根 module；全部当前集成 import 添加 `/v2`。
+旧 v1.x/v0.x module 路径属于历史契约，消费方应协调替换依赖，不用 replace 或同时引入两个 SDK module。
+
 `httpauthz.NewRouteSpec(method, routeTemplate, routeName, action)` 是完整声明的构造入口。
 `runtime/authzcontract` 严格校验三段 Action：每段 token 匹配
 `^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`，总长最多 64；verb 仅允许 access、discover、select、create、
@@ -34,7 +37,7 @@ Catalog 的 PUT 注册请求包含 `schema_version`（固定字符串 `"2"`）�
 公开 package：
 
 ```text
-github.com/swan-swan-swan/iam-core-sdk-go/runtime/applicationhandoff
+github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/applicationhandoff
 ```
 
 Client 只调用：

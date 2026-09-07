@@ -41,8 +41,9 @@ type Config struct {
 
 // Route 定义注册协议中的单条路由。
 type Route struct {
-	Name           string `json:"name"`
-	Method         string `json:"method"`
+	Name   string `json:"name"`
+	Method string `json:"method"`
+	// RouteTemplate 是代码声明的真实 HTTP 路径模板。
 	RouteTemplate  string `json:"route_template"`
 	ResourceServer string `json:"resource_server"`
 	Resource       string `json:"resource"`
@@ -51,6 +52,7 @@ type Route struct {
 
 // Manifest 定义发送给 IAM Core 的完整代码路由清单。
 type Manifest struct {
+	// SchemaVersion 必须等于 ManifestSchemaVersion。
 	SchemaVersion string  `json:"schema_version"`
 	Application   string  `json:"application"`
 	Service       string  `json:"service"`

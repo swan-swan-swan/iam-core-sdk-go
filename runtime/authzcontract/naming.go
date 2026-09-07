@@ -23,9 +23,12 @@ var (
 
 // Action 表示由授权命名空间、业务域和固定动词组成的业务能力。
 type Action struct {
+	// Server 是授权命名空间。
 	Server string
+	// Domain 是稳定的业务能力域。
 	Domain string
-	Verb   string
+	// Verb 是契约词表内的业务动作。
+	Verb string
 }
 
 // String 返回未经大小写或空白归一化的三段业务 Action。

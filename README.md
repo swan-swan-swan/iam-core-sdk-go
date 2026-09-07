@@ -61,9 +61,10 @@ HTTP Resource Server 使用显式 Route Manifest。每个已通过本地认证�
 一次 PDP；deny、401、5xx、超时、网络错误和畸形 envelope 都失败关闭。授权结果不缓存，
 也不会使用 groups 或本地规则降级。PDP 401 不刷新凭证、不重试 PDP。
 
-迁移后的路由应提供三级 `Action`（例如 `orders:orders:list`）。SDK 将它发送为可选的
-`expected_action`，并在允许结果中核对 IAM Core 返回的实际 `action`；缺失或不匹配会按协议
-错误失败关闭。未迁移路由可暂时省略 `Action`，保持旧请求与响应兼容行为。
+统一授权契约计划随 SDK `v1.1.0` 发布。所有受保护路由必须提供完整声明和三级 `Action`
+（例如 `orders_api:orders:select`）。SDK 发送 `expected_action`，并在允许结果中核对 IAM Core
+返回的实际 `action`；缺失或不匹配会按协议错误失败关闭。旧的不完整 RouteSpec 和 Manifest v1
+调用方必须在协调迁移窗口内升级，不能省略 Action 或路由模板。
 
 `runtime/applicationhandoff` 使用调用方逐请求注入的 `core.TokenSource`，为当前用户创建 60 秒一次性
 Application 登录交接。输入不包含 Subject、目标系统角色或资产权限；Client 不缓存 Token 或 Launch URL，
@@ -76,9 +77,66 @@ Gin adapter 是 `net/http` 授权服务的薄适配层：
 import ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/runtime/adapters/gin"
 ```
 
-`runtime/httpcatalog` 收集代码拥有的 `RouteSpec`，要求 `ResourceServer` 等于三级 Action 第一段、
-`Resource` 等于后两段以下划线连接，并使用独立的 `*-catalog-registrar` OIDC Client Basic 凭据
+`runtime/httpcatalog` 收集代码拥有的完整 `RouteSpec`，要求 `ResourceServer` 等于三级 Action 第一段，
+`Resource` 由 Route Name 中的点替换为下划线。独立的 `*-catalog-registrar` OIDC Client Basic 凭据
 执行单次启动同步。Registry 在同步成功前保持 health down；重试调度由业务进程 lifecycle 负责。
+
+## 完整路由声明与 Manifest v2
+
+统一使用 `runtime/authzcontract` 校验公共名称，并通过 `httpauthz.NewRouteSpec` 创建一个声明值：
+
+```go
+spec, err := httpauthz.NewRouteSpec(
+    http.MethodGet, "/api/v1/apps", "portal.application.list", "opsws:portal:discover",
+)
+if err != nil { return err }
+manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{spec})
+if err != nil { return err }
+route, err := manifest.NewBinder().Bind(spec.Name)
+if err != nil { return err }
+// 应用的路由包装器消费同一个 spec，把 route 用于 PDP 保护，并登记完整目录。
+if err := registry.Register(spec); err != nil { return err }
+_ = route
+```
+
+应用的统一路由包装器从 `spec.Method` 和 `spec.RouteTemplate` 注册 HTTP 路由，使用编译后的
+`route` 安装 PDP 保护，并将同一个 `spec` 交给 Registry；业务处理器不再分别维护保护与目录声明。
+`CompileManifest` 与 Registry 都重新校验每个字段，手写不一致坐标会失败。
+
+- Action：严格三段 `<server>:<domain>:<verb>`，总长最多 64；每段匹配
+  `^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`。不修剪空格、不转小写。
+- 动词仅允许 `access`、`discover`、`select`、`create`、`update`、`delete`、`execute`、`preview`、
+  `publish`、`approve`、`bind`、`revoke`、`rotate`、`reveal`、`export`、`import`。
+  读取统一使用 `select`，不接受 `list`、`get`、`read`、`view`。
+- Route Name：匹配 `^[a-z0-9]+(?:\.[a-z0-9]+){2,}$`，至少三段、最多 64 字符；段内不允许下划线。
+  `portal.application.list` 唯一派生 `portal_application_list`，业务代码不得覆盖 Resource。
+- Route Template：以 `/` 开头的绝对框架路径，不含 scheme、host、query 或 fragment。
+- 一个 Action 可以对应多个 API；动态逻辑路由允许共享 Method + Route Template，但 Route Name
+  和派生 Resource 必须唯一。读取和修改应使用各自表达业务语义的 Action。
+- YAML 只承载连接与部署配置，禁止 route/action/resource 路由绑定。
+
+Catalog 始终发送按 Name 排序的完整 Manifest：
+
+```json
+{
+  "schema_version": "2",
+  "application": "opsgw",
+  "service": "ops-gateway",
+  "release": "dev",
+  "routes": [{
+    "name": "portal.application.list",
+    "method": "GET",
+    "route_template": "/api/v1/apps",
+    "resource_server": "opsws",
+    "resource": "portal_application_list",
+    "action": "opsws:portal:discover"
+  }]
+}
+```
+
+升级顺序为服务端支持 Manifest v2、消费方升级 SDK `v1.1.0` 并迁移全部声明、同步精确资源策略。
+Manifest v1 的资源坐标不能直接沿用；Resource 从 Action 派生改为从 Route Name 派生，已有策略
+必须协调迁移。此次不提供永久 v1 兼容模式，发布标签仍由发布流程创建。
 
 Redis adapter 是可选的 BFF Session 存储，实现加密的 Backend，并使用 generation-bound、fenced、
 server-time lease 保护 refresh 原子提交。应用必须提供自己的 go-redis

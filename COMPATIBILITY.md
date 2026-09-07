@@ -13,6 +13,7 @@
 | v0.9.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 Application Handoff extension | 1.24+ | Request-scoped Application Handoff Runtime Client |
 | v0.10.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 browser logout/session extension | 1.24+ | Browser global logout、front-channel receiver、绝对/空闲 Session 策略 |
 | v1.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 stable Runtime/Management contract | 1.24+ | Stable single-Module Runtime、Management、Gin/Redis Adapter API |
+| v1.1.0（计划发布） | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core unified authorization / Manifest v2 extension | 1.24+ | 严格公共命名、完整 RouteSpec、Route Name 派生 Resource、一个 Action 多路由 |
 
 `v0.3.x` 不与 `v0.2.x` 源码兼容，也没有 deprecated wrapper；消费项目必须按迁移指南更换
 Module 和 import。Runtime 延续 PKCE S256、Client groups、真实 granted scopes、Manifest、
@@ -37,3 +38,10 @@ Handoff 的 `decisionId` 原样使用 PDP 返回的 `dec_` 标识，`correlation
 
 `v1.x` 将上述单 Module API 提升为稳定语义化版本契约，延续 v0.10.x 的浏览器退出与 Session
 策略、公开 import 路径和失败关闭边界。
+
+`v1.1.0` 为本次协调迁移指定版本；旧计划中的 `v0.10.0` 已被浏览器退出版本占用，不得复用。
+该版本收紧 HTTP 授权声明与注册协议：所有 RouteSpec 必须提供合法 Action、RouteTemplate、三段以上
+Route Name 和一致派生坐标；Manifest 固定 `schema_version: "2"`。这对 v1.0.0 的不完整声明和
+Manifest v1 调用方具有不兼容影响，必须在服务端 v2 支持就绪后协调迁移调用方、Catalog 与策略。
+不再支持省略 Action、旧动词或从 Action 派生 Resource；本次发布版本选择来自统一迁移裁决，
+不能解释为所有 v1.x 调用方无需修改即可升级。Runtime 凭据处理、单次 PDP 与 Management 边界不变。

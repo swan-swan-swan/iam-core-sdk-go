@@ -12,8 +12,9 @@ const manifestOperation = "httpauthz.manifest"
 // RouteSpec 是路由注册、PDP 保护与 Catalog 同步共享的完整逻辑路由声明。
 // 调用方应使用 NewRouteSpec 派生坐标，不得手写 Resource。
 type RouteSpec struct {
-	Name           string
-	Method         string
+	Name   string
+	Method string
+	// RouteTemplate 是 HTTP 框架注册使用的绝对路径模板。
 	RouteTemplate  string
 	ResourceServer string
 	Resource       string

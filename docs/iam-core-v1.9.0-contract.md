@@ -4,6 +4,31 @@
 OIDC/BFF、HTTP PDP、HTTP Catalog Registration 与 Management API 继续遵循
 `iam-core-v1.8.1-contract.md` 的既有兼容和失败关闭语义。
 
+SDK v1.1.0 的统一授权扩展以下文 Manifest v2 为准；HTTP 路由字段及命名约束覆盖旧版本的可选声明。
+
+## 统一授权与 Manifest v2（SDK v1.1.0）
+
+`httpauthz.NewRouteSpec(method, routeTemplate, routeName, action)` 是完整声明的构造入口。
+`runtime/authzcontract` 严格校验三段 Action：每段 token 匹配
+`^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$`，总长最多 64；verb 仅允许 access、discover、select、create、
+update、delete、execute、preview、publish、approve、bind、revoke、rotate、reveal、export、import。
+示例 `iam:oidc_client:select` 合法，旧 `iam:user:list` 非法，不做大小写或空白修正。
+
+Route Name 匹配 `^[a-z0-9]+(?:\.[a-z0-9]+){2,}$`，总长最多 64；Resource 为点替换下划线的确定性
+结果，ResourceServer 为 Action 第一段。RouteTemplate 为无 scheme、host、query、fragment 的绝对路径。
+CompileManifest 和 Registry 均重新验证这些关系。多个逻辑路由可以共享 Action，动态逻辑路由可以共享
+Method + RouteTemplate；名称与派生 Resource 必须唯一，不允许 YAML 路由绑定。
+
+Catalog 的 PUT 注册请求包含 `schema_version`（固定字符串 `"2"`）、`application`、`service`、
+`release`、`routes`。每条 Route 固定包含 `name`、`method`、`route_template`、`resource_server`、
+`resource`、`action`，按 Name 排序发送。PDP 请求继续使用稳定资源和方法，同时必须发送
+`expected_action`；模板只用于 HTTP 注册和 Catalog 对账，不作为 PDP Resource。允许响应中缺失或
+不匹配的 Action 失败关闭，PDP 调用仍不重试、不缓存。
+
+本扩展指定发布版本 v1.1.0；v0.10.0 是已存在的退出能力版本，不复用。完整声明与 Manifest v2 对
+旧调用方存在不兼容影响，必须先部署支持 v2 的服务端，再协调升级消费方、Catalog 与精确资源策略。
+不提供永久 Manifest v1 回退；本地不创建或推送标签。
+
 ## Application Handoff
 
 公开 package：

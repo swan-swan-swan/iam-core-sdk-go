@@ -2,15 +2,41 @@ package iamcore_test
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"testing"
 
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/authzcontract"
 	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/bff"
 	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
 	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/httpauthz"
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/httpcatalog"
 )
+
+func TestContractManifestV2JSON(t *testing.T) {
+	spec, err := httpauthz.NewRouteSpec("GET", "/api/v1/oidc-clients", "iam.oidcclient.list", "iam:oidc_client:select")
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := httpcatalog.Manifest{SchemaVersion: httpcatalog.ManifestSchemaVersion, Application: "iam", Service: "iam-core", Release: "dev", Routes: []httpcatalog.Route{{Name: spec.Name, Method: spec.Method, RouteTemplate: spec.RouteTemplate, ResourceServer: spec.ResourceServer, Resource: spec.Resource, Action: spec.Action}}}
+	raw, err := json.Marshal(manifest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"schema_version":"2","application":"iam","service":"iam-core","release":"dev","routes":[{"name":"iam.oidcclient.list","method":"GET","route_template":"/api/v1/oidc-clients","resource_server":"iam","resource":"iam_oidcclient_list","action":"iam:oidc_client:select"}]}`
+	if string(raw) != want {
+		t.Fatalf("wire manifest = %s", raw)
+	}
+	parsed, err := authzcontract.ParseAction("iam:oidc_client:select")
+	if err != nil || parsed.String() != "iam:oidc_client:select" {
+		t.Fatalf("canonical action = %#v, %v", parsed, err)
+	}
+	if _, err := authzcontract.ParseAction("iam:user:list"); err == nil {
+		t.Fatal("accepted unknown verb")
+	}
+}
 
 func TestV181FrozenContract(t *testing.T) {
 	if core.ContractVersion != "v1.8.1" {

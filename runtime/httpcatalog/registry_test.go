@@ -17,7 +17,7 @@ func TestRegistrySyncSendsDeterministicV2Manifest(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clientID, secret, ok := r.BasicAuth()
 		if !ok || clientID != "ops-gateway-catalog-registrar" || secret != "secret" {
-			t.Fatalf("BasicAuth() = (%q, %q, %v)", clientID, secret, ok)
+			t.Fatal("BasicAuth credentials did not match the registrar")
 		}
 		if r.Method != http.MethodPut || r.URL.Path != "/api/v1/http-resource-catalog/registration" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)

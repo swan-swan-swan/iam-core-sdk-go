@@ -31,14 +31,15 @@ func TestDocumentationContract(t *testing.T) {
 			}
 		}
 	}
-	if version := read("VERSION"); version != "1.0.0\n" {
-		t.Errorf("VERSION = %q, want %q", version, "1.0.0\\n")
+	if version := read("VERSION"); version != "2.0.0\n" {
+		t.Errorf("VERSION = %q, want %q", version, "2.0.0\\n")
 	}
 
 	readme := read("README.md")
 	requireAll("README", readme,
 		"IAM Core Go SDK",
 		"v1.0.0",
+		"v2.0.0",
 		"单一 Go Module",
 		"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core",
 		"github.com/swan-swan-swan/iam-core-sdk-go/v2/management/client",

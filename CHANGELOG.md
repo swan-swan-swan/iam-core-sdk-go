@@ -4,6 +4,14 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v2.0.0
+
+### Unified authorization contract
+
+- Added strict Action and logical Route Name validation through `runtime/authzcontract`.
+- Made `RouteSpec` the single declaration used for route protection and Manifest v2 Catalog registration.
+- Changed the module path to `github.com/swan-swan-swan/iam-core-sdk-go/v2` for the breaking contract.
+
 ## v1.0.0
 
 ### Stable API

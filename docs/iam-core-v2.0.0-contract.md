@@ -20,7 +20,7 @@
 go get github.com/swan-swan-swan/iam-core-sdk-go/v2@v2.0.0
 ```
 
-当前 VERSION 保留已发布版本 1.0.0，v2 标签只能由后续正式发布流程创建；本地不创建或推送标签。
+当前 VERSION 为 2.0.0，v2 标签只由正式发布流程创建；本地不创建或推送标签。
 既有 integration 是非发布测试 module，通过 go.work use 消费本地 v2，仅在该 workspace 中运行。
 
 ## 严格命名

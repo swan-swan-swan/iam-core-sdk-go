@@ -13,7 +13,7 @@
 | v0.9.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 Application Handoff extension | 1.24+ | Request-scoped Application Handoff Runtime Client |
 | v0.10.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 browser logout/session extension | 1.24+ | Browser global logout、front-channel receiver、绝对/空闲 Session 策略 |
 | v1.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 stable Runtime/Management contract | 1.24+ | Stable single-Module Runtime、Management、Gin/Redis Adapter API |
-| v2.0.0（计划发布） | `github.com/swan-swan-swan/iam-core-sdk-go/v2` | IAM Core unified authorization / Manifest v2 extension | 1.24+ | 严格公共命名、完整 RouteSpec、Route Name 派生 Resource、一个 Action 多路由 |
+| v2.0.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v2` | IAM Core unified authorization / Manifest v2 extension | 1.24+ | 严格公共命名、完整 RouteSpec、Route Name 派生 Resource、一个 Action 多路由 |
 
 `v0.3.x` 不与 `v0.2.x` 源码兼容，也没有 deprecated wrapper；消费项目必须按迁移指南更换
 Module 和 import。Runtime 延续 PKCE S256、Client groups、真实 granted scopes、Manifest、

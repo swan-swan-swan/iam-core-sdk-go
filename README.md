@@ -28,7 +28,7 @@ go get github.com/swan-swan-swan/iam-core-sdk-go/v2@v2.0.0
 
 根 Module 的依赖图包含 Gin 和 go-redis，但未 import 对应 Adapter 的程序不会编译或链接这些
 package。Docker、Moby 和 Testcontainers 仍只属于仓库内既有 integration 测试 Module，不发布。
-SDK 每个版本只创建一个根标签，例如 `v2.0.0`；当前 VERSION 仍保留已发布的 1.0.0，本地不创建标签。
+SDK 每个版本只创建一个根标签，例如 `v2.0.0`；当前 VERSION 已准备为 2.0.0，本地不创建标签。
 
 ## 能力边界
 

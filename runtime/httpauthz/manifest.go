@@ -1,88 +1,91 @@
 package httpauthz
 
 import (
-	"strings"
 	"sync"
 
+	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/authzcontract"
 	"github.com/swan-swan-swan/iam-core-sdk-go/runtime/core"
 )
 
 const manifestOperation = "httpauthz.manifest"
 
+// RouteSpec 是路由注册、PDP 保护与 Catalog 同步共享的完整逻辑路由声明。
+// 调用方应使用 NewRouteSpec 派生坐标，不得手写 Resource。
 type RouteSpec struct {
 	Name           string
 	Method         string
+	RouteTemplate  string
 	ResourceServer string
 	Resource       string
 	Action         string
 }
 
+// Manifest 保存经过严格验证的不可变逻辑路由集合。
 type Manifest struct {
 	routes map[string]Route
 }
 
+// Binder 保证清单内每条路由恰好绑定一次。
 type Binder struct {
 	manifest *Manifest
 	mu       sync.Mutex
 	bound    map[string]struct{}
 }
 
-type routeTuple struct {
-	method         string
-	resourceServer string
-	resource       string
+// NewRouteSpec 校验名称、动词及模板，并确定性派生授权坐标。
+func NewRouteSpec(method, routeTemplate, routeName, action string) (RouteSpec, error) {
+	parsedAction, err := authzcontract.ParseAction(action)
+	if err != nil {
+		return RouteSpec{}, invalidManifestError()
+	}
+	parsedRoute, err := authzcontract.ParseRouteName(routeName)
+	if err != nil || authzcontract.ValidateRouteTemplate(routeTemplate) != nil || !validRouteMethod(method) {
+		return RouteSpec{}, invalidManifestError()
+	}
+	return RouteSpec{Name: routeName, Method: method, RouteTemplate: routeTemplate,
+		ResourceServer: parsedAction.Server, Resource: parsedRoute.ResourceCode(), Action: action}, nil
 }
 
+// CompileManifest 重新校验全部声明字段，拒绝重复名称及派生资源。
 func CompileManifest(specs []RouteSpec) (*Manifest, error) {
 	routes := make(map[string]Route, len(specs))
-	tuples := make(map[routeTuple]struct{}, len(specs))
+	resources := make(map[string]struct{}, len(specs))
 	for _, spec := range specs {
-		if !validRouteValue(spec.Name) || !validRouteMethod(spec.Method) ||
-			!validRouteValue(spec.ResourceServer) || !validRouteValue(spec.Resource) ||
-			(spec.Action != "" && !validRouteAction(spec.Action)) {
+		expected, err := NewRouteSpec(spec.Method, spec.RouteTemplate, spec.Name, spec.Action)
+		if err != nil || expected != spec {
 			return nil, invalidManifestError()
 		}
 		if _, exists := routes[spec.Name]; exists {
 			return nil, invalidManifestError()
 		}
-		tuple := routeTuple{method: spec.Method, resourceServer: spec.ResourceServer, resource: spec.Resource}
-		if _, exists := tuples[tuple]; exists {
+		if _, exists := resources[spec.Resource]; exists {
 			return nil, invalidManifestError()
 		}
 		routes[spec.Name] = Route{
+			name:           spec.Name,
+			routeTemplate:  spec.RouteTemplate,
 			method:         spec.Method,
 			resourceServer: spec.ResourceServer,
 			resource:       spec.Resource,
 			action:         spec.Action,
 			compiled:       true,
 		}
-		tuples[tuple] = struct{}{}
+		resources[spec.Resource] = struct{}{}
 	}
 	return &Manifest{routes: routes}, nil
 }
 
 func validRouteAction(action string) bool {
-	parts := strings.Split(action, ":")
-	if len(parts) != 3 {
-		return false
-	}
-	for _, part := range parts {
-		if part == "" || part[0] < 'a' || part[0] > 'z' {
-			return false
-		}
-		for _, character := range part[1:] {
-			if (character < 'a' || character > 'z') && (character < '0' || character > '9') {
-				return false
-			}
-		}
-	}
-	return true
+	_, err := authzcontract.ParseAction(action)
+	return err == nil
 }
 
+// NewBinder 为当前清单创建独立绑定器。
 func (m *Manifest) NewBinder() *Binder {
 	return &Binder{manifest: m, bound: make(map[string]struct{})}
 }
 
+// Bind 按逻辑路由名称返回一次绑定的授权路由。
 func (b *Binder) Bind(name string) (Route, error) {
 	if b == nil {
 		return Route{}, invalidManifestError()
@@ -103,6 +106,7 @@ func (b *Binder) Bind(name string) (Route, error) {
 	return route, nil
 }
 
+// Validate 校验清单中所有路由均已绑定。
 func (b *Binder) Validate() error {
 	if b == nil {
 		return invalidManifestError()

@@ -36,14 +36,16 @@ func run() error {
 		return err
 	}
 
-	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
-		Name: "list_orders", Method: http.MethodGet, ResourceServer: "orders_api", Resource: "orders", Action: "orders:orders:list",
-	}})
+	spec, err := httpauthz.NewRouteSpec(http.MethodGet, "/orders", "orders.item.list", "orders_api:orders:select")
+	if err != nil {
+		return errors.New("resource server route configuration is invalid")
+	}
+	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{spec})
 	if err != nil {
 		return errors.New("resource server route configuration is invalid")
 	}
 	binder := manifest.NewBinder()
-	route, err := binder.Bind("list_orders")
+	route, err := binder.Bind(spec.Name)
 	if err != nil {
 		return errors.New("resource server route configuration is invalid")
 	}
@@ -71,7 +73,7 @@ func run() error {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/orders", protected)
+	mux.Handle(spec.Method+" "+spec.RouteTemplate, protected)
 	server := &http.Server{
 		Addr:              cfg.address,
 		Handler:           mux,

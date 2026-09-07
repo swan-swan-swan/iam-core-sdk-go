@@ -556,13 +556,13 @@ func newService(t *testing.T, decision httpauthz.Decision, pdpErr error, respond
 		t.Fatal(err)
 	}
 	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
-		Name: "list_orders", Method: http.MethodGet, ResourceServer: "orders_api", Resource: "orders",
+		Name: "orders.item.list", Method: http.MethodGet, RouteTemplate: "/orders", ResourceServer: "orders_api", Resource: "orders_item_list", Action: "orders_api:orders:select",
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	binder := manifest.NewBinder()
-	route, err := binder.Bind("list_orders")
+	route, err := binder.Bind("orders.item.list")
 	if err != nil {
 		t.Fatal(err)
 	}

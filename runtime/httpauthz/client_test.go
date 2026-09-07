@@ -39,7 +39,7 @@ func TestDecideSendsConfiguredRouteActionAndVerifiesAllowedResponse(t *testing.T
 			t.Errorf("decode request: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow","action":"orders:orders:list"}}`)
+		_, _ = io.WriteString(w, `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow","action":"orders:orders:select"}}`)
 	}))
 	defer server.Close()
 	client, err := NewPDPClient(PDPConfig{IssuerURL: server.URL, HTTPClient: server.Client()})
@@ -50,14 +50,14 @@ func TestDecideSendsConfiguredRouteActionAndVerifiesAllowedResponse(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Action != "orders:orders:list" {
+	if decision.Action != "orders:orders:select" {
 		t.Fatalf("Decision.Action = %q", decision.Action)
 	}
 	if got := slices.Sorted(maps.Keys(body)); !slices.Equal(got, []string{"expected_action", "http_method", "resource", "resource_server"}) {
 		t.Fatalf("request keys = %v", got)
 	}
 	var expectedAction string
-	if err := json.Unmarshal(body["expected_action"], &expectedAction); err != nil || expectedAction != "orders:orders:list" {
+	if err := json.Unmarshal(body["expected_action"], &expectedAction); err != nil || expectedAction != "orders:orders:select" {
 		t.Fatalf("expected_action = %q, %v", expectedAction, err)
 	}
 }
@@ -68,7 +68,7 @@ func TestDecideFailsClosedWhenAllowedActionDrifts(t *testing.T) {
 		body string
 	}{
 		{name: "missing action", body: `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow"}}`},
-		{name: "mismatched action", body: `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow","action":"orders:orders:write"}}`},
+		{name: "mismatched action", body: `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":true,"reason_code":"policy_allow","action":"orders:orders:update"}}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -83,12 +83,12 @@ func TestDecideFailsClosedWhenAllowedActionDrifts(t *testing.T) {
 }
 
 func TestDecidePreservesAllowedDenyResponseWhenActionDrifts(t *testing.T) {
-	client := newDecisionTestClient(t, http.StatusOK, "application/json", `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":false,"reason_code":"action_mismatch","action":"orders:orders:write"}}`)
+	client := newDecisionTestClient(t, http.StatusOK, "application/json", `{"code":0,"message":"success","data":{"decision_id":"dec-1","allowed":false,"reason_code":"action_mismatch","action":"orders:orders:update"}}`)
 	decision, err := client.Decide(t.Context(), staticToken("token"), compiledRouteWithAction())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if decision.Allowed || decision.ReasonCode != "action_mismatch" || decision.Action != "orders:orders:write" {
+	if decision.Allowed || decision.ReasonCode != "action_mismatch" || decision.Action != "orders:orders:update" {
 		t.Fatalf("Decision = %#v", decision)
 	}
 }
@@ -775,7 +775,7 @@ func compiledRoute() Route {
 }
 
 func compiledRouteWithAction() Route {
-	return Route{method: "GET", resourceServer: "orders_api", resource: "orders", action: "orders:orders:list", compiled: true}
+	return Route{method: "GET", resourceServer: "orders_api", resource: "orders", action: "orders:orders:select", compiled: true}
 }
 
 func staticToken(token string) core.TokenSource {

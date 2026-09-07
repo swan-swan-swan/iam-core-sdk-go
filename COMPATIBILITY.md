@@ -40,6 +40,8 @@ Handoff 的 `decisionId` 原样使用 PDP 返回的 `dec_` 标识，`correlation
 策略、公开 import 路径和失败关闭边界。
 
 `v2.0.0` 为本次协调迁移指定版本；旧计划中的 `v0.10.0` 已被浏览器退出版本占用，不得复用。
+当前集成使用独立的 [SDK v2.0.0 契约](docs/iam-core-v2.0.0-contract.md)；v1.8.1/v1.9.0 文档保持冻结，
+仅记录历史语义与原版本 import 路径，不在历史文档中覆盖为 v2。
 该版本收紧 HTTP 授权声明与注册协议：所有 RouteSpec 必须提供合法 Action、RouteTemplate、三段以上
 Route Name 和一致派生坐标；Manifest 固定 `schema_version: "2"`。这对 v1.0.0 的不完整声明和
 Manifest v1 调用方具有不兼容影响，必须在服务端 v2 支持就绪后协调迁移调用方、Catalog 与策略。

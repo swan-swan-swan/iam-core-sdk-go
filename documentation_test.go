@@ -1,10 +1,52 @@
 package iamcoresdk_test
 
 import (
+	"crypto/sha256"
+	"fmt"
 	"os"
 	"strings"
 	"testing"
 )
+
+func TestHistoricalContractsRemainFrozen(t *testing.T) {
+	// 摘要取自工作包 BASE e983fe8 的文件原始字节，防止当前契约覆盖发布历史。
+	for _, fixture := range []struct{ path, sha256 string }{
+		{"docs/iam-core-v1.8.1-contract.md", "5d27aee547b13a22ca94f75adf2629dfb5e52b99fc77b1a1ce36cdf3a786a1f2"},
+		{"docs/iam-core-v1.9.0-contract.md", "ecf8d5fa8f104038870782448ee7bf4b6126500ea9e31dbaccfd34981ccbb834"},
+	} {
+		t.Run(fixture.path, func(t *testing.T) {
+			raw, err := os.ReadFile(fixture.path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := fmt.Sprintf("%x", sha256.Sum256(raw)); got != fixture.sha256 {
+				t.Fatalf("frozen contract differs from BASE e983fe8: SHA-256 %s, want %s", got, fixture.sha256)
+			}
+		})
+	}
+}
+
+func TestCurrentDocumentationReferencesIndependentV2Contract(t *testing.T) {
+	const contractPath = "docs/iam-core-v2.0.0-contract.md"
+	raw, err := os.ReadFile(contractPath)
+	if err != nil {
+		t.Fatalf("current v2 contract is unavailable: %v", err)
+	}
+	for _, required := range []string{"Manifest v2", "github.com/swan-swan-swan/iam-core-sdk-go/v2", "NewRouteSpec", "schema_version", "route_template", "expected_action", "^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$", "^[a-z0-9]+(?:\\.[a-z0-9]+){2,}$"} {
+		if !strings.Contains(string(raw), required) {
+			t.Errorf("v2 contract missing %q", required)
+		}
+	}
+	for _, path := range []string{"README.md", "COMPATIBILITY.md"} {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(string(content), "("+contractPath+")") {
+			t.Errorf("%s does not link the independent v2 contract", path)
+		}
+	}
+}
 
 func TestDocumentationContract(t *testing.T) {
 	read := func(path string) string {

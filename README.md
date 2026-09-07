@@ -15,7 +15,7 @@
 RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 
 最低 Go 版本为 1.24。协议边界见
-[IAM Core v1.9.0 契约](docs/iam-core-v1.9.0-contract.md)，版本矩阵见
+[SDK v2.0.0 统一授权契约](docs/iam-core-v2.0.0-contract.md)，版本矩阵见
 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
 ## 安装

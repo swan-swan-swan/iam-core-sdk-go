@@ -61,7 +61,7 @@ HTTP Resource Server 使用显式 Route Manifest。每个已通过本地认证�
 一次 PDP；deny、401、5xx、超时、网络错误和畸形 envelope 都失败关闭。授权结果不缓存，
 也不会使用 groups 或本地规则降级。PDP 401 不刷新凭证、不重试 PDP。
 
-统一授权契约计划随 SDK `v1.1.0` 发布。所有受保护路由必须提供完整声明和三级 `Action`
+统一授权契约计划随 SDK `v2.0.0` 发布。所有受保护路由必须提供完整声明和三级 `Action`
 （例如 `orders_api:orders:select`）。SDK 发送 `expected_action`，并在允许结果中核对 IAM Core
 返回的实际 `action`；缺失或不匹配会按协议错误失败关闭。旧的不完整 RouteSpec 和 Manifest v1
 调用方必须在协调迁移窗口内升级，不能省略 Action 或路由模板。
@@ -134,7 +134,7 @@ Catalog 始终发送按 Name 排序的完整 Manifest：
 }
 ```
 
-升级顺序为服务端支持 Manifest v2、消费方升级 SDK `v1.1.0` 并迁移全部声明、同步精确资源策略。
+升级顺序为服务端支持 Manifest v2、消费方升级 SDK `v2.0.0` 并迁移全部声明、同步精确资源策略。
 Manifest v1 的资源坐标不能直接沿用；Resource 从 Action 派生改为从 Route Name 派生，已有策略
 必须协调迁移。此次不提供永久 v1 兼容模式，发布标签仍由发布流程创建。
 

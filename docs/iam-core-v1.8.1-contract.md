@@ -82,7 +82,7 @@ lease 失效或 Session 版本变化时不得提交。
 ## HTTP PDP
 
 调用方必须通过编译 Manifest 和 Binder 固定 Route。以下是历史 v1.8.1 的三个基础字段；
-SDK v1.1.0 的完整声明还必须发送 `expected_action` 并校验允许响应中的实际 Action，具体以
+SDK v2.0.0 的完整声明还必须发送 `expected_action` 并校验允许响应中的实际 Action，具体以
 [统一授权扩展](iam-core-v1.9.0-contract.md) 为准。
 
 ```json

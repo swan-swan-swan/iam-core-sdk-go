@@ -11,8 +11,8 @@ import (
 )
 
 func TestNewRouteSpecDerivesCoordinates(t *testing.T) {
-	spec, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps/:id/open", "portal.app.iam-core.open", "opsws:iam-core:access")
-	if err != nil || spec.Name != "portal.app.iam-core.open" || spec.Method != "GET" || spec.RouteTemplate != "/api/v1/apps/:id/open" || spec.ResourceServer() != "opsws" || spec.Resource() != "portal.app.iam-core.open" || spec.CanonicalResource() != "http:opsws:portal.app.iam-core.open" || spec.Action != "opsws:iam-core:access" {
+	spec, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps/:id/open", "portal.app.iam-core.open", "opsgw:iam-core:access")
+	if err != nil || spec.Name != "portal.app.iam-core.open" || spec.Method != "GET" || spec.RouteTemplate != "/api/v1/apps/:id/open" || spec.ResourceServer() != "opsgw" || spec.Resource() != "portal.app.iam-core.open" || spec.CanonicalResource() != "http:opsgw:portal.app.iam-core.open" || spec.Action != "opsgw:iam-core:access" {
 		t.Fatalf("NewRouteSpec() = %#v, %v", spec, err)
 	}
 	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{spec})
@@ -27,11 +27,11 @@ func TestNewRouteSpecDerivesCoordinates(t *testing.T) {
 
 func TestCompileManifestAllowsOneActionOnManyRoutes(t *testing.T) {
 	for _, detailPath := range []string{"/api/v1/apps/:id", "/api/v1/apps"} {
-		list, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps", "portal.application.list", "opsws:portal:discover")
+		list, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps", "portal.application.list", "opsgw:portal:discover")
 		if err != nil {
 			t.Fatal(err)
 		}
-		detail, err := httpauthz.NewRouteSpec("GET", detailPath, "portal.application.detail", "opsws:portal:discover")
+		detail, err := httpauthz.NewRouteSpec("GET", detailPath, "portal.application.detail", "opsgw:portal:discover")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -45,7 +45,7 @@ func TestCompileManifestAllowsOneActionOnManyRoutes(t *testing.T) {
 }
 
 func TestCompileManifestRevalidatesEveryCoordinate(t *testing.T) {
-	base, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps", "portal.application.list", "opsws:portal:discover")
+	base, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps", "portal.application.list", "opsgw:portal:discover")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -57,7 +57,7 @@ func TestCompileManifestRevalidatesEveryCoordinate(t *testing.T) {
 		{"method", func(s *httpauthz.RouteSpec) { s.Method = "get" }},
 		{"template", func(s *httpauthz.RouteSpec) { s.RouteTemplate = "/apps?token=secret" }},
 		{"missing template", func(s *httpauthz.RouteSpec) { s.RouteTemplate = "" }},
-		{"action", func(s *httpauthz.RouteSpec) { s.Action = "opsws:portal:list" }},
+		{"action", func(s *httpauthz.RouteSpec) { s.Action = "opsgw:portal:list" }},
 		{"missing action", func(s *httpauthz.RouteSpec) { s.Action = "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

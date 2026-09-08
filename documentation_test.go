@@ -65,8 +65,8 @@ func TestDocumentationContract(t *testing.T) {
 		"FrontchannelLogoutHandler",
 		"绝对有效期为七天、空闲有效期为十二小时",
 		`schema_version": "3"`,
-		"opsws:iam-core:access",
-		"http:opsws:portal.app.iam-core.open",
+		"opsgw:iam-core:access",
+		"http:opsgw:portal.app.iam-core.open",
 		"一个 Action 可以对应多个 API",
 		"禁止在 YAML",
 	)

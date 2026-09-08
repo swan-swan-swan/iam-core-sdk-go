@@ -21,11 +21,11 @@ v3 保留 Runtime、Management、OIDC/BFF、HTTP PDP、Gin 与 Redis Adapter 的
 
 Action 格式为 `<server>:<domain>:<verb>`。server 是小写字母开头的小写字母数字 token。
 保留 server `iam` 使用 lower-snake domain，例如 `iam:oidc_client:select`；其他业务 server 使用
-lower-kebab domain，例如 `opsws:iam-core:access`，不接受下划线或旧 `00/01` 转义名称。
+lower-kebab domain，例如 `opsgw:iam-core:access`，不接受下划线或旧 `00/01` 转义名称。
 
 Route Name 至少三段点分，每段为 lower-kebab，总长不超过 64，例如
 `portal.app.iam-core.open`。业务 Canonical Resource 直接派生为
-`http:opsws:portal.app.iam-core.open`。IAM 内部 Resource 继续使用既有 lower-snake 坐标。
+`http:opsgw:portal.app.iam-core.open`。IAM 内部 Resource 继续使用既有 lower-snake 坐标。
 
 ## Manifest v3
 
@@ -41,7 +41,7 @@ Catalog 注册固定发送字符串版本 `"3"`：
     "name": "portal.app.iam-core.open",
     "method": "GET",
     "route_template": "/api/v1/apps/:id/open",
-    "action": "opsws:iam-core:access"
+    "action": "opsgw:iam-core:access"
   }]
 }
 ```

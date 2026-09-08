@@ -8,7 +8,7 @@ import (
 )
 
 func TestParseActionContract(t *testing.T) {
-	valid := []string{"iam:oidc_client:select", "opsws:portal:discover", "iam:plugin_credential:rotate", "opsws:iam-core:access", "app:goose-case:select", strings.Repeat("a", 53) + ":b:select"}
+	valid := []string{"iam:oidc_client:select", "opsgw:portal:discover", "iam:plugin_credential:rotate", "opsgw:iam-core:access", "app:goose-case:select", strings.Repeat("a", 53) + ":b:select"}
 	for _, verb := range []string{"access", "discover", "select", "create", "update", "delete", "execute", "preview", "publish", "approve", "bind", "revoke", "rotate", "reveal", "export", "import"} {
 		valid = append(valid, "iam:user:"+verb)
 	}
@@ -18,7 +18,7 @@ func TestParseActionContract(t *testing.T) {
 			t.Errorf("valid action %q did not round-trip: %v", raw, err)
 		}
 	}
-	invalid := []string{"", "iam:user", "iam:user:select:all", "IAM:user:select", "iam:user:list", "iam:user:get", "iam:user:*", "ops-ws:user:select", "ops_ws:user:select", " iam:user:select", "iam:user:select ", "iam:user__name:select", "iam:_user:select", "iam:user_:select", "iam:oidc-client:select", "opsws:iam_core:access", "opsws:iam01core:access", "1iam:user:select", "iam:用戶:select", "iam:user:select\n", strings.Repeat("a", 56) + ":b:select"}
+	invalid := []string{"", "iam:user", "iam:user:select:all", "IAM:user:select", "iam:user:list", "iam:user:get", "iam:user:*", "ops-ws:user:select", "ops_ws:user:select", " iam:user:select", "iam:user:select ", "iam:user__name:select", "iam:_user:select", "iam:user_:select", "iam:oidc-client:select", "opsgw:iam_core:access", "opsgw:iam01core:access", "1iam:user:select", "iam:用戶:select", "iam:user:select\n", strings.Repeat("a", 56) + ":b:select"}
 	for _, raw := range invalid {
 		if _, err := authzcontract.ParseAction(raw); err == nil {
 			t.Errorf("accepted invalid action %q", raw)
@@ -32,9 +32,9 @@ func TestRouteNameCanonicalResource(t *testing.T) {
 	for _, tc := range []struct {
 		raw, server, resource string
 	}{
-		{"portal.app.iam-core.open", "opsws", "http:opsws:portal.app.iam-core.open"},
+		{"portal.app.iam-core.open", "opsgw", "http:opsgw:portal.app.iam-core.open"},
 		{"iam.oidcclient.list", "iam", "http:iam:iam_oidcclient_list"},
-		{strings.Repeat("a", 60) + ".b.c", "opsws", "http:opsws:" + strings.Repeat("a", 60) + ".b.c"},
+		{strings.Repeat("a", 60) + ".b.c", "opsgw", "http:opsgw:" + strings.Repeat("a", 60) + ".b.c"},
 	} {
 		route, err := authzcontract.ParseRouteName(tc.raw)
 		if err != nil || route.String() != tc.raw || route.CanonicalResource(tc.server) != tc.resource {

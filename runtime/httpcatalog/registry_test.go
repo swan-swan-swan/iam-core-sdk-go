@@ -37,10 +37,10 @@ func TestRegistrySyncSendsDeterministicV3Manifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
 	}
-	if err := registry.Register(catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsws:portal:discover")); err != nil {
+	if err := registry.Register(catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsgw:portal:discover")); err != nil {
 		t.Fatalf("Register(portal) error = %v", err)
 	}
-	if err := registry.Register(catalogSpec(t, "/api/v1/admin", "admin.application.list", "opsws:admin:select")); err != nil {
+	if err := registry.Register(catalogSpec(t, "/api/v1/admin", "admin.application.list", "opsgw:admin:select")); err != nil {
 		t.Fatalf("Register(admin) error = %v", err)
 	}
 	if err := registry.Check(context.Background()); err == nil {
@@ -53,7 +53,7 @@ func TestRegistrySyncSendsDeterministicV3Manifest(t *testing.T) {
 	if result.CatalogHash != "sha256:abc" || !result.Changed || len(got.Routes) != 2 || got.Routes[0].Name != "admin.application.list" || got.Routes[1].Name != "portal.application.list" {
 		t.Fatalf("Sync() = %#v, manifest = %#v", result, got)
 	}
-	if got.SchemaVersion != "3" || got.Routes[1].RouteTemplate != "/api/v1/apps" || got.Routes[1].Action != "opsws:portal:discover" {
+	if got.SchemaVersion != "3" || got.Routes[1].RouteTemplate != "/api/v1/apps" || got.Routes[1].Action != "opsgw:portal:discover" {
 		t.Fatalf("Manifest v3 facts = %#v", got)
 	}
 	if err := registry.Check(context.Background()); err != nil {
@@ -63,11 +63,11 @@ func TestRegistrySyncSendsDeterministicV3Manifest(t *testing.T) {
 
 // TestRouteJSONContainsOnlyDeclaredFacts 验证 v3 协议不再暴露可覆盖的资源坐标。
 func TestRouteJSONContainsOnlyDeclaredFacts(t *testing.T) {
-	body, err := json.Marshal(httpcatalog.Route{Name: "portal.app.iam-core.open", Method: "GET", RouteTemplate: "/api/v1/apps/:id/open", Action: "opsws:iam-core:access"})
+	body, err := json.Marshal(httpcatalog.Route{Name: "portal.app.iam-core.open", Method: "GET", RouteTemplate: "/api/v1/apps/:id/open", Action: "opsgw:iam-core:access"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"name":"portal.app.iam-core.open","method":"GET","route_template":"/api/v1/apps/:id/open","action":"opsws:iam-core:access"}`
+	want := `{"name":"portal.app.iam-core.open","method":"GET","route_template":"/api/v1/apps/:id/open","action":"opsgw:iam-core:access"}`
 	if string(body) != want {
 		t.Fatalf("Route JSON = %s, want %s", body, want)
 	}
@@ -82,14 +82,14 @@ func TestRegistryRegisterIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
 	}
-	spec := catalogSpec(t, "/api/v1/admin", "admin.application.list", "opsws:admin:select")
+	spec := catalogSpec(t, "/api/v1/admin", "admin.application.list", "opsgw:admin:select")
 	if err := registry.Register(spec); err != nil {
 		t.Fatalf("Register(first) error = %v", err)
 	}
 	if err := registry.Register(spec); err != nil {
 		t.Fatalf("Register(second) error = %v", err)
 	}
-	spec.Action = "opsws:admin:update"
+	spec.Action = "opsgw:admin:update"
 	if err := registry.Register(spec); err == nil {
 		t.Fatal("Register(conflicting name) error = nil")
 	}
@@ -110,8 +110,8 @@ func TestRegistryAllowsSharedActionAndDynamicTemplates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		list := catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsws:portal:discover")
-		detail := catalogSpec(t, path, "portal.application.detail", "opsws:portal:discover")
+		list := catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsgw:portal:discover")
+		detail := catalogSpec(t, path, "portal.application.detail", "opsgw:portal:discover")
 		for _, spec := range []httpauthz.RouteSpec{list, detail} {
 			if err := registry.Register(spec); err != nil {
 				t.Fatal(err)
@@ -121,13 +121,13 @@ func TestRegistryAllowsSharedActionAndDynamicTemplates(t *testing.T) {
 }
 
 func TestRegistryRejectsMalformedDeclarationsWithoutNormalization(t *testing.T) {
-	base := catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsws:portal:discover")
+	base := catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsgw:portal:discover")
 	for _, mutate := range []func(*httpauthz.RouteSpec){
 		func(s *httpauthz.RouteSpec) { s.Name = " " + s.Name },
 		func(s *httpauthz.RouteSpec) { s.Action += " " },
 		func(s *httpauthz.RouteSpec) { s.Method = "get" },
 		func(s *httpauthz.RouteSpec) { s.RouteTemplate = "/apps?token=secret" },
-		func(s *httpauthz.RouteSpec) { s.Action = "opsws:portal:list" },
+		func(s *httpauthz.RouteSpec) { s.Action = "opsgw:portal:list" },
 	} {
 		registry, err := httpcatalog.NewRegistry(httpcatalog.Config{BaseURL: "http://127.0.0.1:8080", Application: "opsgw", Service: "ops-gateway", Release: "dev", ClientID: "ops-gateway-catalog-registrar", ClientSecret: "secret"})
 		if err != nil {

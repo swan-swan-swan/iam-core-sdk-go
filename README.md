@@ -63,7 +63,7 @@ HTTP Resource Server 使用显式 Route Manifest。每个已通过本地认证�
 也不会使用 groups 或本地规则降级。PDP 401 不刷新凭证、不重试 PDP。
 
 统一授权契约计划随 SDK `v3.0.0` 发布。所有受保护路由必须提供完整声明和三级 `Action`
-（例如 `opsws:iam-core:access`）。SDK 发送 `expected_action`，并在允许结果中核对 IAM Core
+（例如 `opsgw:iam-core:access`）。SDK 发送 `expected_action`，并在允许结果中核对 IAM Core
 返回的实际 `action`；缺失或不匹配会按协议错误失败关闭。旧的不完整 RouteSpec 和 Manifest v1
 调用方必须在协调迁移窗口内升级，不能省略 Action 或路由模板。
 
@@ -89,7 +89,7 @@ import ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/adapters
 
 ```go
 spec, err := httpauthz.NewRouteSpec(
-    http.MethodGet, "/api/v1/apps/:id/open", "portal.app.iam-core.open", "opsws:iam-core:access",
+    http.MethodGet, "/api/v1/apps/:id/open", "portal.app.iam-core.open", "opsgw:iam-core:access",
 )
 if err != nil { return err }
 manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{spec})
@@ -107,12 +107,12 @@ _ = route
 
 - Action：严格三段 `<server>:<domain>:<verb>`，总长最多 64。`server` 是单个小写字母数字 token。
   保留命名空间 `iam` 的内部 domain 使用 lower-snake，例如 `iam:oidc_client:select`；其他业务
-  domain 使用 lower-kebab，例如 `opsws:iam-core:access`，并拒绝旧 `00/01` 转义名称。
+  domain 使用 lower-kebab，例如 `opsgw:iam-core:access`，并拒绝旧 `00/01` 转义名称。
 - 动词仅允许 `access`、`discover`、`select`、`create`、`update`、`delete`、`execute`、`preview`、
   `publish`、`approve`、`bind`、`revoke`、`rotate`、`reveal`、`export`、`import`。
   读取统一使用 `select`，不接受 `list`、`get`、`read`、`view`。
 - Route Name：至少三段、最多 64 字符，每段为 lower-kebab。业务 Canonical Resource 直接使用
-  Route Name，例如 `portal.app.iam-core.open` 派生 `http:opsws:portal.app.iam-core.open`；IAM 内部
+  Route Name，例如 `portal.app.iam-core.open` 派生 `http:opsgw:portal.app.iam-core.open`；IAM 内部
   lower-snake 资源坐标仅用于兼容既有 IAM 权限。
 - Route Template：以 `/` 开头的绝对框架路径，不含 scheme、host、query 或 fragment。
 - 一个 Action 可以对应多个 API；每条 API 使用独立稳定 Route Name，Route Template 可以随实现演进。
@@ -131,7 +131,7 @@ Catalog 始终发送按 Name 排序的完整 Manifest：
     "name": "portal.app.iam-core.open",
     "method": "GET",
     "route_template": "/api/v1/apps/:id/open",
-    "action": "opsws:iam-core:access"
+    "action": "opsgw:iam-core:access"
   }]
 }
 ```

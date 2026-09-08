@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/testkit"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/testkit"
 )
 
 func TestPDPDefaultsToDeny(t *testing.T) {

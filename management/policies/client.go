@@ -9,7 +9,7 @@ import (
 	"reflect"
 	"strings"
 
-	management "github.com/swan-swan-swan/iam-core-sdk-go/v2/management/client"
+	management "github.com/swan-swan-swan/iam-core-sdk-go/v3/management/client"
 )
 
 const documentsPath = "/api/v1/policy-documents"

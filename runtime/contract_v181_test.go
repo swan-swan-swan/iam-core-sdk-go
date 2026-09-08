@@ -8,24 +8,24 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/authzcontract"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpauthz"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpcatalog"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/authzcontract"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/bff"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpauthz"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpcatalog"
 )
 
-func TestContractManifestV2JSON(t *testing.T) {
+func TestContractManifestV3JSON(t *testing.T) {
 	spec, err := httpauthz.NewRouteSpec("GET", "/api/v1/oidc-clients", "iam.oidcclient.list", "iam:oidc_client:select")
 	if err != nil {
 		t.Fatal(err)
 	}
-	manifest := httpcatalog.Manifest{SchemaVersion: httpcatalog.ManifestSchemaVersion, Application: "iam", Service: "iam-core", Release: "dev", Routes: []httpcatalog.Route{{Name: spec.Name, Method: spec.Method, RouteTemplate: spec.RouteTemplate, ResourceServer: spec.ResourceServer, Resource: spec.Resource, Action: spec.Action}}}
+	manifest := httpcatalog.Manifest{SchemaVersion: httpcatalog.ManifestSchemaVersion, Application: "iam", Service: "iam-core", Release: "dev", Routes: []httpcatalog.Route{{Name: spec.Name, Method: spec.Method, RouteTemplate: spec.RouteTemplate, Action: spec.Action}}}
 	raw, err := json.Marshal(manifest)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"schema_version":"2","application":"iam","service":"iam-core","release":"dev","routes":[{"name":"iam.oidcclient.list","method":"GET","route_template":"/api/v1/oidc-clients","resource_server":"iam","resource":"iam_oidcclient_list","action":"iam:oidc_client:select"}]}`
+	want := `{"schema_version":"3","application":"iam","service":"iam-core","release":"dev","routes":[{"name":"iam.oidcclient.list","method":"GET","route_template":"/api/v1/oidc-clients","action":"iam:oidc_client:select"}]}`
 	if string(raw) != want {
 		t.Fatalf("wire manifest = %s", raw)
 	}
@@ -72,7 +72,7 @@ func (a *contractAuthorizer) Decide(context.Context, core.TokenSource, httpauthz
 
 func TestV181RequireMakesOnePDPDecisionOnlyAfterValidBearer(t *testing.T) {
 	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
-		Name: "orders.item.list", Method: http.MethodGet, RouteTemplate: "/orders", ResourceServer: "orders_api", Resource: "orders_item_list", Action: "orders_api:orders:select",
+		Name: "orders.item.list", Method: http.MethodGet, RouteTemplate: "/orders", Action: "orders:orders:select",
 	}})
 	if err != nil {
 		t.Fatal("compile manifest")

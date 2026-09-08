@@ -12,14 +12,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpauthz"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/internal/nilcheck"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpauthz"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/internal/nilcheck"
 )
 
 const (
 	// ManifestSchemaVersion 是完整逻辑路由清单的显式协议版本。
-	ManifestSchemaVersion = "2"
+	ManifestSchemaVersion = "3"
 
 	registrationPath      = "/api/v1/http-resource-catalog/registration"
 	registrationOperation = "httpcatalog.sync"
@@ -44,10 +44,8 @@ type Route struct {
 	Name   string `json:"name"`
 	Method string `json:"method"`
 	// RouteTemplate 是代码声明的真实 HTTP 路径模板。
-	RouteTemplate  string `json:"route_template"`
-	ResourceServer string `json:"resource_server"`
-	Resource       string `json:"resource"`
-	Action         string `json:"action"`
+	RouteTemplate string `json:"route_template"`
+	Action        string `json:"action"`
 }
 
 // Manifest 定义发送给 IAM Core 的完整代码路由清单。
@@ -69,14 +67,13 @@ type Result struct {
 
 // Registry 收集代码路由并维护最近一次同步健康状态。
 type Registry struct {
-	mu        sync.RWMutex
-	config    Config
-	endpoint  string
-	client    *http.Client
-	routes    map[string]Route
-	resources map[string]struct{}
-	synced    bool
-	lastErr   error
+	mu       sync.RWMutex
+	config   Config
+	endpoint string
+	client   *http.Client
+	routes   map[string]Route
+	synced   bool
+	lastErr  error
 }
 
 // NewRegistry 创建启动目录 Registry。
@@ -105,7 +102,7 @@ func NewRegistry(config Config) (*Registry, error) {
 	cloned.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	return &Registry{
 		config: config, endpoint: config.BaseURL + registrationPath, client: &cloned,
-		routes: make(map[string]Route), resources: make(map[string]struct{}), lastErr: errCatalogRegistration,
+		routes: make(map[string]Route), lastErr: errCatalogRegistration,
 	}, nil
 }
 
@@ -120,7 +117,7 @@ func (r *Registry) Register(spec httpauthz.RouteSpec) error {
 	}
 	route := Route{
 		Name: spec.Name, Method: spec.Method, RouteTemplate: spec.RouteTemplate,
-		ResourceServer: spec.ResourceServer, Resource: spec.Resource, Action: spec.Action,
+		Action: spec.Action,
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -130,11 +127,7 @@ func (r *Registry) Register(spec httpauthz.RouteSpec) error {
 		}
 		return errCatalogRegistration
 	}
-	if _, exists := r.resources[route.Resource]; exists {
-		return errCatalogRegistration
-	}
 	r.routes[route.Name] = route
-	r.resources[route.Resource] = struct{}{}
 	r.synced = false
 	r.lastErr = errCatalogRegistration
 	return nil

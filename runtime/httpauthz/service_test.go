@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpauthz"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpauthz"
 )
 
 type fakeVerifier struct {
@@ -84,7 +84,7 @@ func credentialWithToken(token string) core.Credential {
 func boundRoute(t *testing.T) httpauthz.Route {
 	t.Helper()
 	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
-		Name: "orders.item.list", Method: http.MethodGet, RouteTemplate: "/orders", ResourceServer: "orders_api", Resource: "orders_item_list", Action: "orders_api:orders:select",
+		Name: "orders.item.list", Method: http.MethodGet, RouteTemplate: "/orders", Action: "orders:orders:select",
 	}})
 	if err != nil {
 		t.Fatal(err)

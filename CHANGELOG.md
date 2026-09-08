@@ -4,6 +4,18 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v3.0.0
+
+### Business authorization contract v3
+
+- Changed the module path to `github.com/swan-swan-swan/iam-core-sdk-go/v3`.
+- Replaced encoded business domains with readable lower-kebab actions while preserving the reserved
+  IAM lower-snake profile.
+- Reduced `RouteSpec` and Manifest routes to Name、Method、RouteTemplate and Action; Resource Server
+  and Canonical Resource are now deterministic derived values.
+- Changed Catalog registration to Manifest v3 and direct dotted Route Name resources.
+- Kept one Action reusable across multiple APIs and prohibited a second YAML route-to-action map.
+
 ## v2.0.0
 
 ### Unified authorization contract

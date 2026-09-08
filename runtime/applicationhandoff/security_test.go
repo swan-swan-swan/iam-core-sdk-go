@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
 )
 
 // TestClientClonesHTTPClientDropsCookiesAndNeverFollowsRedirects 验证调用方 Client 不被修改，且凭据不会跨重定向或 Cookie Jar 传播。

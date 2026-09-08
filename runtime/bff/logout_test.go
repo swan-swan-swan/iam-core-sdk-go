@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/bff/session"
 )
 
 func TestGlobalLogoutClearsLocalSessionAndRedirectsTopLevelToIAM(t *testing.T) {

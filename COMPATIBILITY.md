@@ -14,6 +14,7 @@
 | v0.10.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 browser logout/session extension | 1.24+ | Browser global logout、front-channel receiver、绝对/空闲 Session 策略 |
 | v1.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 stable Runtime/Management contract | 1.24+ | Stable single-Module Runtime、Management、Gin/Redis Adapter API |
 | v2.0.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v2` | IAM Core unified authorization / Manifest v2 extension | 1.24+ | 严格公共命名、完整 RouteSpec、Route Name 派生 Resource、一个 Action 多路由 |
+| v3.0.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core business authorization / Manifest v3 | 1.24+ | lower-kebab 业务权限、直接 Route Name Resource、四字段 RouteSpec、一个 Action 多 API |
 
 `v0.3.x` 不与 `v0.2.x` 源码兼容，也没有 deprecated wrapper；消费项目必须按迁移指南更换
 Module 和 import。Runtime 延续 PKCE S256、Client groups、真实 granted scopes、Manifest、
@@ -52,3 +53,13 @@ Go semantic import versioning 要求 v2 根 module 为 `github.com/swan-swan-swa
 全部 production/test/example import 统一添加 `/v2`；消费方删除旧 module 依赖，不使用 replace 或双 module
 回退。现有 integration 测试 module 通过 go.work 的 use 消费本地 v2，不声明尚未发布版本的远端 require；
 它只能在该 workspace 中运行，仅用于测试，不是第二个可发布 SDK module。
+
+`v3.0.0` 删除 Manifest v2 中调用方可写的 `resource_server` 与 `resource`。RouteSpec 只声明 Name、
+Method、RouteTemplate 和 Action；SDK 与 IAM Core 分别从同一事实重算坐标。保留 server `iam` 继续接受
+lower-snake 内部 domain，业务 server 仅接受 lower-kebab domain；业务 Canonical Resource 为
+`http:<server>:<route-name>`。Manifest 固定 `schema_version: "3"`，一个 Action 可以对应多个 API，
+但每条 API 的 Route Name 必须稳定且唯一。业务服务必须用一次声明同时驱动路由保护与 Catalog 注册，
+不得在 YAML/values 维护 Action 到 HTTP API 的第二份映射。
+
+Go semantic import versioning 要求 v3 根 module 为 `github.com/swan-swan-swan/iam-core-sdk-go/v3`。
+消费方必须在 IAM Core 支持 Manifest v3 后协调升级；v2 与 v3 不提供永久双轨或兼容 replace。

@@ -33,7 +33,7 @@ func (r Route) Method() string { return r.method }
 // ResourceServer 返回 Action 第一段的授权命名空间。
 func (r Route) ResourceServer() string { return r.resourceServer }
 
-// Resource 返回从逻辑路由名称派生的稳定资源编码。
+// Resource 返回从逻辑路由名称派生的 PDP 资源坐标。
 func (r Route) Resource() string { return r.resource }
 
 // Action 返回声明的业务能力。

@@ -6,13 +6,13 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpauthz"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpauthz"
 )
 
 func TestNewRouteSpecDerivesCoordinates(t *testing.T) {
-	spec, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps", "portal.application.list", "opsws:portal:discover")
-	if err != nil || spec.Name != "portal.application.list" || spec.Method != "GET" || spec.RouteTemplate != "/api/v1/apps" || spec.ResourceServer != "opsws" || spec.Resource != "portal_application_list" || spec.Action != "opsws:portal:discover" {
+	spec, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps/:id/open", "portal.app.iam-core.open", "opsgw:iam-core:access")
+	if err != nil || spec.Name != "portal.app.iam-core.open" || spec.Method != "GET" || spec.RouteTemplate != "/api/v1/apps/:id/open" || spec.ResourceServer() != "opsgw" || spec.Resource() != "portal.app.iam-core.open" || spec.CanonicalResource() != "http:opsgw:portal.app.iam-core.open" || spec.Action != "opsgw:iam-core:access" {
 		t.Fatalf("NewRouteSpec() = %#v, %v", spec, err)
 	}
 	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{spec})
@@ -27,11 +27,11 @@ func TestNewRouteSpecDerivesCoordinates(t *testing.T) {
 
 func TestCompileManifestAllowsOneActionOnManyRoutes(t *testing.T) {
 	for _, detailPath := range []string{"/api/v1/apps/:id", "/api/v1/apps"} {
-		list, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps", "portal.application.list", "opsws:portal:discover")
+		list, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps", "portal.application.list", "opsgw:portal:discover")
 		if err != nil {
 			t.Fatal(err)
 		}
-		detail, err := httpauthz.NewRouteSpec("GET", detailPath, "portal.application.detail", "opsws:portal:discover")
+		detail, err := httpauthz.NewRouteSpec("GET", detailPath, "portal.application.detail", "opsgw:portal:discover")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -41,15 +41,11 @@ func TestCompileManifestAllowsOneActionOnManyRoutes(t *testing.T) {
 		if _, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{list, list}); err == nil {
 			t.Fatal("duplicate route accepted")
 		}
-		detail.Resource = list.Resource
-		if _, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{list, detail}); err == nil {
-			t.Fatal("overridden resource accepted")
-		}
 	}
 }
 
 func TestCompileManifestRevalidatesEveryCoordinate(t *testing.T) {
-	base, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps", "portal.application.list", "opsws:portal:discover")
+	base, err := httpauthz.NewRouteSpec("GET", "/api/v1/apps", "portal.application.list", "opsgw:portal:discover")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -58,12 +54,10 @@ func TestCompileManifestRevalidatesEveryCoordinate(t *testing.T) {
 		mutate func(*httpauthz.RouteSpec)
 	}{
 		{"name", func(s *httpauthz.RouteSpec) { s.Name = "portal.list" }},
-		{"resource", func(s *httpauthz.RouteSpec) { s.Resource = "portal_discover" }},
-		{"server", func(s *httpauthz.RouteSpec) { s.ResourceServer = "iam" }},
 		{"method", func(s *httpauthz.RouteSpec) { s.Method = "get" }},
 		{"template", func(s *httpauthz.RouteSpec) { s.RouteTemplate = "/apps?token=secret" }},
 		{"missing template", func(s *httpauthz.RouteSpec) { s.RouteTemplate = "" }},
-		{"action", func(s *httpauthz.RouteSpec) { s.Action = "opsws:portal:list" }},
+		{"action", func(s *httpauthz.RouteSpec) { s.Action = "opsgw:portal:list" }},
 		{"missing action", func(s *httpauthz.RouteSpec) { s.Action = "" }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -80,11 +74,9 @@ func TestManifestAcceptsEveryStandardMethod(t *testing.T) {
 	for _, method := range methods {
 		t.Run(method, func(t *testing.T) {
 			manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
-				Name:           "orders.item." + strings.ToLower(method),
-				Method:         method,
-				ResourceServer: "orders_api",
-				Resource:       "orders_item_" + strings.ToLower(method),
-				RouteTemplate:  "/orders", Action: "orders_api:orders:select",
+				Name:          "orders.item." + strings.ToLower(method),
+				Method:        method,
+				RouteTemplate: "/orders", Action: "orders:orders:select",
 			}})
 			if err != nil {
 				t.Fatalf("CompileManifest() error = %v", err)
@@ -93,7 +85,7 @@ func TestManifestAcceptsEveryStandardMethod(t *testing.T) {
 			if err != nil {
 				t.Fatalf("Bind() error = %v", err)
 			}
-			if route.Method() != method || route.ResourceServer() != "orders_api" || route.Resource() != "orders_item_"+strings.ToLower(method) {
+			if route.Method() != method || route.ResourceServer() != "orders" || route.Resource() != "orders.item."+strings.ToLower(method) {
 				t.Fatalf("route = %q/%q/%q", route.Method(), route.ResourceServer(), route.Resource())
 			}
 		})
@@ -102,11 +94,8 @@ func TestManifestAcceptsEveryStandardMethod(t *testing.T) {
 
 func TestManifestPreservesCanonicalAction(t *testing.T) {
 	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
-		Name:           "orders.item.list",
-		Method:         "GET",
-		ResourceServer: "orders_api",
-		Resource:       "orders_item_list", RouteTemplate: "/orders",
-		Action: "orders_api:orders:select",
+		Name: "orders.item.list", Method: "GET", RouteTemplate: "/orders",
+		Action: "orders:orders:select",
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -115,13 +104,13 @@ func TestManifestPreservesCanonicalAction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := route.Action(); got != "orders_api:orders:select" {
+	if got := route.Action(); got != "orders:orders:select" {
 		t.Fatalf("route Action() = %q", got)
 	}
 }
 
 func TestManifestRejectsInvalidOrDuplicateRoutes(t *testing.T) {
-	base, err := httpauthz.NewRouteSpec("GET", "/orders", "orders.item.list", "orders_api:orders:select")
+	base, err := httpauthz.NewRouteSpec("GET", "/orders", "orders.item.list", "orders:orders:select")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -138,13 +127,9 @@ func TestManifestRejectsInvalidOrDuplicateRoutes(t *testing.T) {
 		{"padded method", func(s *httpauthz.RouteSpec) { s.Method = " GET" }},
 		{"control method", func(s *httpauthz.RouteSpec) { s.Method = "GET\x00" }},
 		{"unknown method", func(s *httpauthz.RouteSpec) { s.Method = "PROPFIND" }},
-		{"empty server", func(s *httpauthz.RouteSpec) { s.ResourceServer = "" }},
-		{"padded server", func(s *httpauthz.RouteSpec) { s.ResourceServer = "orders_api " }},
-		{"empty resource", func(s *httpauthz.RouteSpec) { s.Resource = "" }},
-		{"padded resource", func(s *httpauthz.RouteSpec) { s.Resource = " orders_item_list" }},
-		{"two-level action", func(s *httpauthz.RouteSpec) { s.Action = "orders_api:select" }},
-		{"four-level action", func(s *httpauthz.RouteSpec) { s.Action = "orders_api:orders:select:all" }},
-		{"uppercase action", func(s *httpauthz.RouteSpec) { s.Action = "orders_api:orders:Select" }},
+		{"two-level action", func(s *httpauthz.RouteSpec) { s.Action = "orders:select" }},
+		{"four-level action", func(s *httpauthz.RouteSpec) { s.Action = "orders:orders:select:all" }},
+		{"uppercase action", func(s *httpauthz.RouteSpec) { s.Action = "orders:orders:Select" }},
 		{"hyphen action", func(s *httpauthz.RouteSpec) { s.Action = "orders-api:orders:select" }},
 		{"blank action", func(s *httpauthz.RouteSpec) { s.Action = " " }},
 	}
@@ -171,26 +156,26 @@ func TestManifestAllowsNilAndEmptySpecifications(t *testing.T) {
 }
 
 func TestManifestCopiesSpecifications(t *testing.T) {
-	specs := []httpauthz.RouteSpec{{Name: "orders.item.list", Method: "GET", RouteTemplate: "/orders", ResourceServer: "orders_api", Resource: "orders_item_list", Action: "orders_api:orders:select"}}
+	specs := []httpauthz.RouteSpec{{Name: "orders.item.list", Method: "GET", RouteTemplate: "/orders", Action: "orders:orders:select"}}
 	manifest, err := httpauthz.CompileManifest(specs)
 	if err != nil {
 		t.Fatal(err)
 	}
-	specs[0] = httpauthz.RouteSpec{Name: "changed", Method: "POST", ResourceServer: "changed_api", Resource: "changed"}
+	specs[0] = httpauthz.RouteSpec{Name: "changed", Method: "POST"}
 
 	route, err := manifest.NewBinder().Bind("orders.item.list")
 	if err != nil {
 		t.Fatalf("Bind() error = %v", err)
 	}
-	if route.Method() != "GET" || route.ResourceServer() != "orders_api" || route.Resource() != "orders_item_list" {
+	if route.Method() != "GET" || route.ResourceServer() != "orders" || route.Resource() != "orders.item.list" {
 		t.Fatalf("route changed with input = %q/%q/%q", route.Method(), route.ResourceServer(), route.Resource())
 	}
 }
 
 func TestBinderRequiresEveryManifestRouteExactlyOnce(t *testing.T) {
 	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{
-		{Name: "orders.item.list", Method: "GET", RouteTemplate: "/orders", ResourceServer: "orders_api", Resource: "orders_item_list", Action: "orders_api:orders:select"},
-		{Name: "orders.item.create", Method: "POST", RouteTemplate: "/orders", ResourceServer: "orders_api", Resource: "orders_item_create", Action: "orders_api:orders:create"},
+		{Name: "orders.item.list", Method: "GET", RouteTemplate: "/orders", Action: "orders:orders:select"},
+		{Name: "orders.item.create", Method: "POST", RouteTemplate: "/orders", Action: "orders:orders:create"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -212,7 +197,7 @@ func TestBinderRequiresEveryManifestRouteExactlyOnce(t *testing.T) {
 }
 
 func TestManifestBindersAreIndependent(t *testing.T) {
-	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{Name: "orders.item.list", Method: "GET", RouteTemplate: "/orders", ResourceServer: "orders_api", Resource: "orders_item_list", Action: "orders_api:orders:select"}})
+	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{Name: "orders.item.list", Method: "GET", RouteTemplate: "/orders", Action: "orders:orders:select"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +215,7 @@ func TestManifestBindersAreIndependent(t *testing.T) {
 }
 
 func TestBinderConcurrentBindingIsExactlyOnce(t *testing.T) {
-	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{Name: "orders.item.list", Method: "GET", RouteTemplate: "/orders", ResourceServer: "orders_api", Resource: "orders_item_list", Action: "orders_api:orders:select"}})
+	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{Name: "orders.item.list", Method: "GET", RouteTemplate: "/orders", Action: "orders:orders:select"}})
 	if err != nil {
 		t.Fatal(err)
 	}

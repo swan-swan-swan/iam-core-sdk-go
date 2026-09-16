@@ -13,8 +13,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/bff/session"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/bff/session"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
 )
 
 func (c *Client) CallbackHandler() http.Handler {

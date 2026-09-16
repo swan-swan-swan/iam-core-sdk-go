@@ -13,7 +13,7 @@ import (
 	"sync"
 	"testing"
 
-	managementclient "github.com/swan-swan-swan/iam-core-sdk-go/v2/management/client"
+	managementclient "github.com/swan-swan-swan/iam-core-sdk-go/v3/management/client"
 )
 
 const (

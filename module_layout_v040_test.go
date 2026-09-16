@@ -13,10 +13,10 @@ import (
 	"testing"
 )
 
-func TestV2ModuleLayout(t *testing.T) {
+func TestV3ModuleLayout(t *testing.T) {
 	root := repositoryRoot(t)
 	rootModule := readFile(t, "go.mod")
-	if !strings.Contains(rootModule, "module github.com/swan-swan-swan/iam-core-sdk-go/v2\n") {
+	if !strings.Contains(rootModule, "module github.com/swan-swan-swan/iam-core-sdk-go/v3\n") {
 		t.Fatalf("root module was not renamed: %s", rootModule)
 	}
 
@@ -44,8 +44,8 @@ func TestV2ModuleLayout(t *testing.T) {
 		}
 	}
 
-	if declaration := strings.SplitN(rootModule, "\n", 2)[0]; declaration != "module github.com/swan-swan-swan/iam-core-sdk-go/v2" {
-		t.Errorf("root module declaration = %q, want %q", declaration, "module github.com/swan-swan-swan/iam-core-sdk-go/v2")
+	if declaration := strings.SplitN(rootModule, "\n", 2)[0]; declaration != "module github.com/swan-swan-swan/iam-core-sdk-go/v3" {
+		t.Errorf("root module declaration = %q, want %q", declaration, "module github.com/swan-swan-swan/iam-core-sdk-go/v3")
 	}
 
 	integrationModule := readFile(t, "integration/go.mod")
@@ -64,7 +64,7 @@ func TestV2ModuleLayout(t *testing.T) {
 	assertNoRPCPublicSurface(t, root)
 }
 
-func TestV2AdaptersResolveFromRootModuleWithoutWorkspace(t *testing.T) {
+func TestV3AdaptersResolveFromRootModuleWithoutWorkspace(t *testing.T) {
 	command := exec.Command(
 		"go", "list", "-f", "{{.Module.Path}}",
 		"./runtime/adapters/gin",
@@ -75,7 +75,7 @@ func TestV2AdaptersResolveFromRootModuleWithoutWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list adapters from root module: %v\n%s", err, output)
 	}
-	const want = "github.com/swan-swan-swan/iam-core-sdk-go/v2\ngithub.com/swan-swan-swan/iam-core-sdk-go/v2\n"
+	const want = "github.com/swan-swan-swan/iam-core-sdk-go/v3\ngithub.com/swan-swan-swan/iam-core-sdk-go/v3\n"
 	if string(output) != want {
 		t.Fatalf("adapter module paths = %q, want %q", output, want)
 	}

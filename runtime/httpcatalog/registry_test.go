@@ -7,12 +7,12 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpauthz"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpcatalog"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpauthz"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpcatalog"
 )
 
-// TestRegistrySyncSendsDeterministicV2Manifest 验证启动同步发送完整且确定性的代码路由清单。
-func TestRegistrySyncSendsDeterministicV2Manifest(t *testing.T) {
+// TestRegistrySyncSendsDeterministicV3Manifest 验证启动同步只发送完整且确定性的代码路由事实。
+func TestRegistrySyncSendsDeterministicV3Manifest(t *testing.T) {
 	var got httpcatalog.Manifest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		clientID, secret, ok := r.BasicAuth()
@@ -37,10 +37,10 @@ func TestRegistrySyncSendsDeterministicV2Manifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
 	}
-	if err := registry.Register(catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsws:portal:discover")); err != nil {
+	if err := registry.Register(catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsgw:portal:discover")); err != nil {
 		t.Fatalf("Register(portal) error = %v", err)
 	}
-	if err := registry.Register(catalogSpec(t, "/api/v1/admin", "admin.application.list", "opsws:admin:select")); err != nil {
+	if err := registry.Register(catalogSpec(t, "/api/v1/admin", "admin.application.list", "opsgw:admin:select")); err != nil {
 		t.Fatalf("Register(admin) error = %v", err)
 	}
 	if err := registry.Check(context.Background()); err == nil {
@@ -53,27 +53,23 @@ func TestRegistrySyncSendsDeterministicV2Manifest(t *testing.T) {
 	if result.CatalogHash != "sha256:abc" || !result.Changed || len(got.Routes) != 2 || got.Routes[0].Name != "admin.application.list" || got.Routes[1].Name != "portal.application.list" {
 		t.Fatalf("Sync() = %#v, manifest = %#v", result, got)
 	}
-	if got.SchemaVersion != "2" || got.Routes[1].RouteTemplate != "/api/v1/apps" || got.Routes[1].Resource != "portal_application_list" || got.Routes[1].Action != "opsws:portal:discover" {
-		t.Fatalf("Manifest v2 coordinates = %#v", got)
+	if got.SchemaVersion != "3" || got.Routes[1].RouteTemplate != "/api/v1/apps" || got.Routes[1].Action != "opsgw:portal:discover" {
+		t.Fatalf("Manifest v3 facts = %#v", got)
 	}
 	if err := registry.Check(context.Background()); err != nil {
 		t.Fatalf("Check(after sync) error = %v", err)
 	}
 }
 
-// TestRegistryRejectsActionCoordinateMismatch 验证 SDK 在发起网络请求前拒绝不一致目录坐标。
-func TestRegistryRejectsActionCoordinateMismatch(t *testing.T) {
-	registry, err := httpcatalog.NewRegistry(httpcatalog.Config{
-		BaseURL: "http://127.0.0.1:8080", Application: "opsgw", Service: "ops-gateway", Release: "dev",
-		ClientID: "ops-gateway-catalog-registrar", ClientSecret: "secret",
-	})
+// TestRouteJSONContainsOnlyDeclaredFacts 验证 v3 协议不再暴露可覆盖的资源坐标。
+func TestRouteJSONContainsOnlyDeclaredFacts(t *testing.T) {
+	body, err := json.Marshal(httpcatalog.Route{Name: "portal.app.iam-core.open", Method: "GET", RouteTemplate: "/api/v1/apps/:id/open", Action: "opsgw:iam-core:access"})
 	if err != nil {
-		t.Fatalf("NewRegistry() error = %v", err)
+		t.Fatal(err)
 	}
-	spec := catalogSpec(t, "/api/v1/admin", "admin.application.list", "opsws:admin:select")
-	spec.Resource = "admin"
-	if err := registry.Register(spec); err == nil {
-		t.Fatal("Register(mismatch) error = nil")
+	want := `{"name":"portal.app.iam-core.open","method":"GET","route_template":"/api/v1/apps/:id/open","action":"opsgw:iam-core:access"}`
+	if string(body) != want {
+		t.Fatalf("Route JSON = %s, want %s", body, want)
 	}
 }
 
@@ -86,14 +82,14 @@ func TestRegistryRegisterIsIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
 	}
-	spec := catalogSpec(t, "/api/v1/admin", "admin.application.list", "opsws:admin:select")
+	spec := catalogSpec(t, "/api/v1/admin", "admin.application.list", "opsgw:admin:select")
 	if err := registry.Register(spec); err != nil {
 		t.Fatalf("Register(first) error = %v", err)
 	}
 	if err := registry.Register(spec); err != nil {
 		t.Fatalf("Register(second) error = %v", err)
 	}
-	spec.Action = "opsws:admin:update"
+	spec.Action = "opsgw:admin:update"
 	if err := registry.Register(spec); err == nil {
 		t.Fatal("Register(conflicting name) error = nil")
 	}
@@ -114,29 +110,24 @@ func TestRegistryAllowsSharedActionAndDynamicTemplates(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		list := catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsws:portal:discover")
-		detail := catalogSpec(t, path, "portal.application.detail", "opsws:portal:discover")
+		list := catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsgw:portal:discover")
+		detail := catalogSpec(t, path, "portal.application.detail", "opsgw:portal:discover")
 		for _, spec := range []httpauthz.RouteSpec{list, detail} {
 			if err := registry.Register(spec); err != nil {
 				t.Fatal(err)
 			}
 		}
-		detail.Resource = list.Resource
-		if err := registry.Register(detail); err == nil {
-			t.Fatal("accepted resource override")
-		}
 	}
 }
 
 func TestRegistryRejectsMalformedDeclarationsWithoutNormalization(t *testing.T) {
-	base := catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsws:portal:discover")
+	base := catalogSpec(t, "/api/v1/apps", "portal.application.list", "opsgw:portal:discover")
 	for _, mutate := range []func(*httpauthz.RouteSpec){
 		func(s *httpauthz.RouteSpec) { s.Name = " " + s.Name },
 		func(s *httpauthz.RouteSpec) { s.Action += " " },
-		func(s *httpauthz.RouteSpec) { s.ResourceServer = "iam" },
 		func(s *httpauthz.RouteSpec) { s.Method = "get" },
 		func(s *httpauthz.RouteSpec) { s.RouteTemplate = "/apps?token=secret" },
-		func(s *httpauthz.RouteSpec) { s.Action = "opsws:portal:list" },
+		func(s *httpauthz.RouteSpec) { s.Action = "opsgw:portal:list" },
 	} {
 		registry, err := httpcatalog.NewRegistry(httpcatalog.Config{BaseURL: "http://127.0.0.1:8080", Application: "opsgw", Service: "ops-gateway", Release: "dev", ClientID: "ops-gateway-catalog-registrar", ClientSecret: "secret"})
 		if err != nil {

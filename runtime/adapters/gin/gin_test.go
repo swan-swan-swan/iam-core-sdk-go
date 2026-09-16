@@ -12,9 +12,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
-	ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/adapters/gin"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpauthz"
+	ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/adapters/gin"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpauthz"
 )
 
 type verifier struct {
@@ -556,7 +556,7 @@ func newService(t *testing.T, decision httpauthz.Decision, pdpErr error, respond
 		t.Fatal(err)
 	}
 	manifest, err := httpauthz.CompileManifest([]httpauthz.RouteSpec{{
-		Name: "orders.item.list", Method: http.MethodGet, RouteTemplate: "/orders", ResourceServer: "orders_api", Resource: "orders_item_list", Action: "orders_api:orders:select",
+		Name: "orders.item.list", Method: http.MethodGet, RouteTemplate: "/orders", Action: "orders:orders:select",
 	}})
 	if err != nil {
 		t.Fatal(err)

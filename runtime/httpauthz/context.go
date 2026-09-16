@@ -3,7 +3,7 @@ package httpauthz
 import (
 	"context"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
 )
 
 type decisionContextKey struct{}

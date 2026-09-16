@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/core"
-	"github.com/swan-swan-swan/iam-core-sdk-go/v2/runtime/httpauthz"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpauthz"
 )
 
 const startupTimeout = 10 * time.Second
@@ -36,7 +36,7 @@ func run() error {
 		return err
 	}
 
-	spec, err := httpauthz.NewRouteSpec(http.MethodGet, "/orders", "orders.item.list", "orders_api:orders:select")
+	spec, err := httpauthz.NewRouteSpec(http.MethodGet, "/orders", "orders.item.list", "orders:orders:select")
 	if err != nil {
 		return errors.New("resource server route configuration is invalid")
 	}

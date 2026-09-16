@@ -1,4 +1,4 @@
-module github.com/swan-swan-swan/iam-core-sdk-go/v2
+module github.com/swan-swan-swan/iam-core-sdk-go/v3
 
 go 1.24.0
 

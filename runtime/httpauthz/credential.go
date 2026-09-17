@@ -104,6 +104,7 @@ func (s *Service) selectCredential(request *http.Request) (core.Credential, erro
 
 func cloneMiddlewareAuthContext(auth core.AuthContext) core.AuthContext {
 	auth.Audience = slices.Clone(auth.Audience)
+	auth.AuthenticationMethods = slices.Clone(auth.AuthenticationMethods)
 	auth.Scopes = slices.Clone(auth.Scopes)
 	auth.Groups = slices.Clone(auth.Groups)
 	return auth

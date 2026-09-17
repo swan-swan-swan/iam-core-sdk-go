@@ -112,6 +112,9 @@ func TestDocumentationContract(t *testing.T) {
 		"github.com/swan-swan-swan/iam-core-sdk-go",
 		"Runtime + approved platform-integration Management",
 		"IAM Core v1.8.1",
+		"keyed struct literal",
+		"unkeyed struct literal",
+		"改为带字段名初始化",
 	)
 
 	changelog := read("CHANGELOG.md")

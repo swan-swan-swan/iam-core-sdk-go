@@ -4,11 +4,25 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
 )
+
+func TestCloneMiddlewareAuthContextCopiesAuthenticationMethods(t *testing.T) {
+	original := core.AuthContext{AuthenticationMethods: []string{"pwd", "otp"}}
+	cloned := cloneMiddlewareAuthContext(original)
+	original.AuthenticationMethods[0] = "mutated-source"
+	if !slices.Equal(cloned.AuthenticationMethods, []string{"pwd", "otp"}) {
+		t.Fatalf("cloned AuthenticationMethods = %#v", cloned.AuthenticationMethods)
+	}
+	cloned.AuthenticationMethods[1] = "mutated-clone"
+	if !slices.Equal(original.AuthenticationMethods, []string{"mutated-source", "otp"}) {
+		t.Fatalf("source AuthenticationMethods = %#v", original.AuthenticationMethods)
+	}
+}
 
 func TestCredentialHeaderDistinguishesMissingFromValidBearer(t *testing.T) {
 	missing := httptest.NewRequest(http.MethodGet, "/", nil)

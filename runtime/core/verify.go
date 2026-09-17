@@ -100,18 +100,22 @@ func (r *Runtime) VerifyLogoutToken(ctx context.Context, raw, expectedAudience s
 }
 
 func (r *Runtime) VerifyAccessToken(ctx context.Context, raw string) (auth AuthContext, resultErr error) {
-	return r.verifyToken(ctx, raw, "core.verify_access_token", "", false)
+	return r.verifyToken(ctx, raw, "core.verify_access_token", "", false, false)
 }
 
 func (r *Runtime) VerifyIDToken(ctx context.Context, raw, expectedNonce string) (auth AuthContext, resultErr error) {
-	return r.verifyToken(ctx, raw, "core.verify_id_token", expectedNonce, true)
+	return r.verifyToken(ctx, raw, "core.verify_id_token", expectedNonce, true, true)
 }
 
 func (r *Runtime) VerifyRefreshedIDToken(ctx context.Context, raw string) (auth AuthContext, resultErr error) {
-	return r.verifyToken(ctx, raw, "core.verify_refreshed_id_token", "", false)
+	return r.verifyToken(ctx, raw, "core.verify_refreshed_id_token", "", false, true)
 }
 
-func (r *Runtime) verifyToken(ctx context.Context, raw, operation, expectedNonce string, requireNonce bool) (auth AuthContext, resultErr error) {
+func (r *Runtime) verifyToken(
+	ctx context.Context,
+	raw, operation, expectedNonce string,
+	requireNonce, parseAuthenticationContext bool,
+) (auth AuthContext, resultErr error) {
 	if r == nil {
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
 	}
@@ -165,13 +169,17 @@ func (r *Runtime) verifyToken(ctx context.Context, raw, operation, expectedNonce
 		subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(expectedNonce)) != 1) {
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
 	}
-	authTime, err := decodeNumericDate(claims.AuthTime, false)
-	if err != nil {
-		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
-	}
-	authenticationMethods, err := decodeAuthenticationMethods(claims.AMR)
-	if err != nil || (len(claims.AMR) != 0 && authTime == nil) {
-		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
+	var authTime *numericDate
+	authenticationMethods := []string{}
+	if parseAuthenticationContext {
+		authTime, err = decodeNumericDate(claims.AuthTime, false)
+		if err != nil {
+			return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
+		}
+		authenticationMethods, err = decodeAuthenticationMethods(claims.AMR)
+		if err != nil || (len(claims.AMR) != 0 && authTime == nil) {
+			return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
+		}
 	}
 	scopes := normalizeValues(strings.Fields(claims.Scope))
 	auth = AuthContext{

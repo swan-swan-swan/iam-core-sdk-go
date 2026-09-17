@@ -64,7 +64,9 @@ lower-snake 内部 domain，业务 server 仅接受 lower-kebab domain；业务 
 Go semantic import versioning 要求 v3 根 module 为 `github.com/swan-swan-swan/iam-core-sdk-go/v3`。
 消费方必须在 IAM Core 支持 Manifest v3 后协调升级；v2 与 v3 不提供永久双轨或兼容 replace。
 
-v3 的 `core.AuthContext` 以新增字段方式提供 `AuthTime` 与 `AuthenticationMethods`，对现有 Go
-结构体消费方保持源码兼容。旧 IAM Core 不发送 `auth_time`/`amr` 时仍可验证，字段分别为零值和
-空切片；该状态仅表示认证方式未知，不能证明 MFA。新字段不改变 Access Token、PDP、Management
-或 Manifest 的既有失败关闭边界，BFF 只从已验证 ID Token 建立并在 Session/refresh 中保留认证上下文。
+v3 的 `core.AuthContext` 以新增字段方式提供 `AuthTime` 与 `AuthenticationMethods`。字段访问和使用
+字段名的 keyed struct literal 保持源码兼容；未写字段名的 unkeyed struct literal 会因字段数量变化而
+无法编译，消费方必须改为带字段名初始化（推荐）或在原位置补齐新增字段。旧 IAM Core 不发送
+`auth_time`/`amr` 时仍可验证，字段分别为零值和空切片；该状态仅表示认证方式未知，不能证明 MFA。
+新字段不改变 Access Token、PDP、Management 或 Manifest 的既有失败关闭边界，BFF 只从已验证
+ID Token 建立并在 Session/refresh 中保留认证上下文。

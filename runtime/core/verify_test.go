@@ -108,6 +108,36 @@ func TestVerifyIDTokenAcceptsLegacyAuthenticationContext(t *testing.T) {
 	}
 }
 
+func TestVerifyAccessTokenIgnoresAuthenticationContextClaims(t *testing.T) {
+	tests := map[string]func(map[string]any){
+		"valid claims": func(claims map[string]any) {
+			claims["auth_time"] = time.Now().Add(-time.Minute).Unix()
+			claims["amr"] = []string{"pwd", "otp"}
+		},
+		"malformed claims": func(claims map[string]any) {
+			claims["auth_time"] = "not-a-numeric-date"
+			claims["amr"] = map[string]any{"method": "otp"}
+		},
+		"amr without auth time": func(claims map[string]any) {
+			claims["amr"] = []string{"otp"}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			runtime, signer := newCoreRuntime(t)
+			claims := signer.validClaims()
+			mutate(claims)
+			got, err := runtime.VerifyAccessToken(t.Context(), signer.AccessToken(t, claims))
+			if err != nil {
+				t.Fatalf("VerifyAccessToken() error = %v", err)
+			}
+			if !got.AuthTime.IsZero() || len(got.AuthenticationMethods) != 0 {
+				t.Fatalf("access-token authentication context = %#v", got)
+			}
+		})
+	}
+}
+
 func TestVerifyLogoutTokenRequiresTargetAudiencePurposeAndTransaction(t *testing.T) {
 	runtime, signer := newCoreRuntime(t)
 	claims := signer.validClaims()

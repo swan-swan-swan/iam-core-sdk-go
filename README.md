@@ -58,6 +58,23 @@ Server 示例位于 [`examples/runtime/nethttp`](examples/runtime/nethttp)。BFF
 默认 scope 为 `openid profile email groups`；不接受 `roles` 回退。Session 保存在服务端，
 浏览器 Cookie 只承载不透明 ID。
 
+### MFA 认证上下文
+
+`core.AuthContext.AuthTime` 与 `AuthenticationMethods` 暴露已验证 ID Token 的 `auth_time` 和
+`amr`。BFF callback 以 ID Token 为认证上下文权威；刷新没有新 ID Token 时保留原值，有新 ID Token
+时只接受与当前 Session 完全一致的值。旧 IAM Core 未发送这两个 claim 时，`AuthTime` 为零值且
+`AuthenticationMethods` 为空，这表示“MFA 未被证明”，不能视为已完成 MFA。
+
+应用必须检查具体认证方式，且将恢复码与 OTP 分开处理：
+
+```go
+usedOTP := slices.Contains(auth.AuthenticationMethods, "otp")
+usedRecoveryCode := slices.Contains(auth.AuthenticationMethods, "recovery_code")
+```
+
+SDK 会保留未知但合法的 `amr` 扩展值，不根据角色、scope 或当前时间推断 MFA，也不会把
+`recovery_code` 等同于 `otp`。调用方不得记录原始 Token、验证码、恢复码或密钥。
+
 HTTP Resource Server 使用显式 Route Manifest。每个已通过本地认证的受保护请求执行恰好
 一次 PDP；deny、401、5xx、超时、网络错误和畸形 envelope 都失败关闭。授权结果不缓存，
 也不会使用 groups 或本地规则降级。PDP 401 不刷新凭证、不重试 PDP。

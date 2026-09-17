@@ -22,6 +22,8 @@ type tokenClaims struct {
 	IssuedAt    json.RawMessage `json:"iat"`
 	NotBefore   json.RawMessage `json:"nbf"`
 	ExpiresAt   json.RawMessage `json:"exp"`
+	AuthTime    json.RawMessage `json:"auth_time"`
+	AMR         json.RawMessage `json:"amr"`
 	Nonce       string          `json:"nonce"`
 	Scope       string          `json:"scope"`
 	Groups      []string        `json:"groups"`
@@ -163,14 +165,26 @@ func (r *Runtime) verifyToken(ctx context.Context, raw, operation, expectedNonce
 		subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(expectedNonce)) != 1) {
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
 	}
+	authTime, err := decodeNumericDate(claims.AuthTime, false)
+	if err != nil {
+		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
+	}
+	authenticationMethods, err := decodeAuthenticationMethods(claims.AMR)
+	if err != nil || (len(claims.AMR) != 0 && authTime == nil) {
+		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
+	}
 	scopes := normalizeValues(strings.Fields(claims.Scope))
 	auth = AuthContext{
 		Subject: claims.Subject, Issuer: claims.Issuer, Audience: append([]string(nil), audience...),
 		TokenID: claims.TokenID, IssuedAt: issuedAt.asTime(), ExpiresAt: expiresAt.asTime(),
-		Scopes: append([]string(nil), scopes...), Groups: []string{},
+		AuthenticationMethods: authenticationMethods,
+		Scopes:                append([]string(nil), scopes...), Groups: []string{},
 	}
 	if notBefore != nil {
 		auth.NotBefore = notBefore.asTime()
+	}
+	if authTime != nil {
+		auth.AuthTime = authTime.asTime()
 	}
 	if slices.Contains(scopes, "profile") {
 		auth.Username, auth.DisplayName = claims.Username, claims.DisplayName
@@ -182,6 +196,29 @@ func (r *Runtime) verifyToken(ctx context.Context, raw, operation, expectedNonce
 		auth.Groups = normalizeGroups(claims.Groups)
 	}
 	return auth, nil
+}
+
+func decodeAuthenticationMethods(raw json.RawMessage) ([]string, error) {
+	if len(raw) == 0 {
+		return []string{}, nil
+	}
+	var values []string
+	if json.Unmarshal(raw, &values) != nil || len(values) == 0 {
+		return nil, errors.New("invalid authentication methods")
+	}
+	seen := make(map[string]struct{}, len(values))
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return nil, errors.New("invalid authentication methods")
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	return normalized, nil
 }
 
 func (r *Runtime) acceptsAnyAudience(audiences []string) bool {

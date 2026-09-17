@@ -44,6 +44,70 @@ func TestVerifyAccessTokenReturnsTypedGroupsAndActualScope(t *testing.T) {
 	}
 }
 
+func TestVerifyIDTokenReturnsNormalizedAuthenticationContext(t *testing.T) {
+	runtime, signer := newCoreRuntime(t)
+	claims := signer.validClaims()
+	claims["nonce"] = "nonce-1"
+	claims["auth_time"] = json.Number("1800000000.125")
+	claims["amr"] = []string{"pwd", "otp", "pwd", "recovery_code", "webauthn"}
+
+	got, err := runtime.VerifyIDToken(t.Context(), signer.AccessToken(t, claims), "nonce-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := time.Unix(1_800_000_000, 125_000_000); !got.AuthTime.Equal(want) {
+		t.Fatalf("AuthTime = %s, want %s", got.AuthTime, want)
+	}
+	if want := []string{"pwd", "otp", "recovery_code", "webauthn"}; !slices.Equal(got.AuthenticationMethods, want) {
+		t.Fatalf("AuthenticationMethods = %#v, want %#v", got.AuthenticationMethods, want)
+	}
+}
+
+func TestVerifyIDTokenRejectsMalformedAuthenticationContext(t *testing.T) {
+	tests := map[string]func(map[string]any){
+		"amr without auth time": func(claims map[string]any) { claims["amr"] = []string{"otp"} },
+		"malformed auth time": func(claims map[string]any) {
+			claims["auth_time"], claims["amr"] = "not-a-date", []string{"otp"}
+		},
+		"scalar amr": func(claims map[string]any) {
+			claims["auth_time"], claims["amr"] = time.Now().Unix(), "otp"
+		},
+		"object amr": func(claims map[string]any) {
+			claims["auth_time"], claims["amr"] = time.Now().Unix(), map[string]any{"method": "otp"}
+		},
+		"empty amr": func(claims map[string]any) {
+			claims["auth_time"], claims["amr"] = time.Now().Unix(), []string{}
+		},
+		"empty amr entry": func(claims map[string]any) {
+			claims["auth_time"], claims["amr"] = time.Now().Unix(), []string{"pwd", ""}
+		},
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			runtime, signer := newCoreRuntime(t)
+			claims := signer.validClaims()
+			claims["nonce"] = "nonce-1"
+			mutate(claims)
+			if _, err := runtime.VerifyIDToken(t.Context(), signer.AccessToken(t, claims), "nonce-1"); err == nil {
+				t.Fatal("VerifyIDToken() error = nil")
+			}
+		})
+	}
+}
+
+func TestVerifyIDTokenAcceptsLegacyAuthenticationContext(t *testing.T) {
+	runtime, signer := newCoreRuntime(t)
+	claims := signer.validClaims()
+	claims["nonce"] = "nonce-1"
+	got, err := runtime.VerifyIDToken(t.Context(), signer.AccessToken(t, claims), "nonce-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.AuthTime.IsZero() || len(got.AuthenticationMethods) != 0 {
+		t.Fatalf("legacy authentication context = %#v", got)
+	}
+}
+
 func TestVerifyLogoutTokenRequiresTargetAudiencePurposeAndTransaction(t *testing.T) {
 	runtime, signer := newCoreRuntime(t)
 	claims := signer.validClaims()

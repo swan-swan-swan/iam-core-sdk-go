@@ -29,6 +29,23 @@ func TestCallbackCreatesAuthenticatedServerSessionFromVerifiedAccessToken(t *tes
 	}
 }
 
+func TestCallbackUsesIDTokenAuthenticationContext(t *testing.T) {
+	client, _, issuer := newBFFTestClient(t)
+	authTime := issuer.Clock.Now().Add(-time.Minute)
+	issuer.IDTokenAuthTime = authTime
+	issuer.IDTokenAMR = []string{"pwd", "otp"}
+
+	created := completeLogin(t, client, issuer)
+	if !created.Auth.AuthTime.Equal(authTime) ||
+		!slices.Equal(created.Auth.AuthenticationMethods, []string{"pwd", "otp"}) {
+		t.Fatalf("callback authentication context = %#v", created.Auth)
+	}
+	issuer.IDTokenAMR[0] = "mutated-issuer"
+	if !slices.Equal(created.Auth.AuthenticationMethods, []string{"pwd", "otp"}) {
+		t.Fatalf("callback authentication methods aliased issuer input: %#v", created.Auth.AuthenticationMethods)
+	}
+}
+
 func TestCallbackCapsAccessTokenExpiryAtTokenResponseLifetime(t *testing.T) {
 	tests := []struct {
 		name      string

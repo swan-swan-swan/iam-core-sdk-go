@@ -113,6 +113,8 @@ func (c *Client) completeCallback(w http.ResponseWriter, request *http.Request) 
 		return bffError(core.KindUnauthenticated, operation, 0, false)
 	}
 	auth := cloneAuthContext(accessAuth)
+	auth.AuthTime = idAuth.AuthTime
+	auth.AuthenticationMethods = slices.Clone(idAuth.AuthenticationMethods)
 	auth.Scopes = append([]string(nil), grantedScopes...)
 	if slices.Contains(grantedScopes, "profile") {
 		if identity.usernameSet {
@@ -227,6 +229,7 @@ func verifiedClaimSources(raw string, verified core.AuthContext) (scope, groups 
 
 func cloneAuthContext(auth core.AuthContext) core.AuthContext {
 	auth.Audience = slices.Clone(auth.Audience)
+	auth.AuthenticationMethods = slices.Clone(auth.AuthenticationMethods)
 	auth.Scopes = slices.Clone(auth.Scopes)
 	auth.Groups = slices.Clone(auth.Groups)
 	return auth

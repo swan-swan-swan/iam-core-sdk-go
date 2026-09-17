@@ -490,6 +490,7 @@ func cloneSession(item *session.Session) *session.Session {
 	copied := *item
 	copied.Tokens.GrantedScopes = slices.Clone(item.Tokens.GrantedScopes)
 	copied.Auth.Audience = slices.Clone(item.Auth.Audience)
+	copied.Auth.AuthenticationMethods = slices.Clone(item.Auth.AuthenticationMethods)
 	copied.Auth.Scopes = slices.Clone(item.Auth.Scopes)
 	copied.Auth.Groups = slices.Clone(item.Auth.Groups)
 	return &copied

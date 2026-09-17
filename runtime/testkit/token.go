@@ -72,6 +72,12 @@ func signTestToken(
 	if nonce != "" {
 		claims["nonce"] = nonce
 	}
+	if kind == "id" && !response.AuthTime.IsZero() {
+		claims["auth_time"] = response.AuthTime.Unix()
+	}
+	if kind == "id" && response.AuthenticationMethods != nil {
+		claims["amr"] = cloneStrings(response.AuthenticationMethods)
+	}
 	token := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
 	token.Header["kid"] = testKeyID
 	return token.SignedString(key)

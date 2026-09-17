@@ -715,6 +715,8 @@ func sessionAuth(now time.Time) (auth core.AuthContext) {
 	auth.IssuedAt = now
 	auth.NotBefore = now
 	auth.ExpiresAt = now.Add(10 * time.Minute)
+	auth.AuthTime = now.Add(-time.Minute)
+	auth.AuthenticationMethods = []string{"pwd", "otp"}
 	auth.Scopes = []string{"openid", "profile"}
 	auth.Groups = []string{"group-original"}
 	auth.Username = "username-original"
@@ -731,6 +733,7 @@ func mutateSession(item *session.Session) {
 	item.Tokens.GrantedScopes[0] = "mutated"
 	item.Auth.Subject = "mutated"
 	item.Auth.Audience[0] = "mutated"
+	item.Auth.AuthenticationMethods[0] = "mutated"
 	item.Auth.Scopes[0] = "mutated"
 	item.Auth.Groups[0] = "mutated"
 }
@@ -751,6 +754,9 @@ func assertOriginalSession(t testing.TB, item *session.Session, version uint64) 
 	}
 	if item.Auth.Audience[0] != "client-original" {
 		t.Fatal("Session authentication audience changed through an aliased copy")
+	}
+	if !item.Auth.AuthTime.Equal(item.CreatedAt.Add(-time.Minute)) || item.Auth.AuthenticationMethods[0] != "pwd" {
+		t.Fatal("Session MFA authentication context changed through an aliased copy")
 	}
 	if item.Auth.Scopes[0] != "openid" {
 		t.Fatal("Session authentication scopes changed through an aliased copy")

@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -570,6 +571,35 @@ func TestIssuerTokenLifetimesUseReceiptTimeAndExpiresIn(t *testing.T) {
 	}
 }
 
+func TestIssuerSignsRequestedAuthenticationContextOnlyOnIDTokens(t *testing.T) {
+	issuer := testkit.NewIssuer(t)
+	defer issuer.Close()
+
+	legacy := decodeTokenClaims(t, issuer.SignIDToken(testAudience, "legacy-nonce"))
+	if legacy.AuthTime != nil || legacy.AuthenticationMethods != nil {
+		t.Fatalf("default ID Token authentication context = %#v", legacy)
+	}
+
+	authTime := time.Unix(1_800_000_000, 0).UTC()
+	methods := []string{"pwd", "otp"}
+	issuer.SetTokenResponse(testkit.TokenResponse{
+		Scope: "openid", AuthTime: authTime, AuthenticationMethods: methods,
+	})
+	methods[0] = "mutated-input"
+	access := decodeTokenClaims(t, issuer.SignAccessToken(testAudience))
+	idTokenRaw := issuer.SignIDToken(testAudience, "mfa-nonce")
+	issuer.SetTokenResponse(testkit.TokenResponse{Scope: "openid"})
+	idToken := decodeTokenClaims(t, idTokenRaw)
+
+	if access.AuthTime != nil || access.AuthenticationMethods != nil {
+		t.Fatalf("access token carried ID-token authentication context: %#v", access)
+	}
+	if idToken.AuthTime == nil || *idToken.AuthTime != authTime.Unix() ||
+		!slices.Equal(idToken.AuthenticationMethods, []string{"pwd", "otp"}) {
+		t.Fatalf("ID Token authentication context = %#v", idToken)
+	}
+}
+
 func TestIssuerMixedTokenIssuanceUsesUniqueJTIsAndRawTokens(t *testing.T) {
 	issuer := testkit.NewIssuer(t)
 	defer issuer.Close()
@@ -738,10 +768,12 @@ type authorizationFixture struct {
 }
 
 type jwtFixtureClaims struct {
-	TokenID   string `json:"jti"`
-	Nonce     string `json:"nonce"`
-	IssuedAt  int64  `json:"iat"`
-	ExpiresAt int64  `json:"exp"`
+	TokenID               string   `json:"jti"`
+	Nonce                 string   `json:"nonce"`
+	IssuedAt              int64    `json:"iat"`
+	ExpiresAt             int64    `json:"exp"`
+	AuthTime              *int64   `json:"auth_time"`
+	AuthenticationMethods []string `json:"amr"`
 }
 
 func postToken(t *testing.T, issuer *testkit.Issuer, form url.Values) tokenWireResponse {

@@ -2,10 +2,37 @@ package core_test
 
 import (
 	"context"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
 )
+
+func TestAuthContextAuthenticationMethodsAreDefensivelyCopied(t *testing.T) {
+	authTime := time.Unix(1_800_000_000, 0).UTC()
+	original := core.AuthContext{
+		Subject:               "op_usr_1",
+		AuthTime:              authTime,
+		AuthenticationMethods: []string{"pwd", "otp"},
+	}
+	ctx := core.ContextWithAuthContext(context.Background(), original)
+	original.AuthenticationMethods[0] = "mutated-source"
+
+	got, ok := core.AuthContextFromContext(ctx)
+	if !ok {
+		t.Fatal("AuthContextFromContext() ok = false")
+	}
+	if !got.AuthTime.Equal(authTime) || !slices.Equal(got.AuthenticationMethods, []string{"pwd", "otp"}) {
+		t.Fatalf("authentication context = %#v", got)
+	}
+	got.AuthenticationMethods[1] = "mutated-result"
+
+	again, _ := core.AuthContextFromContext(ctx)
+	if !slices.Equal(again.AuthenticationMethods, []string{"pwd", "otp"}) {
+		t.Fatalf("stored authentication methods were aliased: %#v", again.AuthenticationMethods)
+	}
+}
 
 func TestAuthContextFromContextReturnsDefensiveCopy(t *testing.T) {
 	original := core.AuthContext{

@@ -17,6 +17,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -43,10 +44,14 @@ type refreshBinding struct {
 
 // TokenResponse configures successful token and UserInfo fixtures or one OAuth error.
 type TokenResponse struct {
-	Scope      string
-	Groups     []string
-	OAuthError string
-	HTTPStatus int
+	Scope  string
+	Groups []string
+	// AuthTime 仅为测试 ID Token 显式加入 auth_time；零值表示不加入。
+	AuthTime time.Time
+	// AuthenticationMethods 仅为测试 ID Token 显式加入 amr；nil 表示不加入。
+	AuthenticationMethods []string
+	OAuthError            string
+	HTTPStatus            int
 }
 
 // Calls is a snapshot of the issuer's OAuth endpoint calls. LastTokenForm can
@@ -118,6 +123,7 @@ func (i *Issuer) HTTPClient() *http.Client {
 // SetTokenResponse replaces the token/UserInfo fixture using defensive copies.
 func (i *Issuer) SetTokenResponse(response TokenResponse) {
 	response.Groups = cloneStrings(response.Groups)
+	response.AuthenticationMethods = cloneStrings(response.AuthenticationMethods)
 	i.mu.Lock()
 	i.tokenResponse = response
 	i.mu.Unlock()
@@ -416,6 +422,7 @@ func (i *Issuer) handleEndSession(w http.ResponseWriter, _ *http.Request) {
 
 func cloneTokenResponse(response TokenResponse) TokenResponse {
 	response.Groups = cloneStrings(response.Groups)
+	response.AuthenticationMethods = cloneStrings(response.AuthenticationMethods)
 	return response
 }
 

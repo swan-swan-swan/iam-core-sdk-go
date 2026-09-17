@@ -7,21 +7,25 @@ import (
 )
 
 type AuthContext struct {
-	Subject     string
-	Issuer      string
-	Audience    []string
-	TokenID     string
-	IssuedAt    time.Time
-	NotBefore   time.Time
-	ExpiresAt   time.Time
-	Scopes      []string
-	Groups      []string
-	Username    string
-	DisplayName string
-	Email       string
-	DecisionID  string
-	ReasonCode  string
-	TraceID     string
+	Subject   string
+	Issuer    string
+	Audience  []string
+	TokenID   string
+	IssuedAt  time.Time
+	NotBefore time.Time
+	ExpiresAt time.Time
+	// AuthTime 是当前认证上下文最初建立的时间。
+	AuthTime time.Time
+	// AuthenticationMethods 是已验证令牌声明的认证方式，调用方不得据此推断未声明的方法。
+	AuthenticationMethods []string
+	Scopes                []string
+	Groups                []string
+	Username              string
+	DisplayName           string
+	Email                 string
+	DecisionID            string
+	ReasonCode            string
+	TraceID               string
 }
 
 type CredentialSource string
@@ -70,6 +74,7 @@ func AuthContextFromContext(ctx context.Context) (AuthContext, bool) {
 
 func cloneAuthContext(auth AuthContext) AuthContext {
 	auth.Audience = slices.Clone(auth.Audience)
+	auth.AuthenticationMethods = slices.Clone(auth.AuthenticationMethods)
 	auth.Scopes = slices.Clone(auth.Scopes)
 	auth.Groups = slices.Clone(auth.Groups)
 	return auth

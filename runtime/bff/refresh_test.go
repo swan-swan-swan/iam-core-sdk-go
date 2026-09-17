@@ -43,6 +43,8 @@ type refreshIssuer struct {
 	RefreshScope                string
 	RefreshAccessScope          string
 	RefreshIDScope              string
+	RefreshIDAuthTime           any
+	RefreshIDAMR                any
 	RefreshAudience             string
 	RefreshSubject              string
 	RefreshUserInfoSubject      string
@@ -122,6 +124,8 @@ func newRefreshTestClient(t *testing.T) (*Client, *memory.Backend, *refreshIssue
 		RefreshUserInfoStatus:      http.StatusOK,
 		RefreshUserInfoContentType: "application/json",
 		RefreshReplacementToken:    "refresh-token-rotated-sensitive",
+		RefreshIDAuthTime:          refreshTestNow.Add(-5 * time.Minute).Unix(),
+		RefreshIDAMR:               []string{"pwd", "otp"},
 		EndSessionStatus:           http.StatusNoContent,
 	}
 	mux := http.NewServeMux()
@@ -209,7 +213,8 @@ func refreshSessionFixture(groups, scopes []string) *session.Session {
 		Auth: core.AuthContext{
 			Subject: testSubject, Issuer: "https://old-issuer.example.test", Audience: []string{testClientID},
 			TokenID: "old-token-id", IssuedAt: refreshTestNow.Add(-time.Minute),
-			ExpiresAt: refreshTestNow.Add(10 * time.Minute), Scopes: append([]string(nil), scopes...),
+			ExpiresAt: refreshTestNow.Add(10 * time.Minute), AuthTime: refreshTestNow.Add(-5 * time.Minute),
+			AuthenticationMethods: []string{"pwd", "otp"}, Scopes: append([]string(nil), scopes...),
 			Groups: append([]string(nil), groups...), Username: "old-user", DisplayName: "Old User",
 			Email: "old@example.test",
 		},
@@ -223,6 +228,7 @@ func cloneSessionForTest(item *session.Session) *session.Session {
 	cloned := *item
 	cloned.Tokens.GrantedScopes = append([]string(nil), item.Tokens.GrantedScopes...)
 	cloned.Auth.Audience = append([]string(nil), item.Auth.Audience...)
+	cloned.Auth.AuthenticationMethods = append([]string(nil), item.Auth.AuthenticationMethods...)
 	cloned.Auth.Scopes = append([]string(nil), item.Auth.Scopes...)
 	cloned.Auth.Groups = append([]string(nil), item.Auth.Groups...)
 	return &cloned
@@ -252,6 +258,7 @@ func (i *refreshIssuer) handleJWKS(w http.ResponseWriter, _ *http.Request) {
 type refreshSnapshot struct {
 	groups, idGroups, userInfoGroups []string
 	scope, accessScope, idScope      string
+	idAuthTime, idAMR                any
 	audience, subject, userSubject   string
 	oauthError, tokenBody            string
 	status                           int
@@ -275,6 +282,7 @@ func (i *refreshIssuer) handleRefresh(w http.ResponseWriter, request *http.Reque
 		idGroups:       append([]string(nil), i.RefreshIDGroups...),
 		userInfoGroups: append([]string(nil), i.RefreshUserInfoGroups...),
 		scope:          i.RefreshScope, accessScope: i.RefreshAccessScope, idScope: i.RefreshIDScope,
+		idAuthTime: i.RefreshIDAuthTime, idAMR: i.RefreshIDAMR,
 		audience: i.RefreshAudience, subject: i.RefreshSubject, userSubject: i.RefreshUserInfoSubject,
 		oauthError: i.RefreshOAuthError, tokenBody: i.RefreshTokenBody,
 		status: i.RefreshStatus, contentType: i.RefreshTokenContentType,
@@ -329,6 +337,12 @@ func (i *refreshIssuer) handleRefresh(w http.ResponseWriter, request *http.Reque
 	}
 	accessClaims["groups"] = append([]string{}, snapshot.groups...)
 	idClaims := i.standardClaims(snapshot.subject, snapshot.audience, "refresh-id-id")
+	if snapshot.idAuthTime != nil {
+		idClaims["auth_time"] = snapshot.idAuthTime
+	}
+	if snapshot.idAMR != nil {
+		idClaims["amr"] = snapshot.idAMR
+	}
 	if idScope != "<absent>" {
 		idClaims["scope"] = idScope
 	}
@@ -1003,6 +1017,67 @@ func TestRefreshPreservesOmittedRotatableTokens(t *testing.T) {
 	if err != nil || after.Tokens.RefreshToken != before.Tokens.RefreshToken || after.Tokens.IDToken != before.Tokens.IDToken ||
 		after.Tokens.AccessToken == before.Tokens.AccessToken {
 		t.Fatal("refresh did not preserve omitted refresh/ID token fields")
+	}
+}
+
+func TestRefreshPreservesAuthenticationContextWithoutIDToken(t *testing.T) {
+	client, backend, issuer := newRefreshTestClient(t)
+	before := seedExpiringSession(t, backend, []string{"old"}, []string{"openid", "groups"})
+	issuer.OmitIDToken = true
+	credential, present, err := client.ResolveSession(requestWithSessionCookie(before.ID))
+	if err != nil || !present {
+		t.Fatalf("ResolveSession() present=%v err=%v", present, err)
+	}
+	after, err := backend.Get(t.Context(), before.ID)
+	if err != nil || !after.Auth.AuthTime.Equal(before.Auth.AuthTime) ||
+		!slices.Equal(after.Auth.AuthenticationMethods, before.Auth.AuthenticationMethods) {
+		t.Fatalf("authentication context after refresh = %#v err=%v", after.Auth, err)
+	}
+	credential.Auth.AuthenticationMethods[0] = "caller-mutation"
+	again, err := backend.Get(t.Context(), before.ID)
+	if err != nil || !slices.Equal(again.Auth.AuthenticationMethods, []string{"pwd", "otp"}) {
+		t.Fatal("refreshed credential authentication methods aliased session state")
+	}
+}
+
+func TestRefreshAcceptsIdenticalAuthenticationContext(t *testing.T) {
+	client, backend, issuer := newRefreshTestClient(t)
+	before := seedExpiringSession(t, backend, []string{"old"}, []string{"openid", "groups"})
+	if _, present, err := client.ResolveSession(requestWithSessionCookie(before.ID)); err != nil || !present {
+		t.Fatalf("ResolveSession() present=%v err=%v", present, err)
+	}
+	after, err := backend.Get(t.Context(), before.ID)
+	if err != nil || !after.Auth.AuthTime.Equal(before.Auth.AuthTime) ||
+		!slices.Equal(after.Auth.AuthenticationMethods, before.Auth.AuthenticationMethods) {
+		t.Fatalf("authentication context after refresh = %#v err=%v", after.Auth, err)
+	}
+	if issuer.RefreshCalls() != 1 {
+		t.Fatalf("refresh calls = %d", issuer.RefreshCalls())
+	}
+}
+
+func TestRefreshRejectsChangedOrMalformedAuthenticationContext(t *testing.T) {
+	tests := map[string]func(*refreshIssuer){
+		"changed auth time": func(issuer *refreshIssuer) {
+			issuer.RefreshIDAuthTime = refreshTestNow.Add(-4 * time.Minute).Unix()
+		},
+		"removed method": func(issuer *refreshIssuer) { issuer.RefreshIDAMR = []string{"pwd"} },
+		"added method":   func(issuer *refreshIssuer) { issuer.RefreshIDAMR = []string{"pwd", "otp", "webauthn"} },
+		"malformed amr":  func(issuer *refreshIssuer) { issuer.RefreshIDAMR = "otp" },
+	}
+	for name, mutate := range tests {
+		t.Run(name, func(t *testing.T) {
+			client, backend, issuer := newRefreshTestClient(t)
+			before := seedExpiringSession(t, backend, []string{"old"}, []string{"openid", "groups"})
+			mutate(issuer)
+			if _, _, err := client.ResolveSession(requestWithSessionCookie(before.ID)); err == nil {
+				t.Fatal("ResolveSession() error = nil")
+			}
+			after, err := backend.Get(t.Context(), before.ID)
+			if err != nil || !reflect.DeepEqual(after, before) {
+				t.Fatal("authentication-context failure partially committed session state")
+			}
+		})
 	}
 }
 

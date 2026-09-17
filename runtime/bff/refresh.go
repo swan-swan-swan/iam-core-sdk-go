@@ -345,6 +345,9 @@ func (c *Client) rebuildRefreshedSession(
 		if !slices.Contains(idAuth.Audience, c.clientID) || !constantTimeEqual(accessAuth.Subject, idAuth.Subject) {
 			return nil, bffError(core.KindUnauthenticated, operation, 0, false)
 		}
+		if !sameAuthenticationContext(current.Auth, idAuth) {
+			return nil, bffError(core.KindUnauthenticated, operation, 0, false)
+		}
 		idScope, idGroups, err = verifiedClaimSources(tokens.idToken, idAuth)
 		if err != nil {
 			return nil, bffError(core.KindProtocol, operation, 0, false)
@@ -365,6 +368,13 @@ func (c *Client) rebuildRefreshedSession(
 		return nil, bffError(core.KindUnauthenticated, operation, 0, false)
 	}
 	auth := cloneAuthContext(accessAuth)
+	if tokens.idToken == "" {
+		auth.AuthTime = current.Auth.AuthTime
+		auth.AuthenticationMethods = slices.Clone(current.Auth.AuthenticationMethods)
+	} else {
+		auth.AuthTime = idAuth.AuthTime
+		auth.AuthenticationMethods = slices.Clone(idAuth.AuthenticationMethods)
+	}
 	auth.Scopes = append([]string(nil), grantedScopes...)
 	if slices.Contains(grantedScopes, "profile") {
 		if identity.usernameSet {
@@ -417,6 +427,11 @@ func (c *Client) rebuildRefreshedSession(
 	}
 	next.Auth = auth
 	return next, nil
+}
+
+func sameAuthenticationContext(left, right core.AuthContext) bool {
+	return left.AuthTime.Equal(right.AuthTime) &&
+		slices.Equal(left.AuthenticationMethods, right.AuthenticationMethods)
 }
 
 func cloneSessionState(item *session.Session) *session.Session {

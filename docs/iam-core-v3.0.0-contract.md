@@ -5,6 +5,22 @@
 v3 保留 Runtime、Management、OIDC/BFF、HTTP PDP、Gin 与 Redis Adapter 的既有安全边界，
 破坏性变更只针对业务权限命名、RouteSpec 与 HTTP Catalog Manifest。
 
+## MFA 认证上下文
+
+已验证 ID Token 的 `auth_time` 与 `amr` 分别映射为 `core.AuthContext.AuthTime` 和
+`AuthenticationMethods`。`auth_time` 必须是合法 OIDC NumericDate；`amr` 必须是至少包含一个
+非空字符串的数组，并要求同时存在合法 `auth_time`。SDK 按首见顺序去重，保留 `pwd`、`otp`、
+`recovery_code` 以及合法未知扩展值。
+
+BFF callback 使用 Access Token 提供授权事实，使用 ID Token 提供 MFA 认证上下文。刷新未返回新
+ID Token 时继承当前 Session 的认证上下文；返回新 ID Token 时必须完整验证，且时间与方法列表均
+与当前 Session 一致，否则失败关闭并保持原 Session 不变。刷新不得把新增方法当作带内 MFA 升级。
+内存与 Redis Session adapter 必须无损保存字段并防止切片别名。
+
+旧服务端省略两个 claim 时仍兼容：`AuthTime` 为零值，`AuthenticationMethods` 为空。应用必须把该
+状态解释为“MFA 未被证明”，分别判断 `otp` 与 `recovery_code`，不得从角色、scope 或当前时间推断
+MFA，也不得把恢复码等同于 OTP。Token、验证码、恢复码和密钥不得进入日志、错误或 Observer。
+
 ## 单一声明
 
 业务服务必须为每条受保护 API 创建一次 `httpauthz.RouteSpec`，字段仅包含：

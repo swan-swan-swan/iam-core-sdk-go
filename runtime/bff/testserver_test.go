@@ -69,6 +69,8 @@ type bffIssuer struct {
 	expectedNonce        string
 	IDTokenNonce         string
 	IDTokenScope         string
+	IDTokenAuthTime      time.Time
+	IDTokenAMR           []string
 	AccessTokenGroups    optionalStrings
 	AccessAudience       string
 	AccessUsername       string
@@ -227,6 +229,12 @@ func (i *bffIssuer) writeTokenResponse(w http.ResponseWriter, form url.Values) {
 	idClaims["nonce"] = nonce
 	if i.IDTokenScope != "<absent>" {
 		idClaims["scope"] = i.IDTokenScope
+	}
+	if !i.IDTokenAuthTime.IsZero() {
+		idClaims["auth_time"] = i.IDTokenAuthTime.Unix()
+	}
+	if i.IDTokenAMR != nil {
+		idClaims["amr"] = append([]string(nil), i.IDTokenAMR...)
 	}
 	putOptionalStrings(idClaims, "groups", i.IDTokenGroups)
 	i.issuedAccessToken = i.sign(accessClaims)

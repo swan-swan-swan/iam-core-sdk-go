@@ -161,7 +161,7 @@ func (r *Runtime) verifyToken(
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
 	}
 	now := numericDateFromTime(r.clock.Now())
-	if strings.TrimSpace(claims.Subject) == "" || strings.TrimSpace(claims.Issuer) == "" ||
+	if strings.TrimSpace(claims.Subject) == "" || claims.Subject != strings.TrimSpace(claims.Subject) || strings.TrimSpace(claims.Issuer) == "" ||
 		strings.TrimSpace(claims.TokenID) == "" || normalizeIssuer(claims.Issuer) != normalizeIssuer(r.metadata.Issuer) ||
 		!r.acceptsAnyAudience(audience) || issuedAt.value.Cmp(now) > 0 || expiresAt.value.Cmp(now) <= 0 ||
 		(notBefore != nil && notBefore.value.Cmp(now) > 0) {
@@ -214,8 +214,9 @@ func (r *Runtime) verifyToken(
 }
 
 func validatedPrincipalType(claims tokenClaims, interactive bool) (string, bool) {
+	machineSubject := strings.HasPrefix(claims.Subject, "op_sa_")
 	if len(claims.SubjectType) == 0 {
-		return "", !strings.HasPrefix(claims.Subject, "op_sa_")
+		return "", !machineSubject
 	}
 	if bytes.Equal(bytes.TrimSpace(claims.SubjectType), []byte("null")) {
 		return "", false
@@ -226,9 +227,9 @@ func validatedPrincipalType(claims tokenClaims, interactive bool) (string, bool)
 	}
 	switch subjectType {
 	case "user":
-		return subjectType, true
+		return subjectType, !machineSubject
 	case "service_account":
-		return subjectType, !interactive && strings.TrimSpace(claims.AuthorizedParty) != ""
+		return subjectType, machineSubject && !interactive && strings.TrimSpace(claims.AuthorizedParty) != ""
 	default:
 		return "", false
 	}

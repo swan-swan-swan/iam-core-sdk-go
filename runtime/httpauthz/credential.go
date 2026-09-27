@@ -103,16 +103,17 @@ func (s *Service) selectCredential(request *http.Request) (core.Credential, erro
 }
 
 func validVerifiedAuthContext(auth core.AuthContext) bool {
-	if strings.TrimSpace(auth.Subject) == "" {
+	if strings.TrimSpace(auth.Subject) == "" || auth.Subject != strings.TrimSpace(auth.Subject) {
 		return false
 	}
+	machineSubject := strings.HasPrefix(auth.Subject, "op_sa_")
 	switch auth.SubjectType {
 	case "":
-		return !strings.HasPrefix(auth.Subject, "op_sa_")
+		return !machineSubject
 	case "user":
-		return true
+		return !machineSubject
 	case "service_account":
-		return strings.TrimSpace(auth.AuthorizedParty) != ""
+		return machineSubject && strings.TrimSpace(auth.AuthorizedParty) != ""
 	default:
 		return false
 	}

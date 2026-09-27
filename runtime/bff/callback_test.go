@@ -26,6 +26,9 @@ func TestInteractivePrincipalRejectsMachineSubject(t *testing.T) {
 	if interactivePrincipal(core.AuthContext{Subject: "op_sa_beacon", AuthorizedParty: "machine-client"}) {
 		t.Fatal("machine subject without type accepted through legacy-user compatibility")
 	}
+	if interactivePrincipal(core.AuthContext{Subject: " op_sa_beacon", AuthorizedParty: "machine-client"}) {
+		t.Fatal("noncanonical machine subject accepted through legacy-user compatibility")
+	}
 }
 
 func TestCallbackCreatesAuthenticatedServerSessionFromVerifiedAccessToken(t *testing.T) {

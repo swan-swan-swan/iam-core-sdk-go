@@ -68,6 +68,7 @@ func TestVerifyAccessTokenValidatesPrincipalTypeAndAuthorizedParty(t *testing.T)
 			claims["azp"] = "portal"
 		},
 		"machine": func(claims map[string]any) {
+			claims["sub"] = "op_sa_beacon"
 			claims["subject_type"] = "service_account"
 			claims["azp"] = "beacon-server-machine"
 		},
@@ -83,8 +84,22 @@ func TestVerifyAccessTokenValidatesPrincipalTypeAndAuthorizedParty(t *testing.T)
 	}
 
 	for name, mutate := range map[string]func(map[string]any){
+		"subject with surrounding whitespace": func(claims map[string]any) { claims["sub"] = " op_usr_1" },
 		"machine subject without type": func(claims map[string]any) {
 			claims["sub"] = "op_sa_beacon"
+			claims["azp"] = "beacon-server-machine"
+		},
+		"spaced machine subject without type": func(claims map[string]any) {
+			claims["sub"] = " op_sa_beacon"
+			claims["azp"] = "beacon-server-machine"
+		},
+		"machine subject declared user": func(claims map[string]any) {
+			claims["sub"] = "op_sa_beacon"
+			claims["subject_type"] = "user"
+		},
+		"user subject declared machine": func(claims map[string]any) {
+			claims["sub"] = "op_usr_1"
+			claims["subject_type"] = "service_account"
 			claims["azp"] = "beacon-server-machine"
 		},
 		"null type":    func(claims map[string]any) { claims["subject_type"] = nil },

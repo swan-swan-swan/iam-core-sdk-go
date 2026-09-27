@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
@@ -24,7 +25,7 @@ func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 		if resultErr != nil {
 			outcome = "error"
 		}
-		observer.Observe(ctx, core.Event{Operation: registrationOperation, Outcome: outcome, CredentialSource: "client_secret_basic", Duration: time.Since(started)})
+		observer.Observe(ctx, core.Event{Operation: registrationOperation, Outcome: outcome, CredentialSource: "bearer", Duration: time.Since(started)})
 	}()
 	manifest, err := r.manifestSnapshot()
 	if err != nil || ctx == nil || ctx.Err() != nil {
@@ -34,13 +35,17 @@ func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 	if err != nil {
 		return Result{}, errCatalogRegistration
 	}
+	token, err := r.config.Tokens.AccessToken(ctx)
+	if err != nil || strings.TrimSpace(token) == "" {
+		return Result{}, errCatalogRegistration
+	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, r.endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return Result{}, errCatalogRegistration
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
-	request.SetBasicAuth(r.config.ClientID, r.config.ClientSecret)
+	request.Header.Set("Authorization", "Bearer "+token)
 	response, err := r.client.Do(request)
 	if err != nil {
 		return Result{}, errCatalogRegistration

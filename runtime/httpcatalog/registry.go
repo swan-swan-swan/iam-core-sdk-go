@@ -1,4 +1,3 @@
-// Package httpcatalog 提供业务服务启动时的 HTTP Resource Catalog 注册能力。
 package httpcatalog
 
 import (
@@ -29,14 +28,14 @@ var errCatalogRegistration = errors.New("http catalog registration failed")
 
 // Config 定义启动目录 Registry 与注册客户端配置。
 type Config struct {
-	BaseURL      string
-	Application  string
-	Service      string
-	Release      string
-	ClientID     string
-	ClientSecret string
-	HTTPClient   *http.Client
-	Observer     core.Observer
+	BaseURL     string
+	Application string
+	Service     string
+	Release     string
+	// Tokens 为每次 Catalog 同步提供当前机器 Access Token；Registry 不缓存令牌。
+	Tokens     core.TokenSource
+	HTTPClient *http.Client
+	Observer   core.Observer
 }
 
 // Route 定义注册协议中的单条路由。
@@ -82,8 +81,7 @@ func NewRegistry(config Config) (*Registry, error) {
 	config.Application = strings.TrimSpace(config.Application)
 	config.Service = strings.TrimSpace(config.Service)
 	config.Release = strings.TrimSpace(config.Release)
-	config.ClientID = strings.TrimSpace(config.ClientID)
-	if config.BaseURL == "" || config.Application == "" || config.Service == "" || config.Release == "" || !strings.HasSuffix(config.ClientID, "-catalog-registrar") || strings.TrimSpace(config.ClientSecret) == "" || (config.Observer != nil && nilcheck.IsNil(config.Observer)) {
+	if config.BaseURL == "" || config.Application == "" || config.Service == "" || config.Release == "" || nilcheck.IsNil(config.Tokens) || (config.Observer != nil && nilcheck.IsNil(config.Observer)) {
 		return nil, errCatalogRegistration
 	}
 	parsed, err := url.Parse(config.BaseURL)

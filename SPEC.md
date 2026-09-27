@@ -5,7 +5,7 @@ repo:
 scope:
   domains:
     - backend
-  description: "IAM Core Go SDK，包含请求链路 Runtime 与受控 Management Client"
+  description: "IAM Core Go SDK，包含请求链路 Runtime、机器主体声明、注入式 Catalog Bearer 与受控 Management Client"
 workflow:
   product_source: standalone
   issue:

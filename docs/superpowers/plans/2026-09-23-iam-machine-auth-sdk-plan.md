@@ -110,7 +110,7 @@ git commit -m "feat(runtime): expose machine principal claims"
 - Consumes: `core.TokenSource`。
 - Produces: `Authorization: Bearer <access-token>` 的 Catalog registration；Manifest 继续包含稳定 `application`、`service`、`release`。
 
-- [ ] **Step 1: 写 Bearer、service 和敏感信息测试**
+- [x] **Step 1: 写 Bearer、service 和敏感信息测试**
 
 ```go
 func TestRegistryUsesInjectedBearerToken(t *testing.T) {
@@ -126,13 +126,13 @@ func TestRegistryUsesInjectedBearerToken(t *testing.T) {
 
 测试同时断言：空或 typed-nil TokenSource 被拒绝；TokenSource 错误和非 2xx 响应不泄露敏感值；调用方 Request 不被修改；Observer 使用 `bearer` 凭据来源。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run: `go test ./runtime/httpcatalog -run 'Bearer|TokenSource|Service' -count=1`
 
 Expected: FAIL，当前 Config 仍要求 `ClientID`/`ClientSecret` 并发送 Basic Auth。
 
-- [ ] **Step 3: 替换 Catalog 认证配置**
+- [x] **Step 3: 替换 Catalog 认证配置**
 
 ```go
 type Config struct {
@@ -148,7 +148,7 @@ type Config struct {
 
 删除 Catalog 专用的 `ClientID` 后缀规则和 `ClientSecret` 字段。`Sync` 每次通过 `Tokens.AccessToken(ctx)` 取得当前令牌，在克隆请求上设置 Bearer Header；Registry 本身不缓存令牌。
 
-- [ ] **Step 4: 增加迁移说明**
+- [x] **Step 4: 增加迁移说明**
 
 **Files:**
 - Modify: `README.md`
@@ -157,7 +157,7 @@ type Config struct {
 
 说明业务服务必须自行实现并注入 `core.TokenSource`，SDK 不提供 Client Credentials 生命周期；Catalog 的重试仍由业务启动生命周期负责。
 
-- [ ] **Step 5: SDK 全量验证并提交**
+- [x] **Step 5: SDK 全量验证并提交**
 
 Run: `go test ./... -race -count=1 && go vet ./... && git diff --check`
 

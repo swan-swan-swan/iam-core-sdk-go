@@ -97,8 +97,16 @@ import ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/adapters
 
 `runtime/httpcatalog` 收集代码拥有的完整 `RouteSpec`。调用方只声明 Name、Method、RouteTemplate
 和 Action；Resource Server、PDP Resource 与 Canonical Resource 由 SDK 确定性派生。独立的
-`*-catalog-registrar` OIDC Client Basic 凭据
-执行单次启动同步。Registry 在同步成功前保持 health down；重试调度由业务进程 lifecycle 负责。
+业务服务通过 `core.TokenSource` 注入当前机器 Access Token，并使用 Bearer 认证执行单次启动同步。
+SDK 不接收 Client Secret，也不负责 Client Credentials 的获取、缓存、刷新或重试。Registry 每次
+`Sync` 都重新读取 Token；在同步成功前保持 health down，重试调度由业务进程 lifecycle 负责。
+
+```go
+registry, err := httpcatalog.NewRegistry(httpcatalog.Config{
+    BaseURL: iamBaseURL, Application: "beacon", Service: "notify-server", Release: release,
+    Tokens: machineTokenSource,
+})
+```
 
 ## 完整路由声明与 Manifest v3
 

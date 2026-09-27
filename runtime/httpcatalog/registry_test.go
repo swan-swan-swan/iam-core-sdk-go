@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpauthz"
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpcatalog"
 )
@@ -15,9 +16,8 @@ import (
 func TestRegistrySyncSendsDeterministicV3Manifest(t *testing.T) {
 	var got httpcatalog.Manifest
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		clientID, secret, ok := r.BasicAuth()
-		if !ok || clientID != "ops-gateway-catalog-registrar" || secret != "secret" {
-			t.Fatal("BasicAuth credentials did not match the registrar")
+		if r.Header.Get("Authorization") != "Bearer machine-token" {
+			t.Fatal("Bearer credential did not match the injected token")
 		}
 		if r.Method != http.MethodPut || r.URL.Path != "/api/v1/http-resource-catalog/registration" {
 			t.Fatalf("request = %s %s", r.Method, r.URL.Path)
@@ -32,7 +32,7 @@ func TestRegistrySyncSendsDeterministicV3Manifest(t *testing.T) {
 
 	registry, err := httpcatalog.NewRegistry(httpcatalog.Config{
 		BaseURL: server.URL, Application: "opsgw", Service: "ops-gateway", Release: "20260819-001",
-		ClientID: "ops-gateway-catalog-registrar", ClientSecret: "secret",
+		Tokens: core.TokenSourceFunc(func(context.Context) (string, error) { return "machine-token", nil }),
 	})
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
@@ -77,7 +77,7 @@ func TestRouteJSONContainsOnlyDeclaredFacts(t *testing.T) {
 func TestRegistryRegisterIsIdempotent(t *testing.T) {
 	registry, err := httpcatalog.NewRegistry(httpcatalog.Config{
 		BaseURL: "http://127.0.0.1:8080", Application: "opsgw", Service: "ops-gateway", Release: "dev",
-		ClientID: "ops-gateway-catalog-registrar", ClientSecret: "secret",
+		Tokens: core.TokenSourceFunc(func(context.Context) (string, error) { return "machine-token", nil }),
 	})
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
@@ -106,7 +106,7 @@ func catalogSpec(t *testing.T, path, name, action string) httpauthz.RouteSpec {
 
 func TestRegistryAllowsSharedActionAndDynamicTemplates(t *testing.T) {
 	for _, path := range []string{"/api/v1/apps/:id", "/api/v1/apps"} {
-		registry, err := httpcatalog.NewRegistry(httpcatalog.Config{BaseURL: "http://127.0.0.1:8080", Application: "opsgw", Service: "ops-gateway", Release: "dev", ClientID: "ops-gateway-catalog-registrar", ClientSecret: "secret"})
+		registry, err := httpcatalog.NewRegistry(httpcatalog.Config{BaseURL: "http://127.0.0.1:8080", Application: "opsgw", Service: "ops-gateway", Release: "dev", Tokens: core.TokenSourceFunc(func(context.Context) (string, error) { return "machine-token", nil })})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -129,7 +129,7 @@ func TestRegistryRejectsMalformedDeclarationsWithoutNormalization(t *testing.T) 
 		func(s *httpauthz.RouteSpec) { s.RouteTemplate = "/apps?token=secret" },
 		func(s *httpauthz.RouteSpec) { s.Action = "opsgw:portal:list" },
 	} {
-		registry, err := httpcatalog.NewRegistry(httpcatalog.Config{BaseURL: "http://127.0.0.1:8080", Application: "opsgw", Service: "ops-gateway", Release: "dev", ClientID: "ops-gateway-catalog-registrar", ClientSecret: "secret"})
+		registry, err := httpcatalog.NewRegistry(httpcatalog.Config{BaseURL: "http://127.0.0.1:8080", Application: "opsgw", Service: "ops-gateway", Release: "dev", Tokens: core.TokenSourceFunc(func(context.Context) (string, error) { return "machine-token", nil })})
 		if err != nil {
 			t.Fatal(err)
 		}

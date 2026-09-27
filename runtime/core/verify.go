@@ -15,21 +15,23 @@ import (
 )
 
 type tokenClaims struct {
-	Subject     string          `json:"sub"`
-	Issuer      string          `json:"iss"`
-	Audience    json.RawMessage `json:"aud"`
-	TokenID     string          `json:"jti"`
-	IssuedAt    json.RawMessage `json:"iat"`
-	NotBefore   json.RawMessage `json:"nbf"`
-	ExpiresAt   json.RawMessage `json:"exp"`
-	AuthTime    json.RawMessage `json:"auth_time"`
-	AMR         json.RawMessage `json:"amr"`
-	Nonce       string          `json:"nonce"`
-	Scope       string          `json:"scope"`
-	Groups      []string        `json:"groups"`
-	Username    string          `json:"username"`
-	DisplayName string          `json:"display_name"`
-	Email       string          `json:"email"`
+	Subject         string          `json:"sub"`
+	SubjectType     string          `json:"subject_type"`
+	AuthorizedParty string          `json:"azp"`
+	Issuer          string          `json:"iss"`
+	Audience        json.RawMessage `json:"aud"`
+	TokenID         string          `json:"jti"`
+	IssuedAt        json.RawMessage `json:"iat"`
+	NotBefore       json.RawMessage `json:"nbf"`
+	ExpiresAt       json.RawMessage `json:"exp"`
+	AuthTime        json.RawMessage `json:"auth_time"`
+	AMR             json.RawMessage `json:"amr"`
+	Nonce           string          `json:"nonce"`
+	Scope           string          `json:"scope"`
+	Groups          []string        `json:"groups"`
+	Username        string          `json:"username"`
+	DisplayName     string          `json:"display_name"`
+	Email           string          `json:"email"`
 }
 
 type logoutTokenClaims struct {
@@ -165,6 +167,9 @@ func (r *Runtime) verifyToken(
 		(notBefore != nil && notBefore.value.Cmp(now) > 0) {
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
 	}
+	if !validPrincipalClaims(claims, parseAuthenticationContext) {
+		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
+	}
 	if requireNonce && (strings.TrimSpace(claims.Nonce) == "" ||
 		subtle.ConstantTimeCompare([]byte(claims.Nonce), []byte(expectedNonce)) != 1) {
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
@@ -183,7 +188,8 @@ func (r *Runtime) verifyToken(
 	}
 	scopes := normalizeValues(strings.Fields(claims.Scope))
 	auth = AuthContext{
-		Subject: claims.Subject, Issuer: claims.Issuer, Audience: append([]string(nil), audience...),
+		Subject: claims.Subject, SubjectType: claims.SubjectType, AuthorizedParty: claims.AuthorizedParty,
+		Issuer: claims.Issuer, Audience: append([]string(nil), audience...),
 		TokenID: claims.TokenID, IssuedAt: issuedAt.asTime(), ExpiresAt: expiresAt.asTime(),
 		AuthenticationMethods: authenticationMethods,
 		Scopes:                append([]string(nil), scopes...), Groups: []string{},
@@ -204,6 +210,19 @@ func (r *Runtime) verifyToken(
 		auth.Groups = normalizeGroups(claims.Groups)
 	}
 	return auth, nil
+}
+
+func validPrincipalClaims(claims tokenClaims, interactive bool) bool {
+	switch claims.SubjectType {
+	case "":
+		return true
+	case "user":
+		return true
+	case "service_account":
+		return !interactive && strings.TrimSpace(claims.AuthorizedParty) != ""
+	default:
+		return false
+	}
 }
 
 func decodeAuthenticationMethods(raw json.RawMessage) ([]string, error) {

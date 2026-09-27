@@ -72,3 +72,16 @@ func TestAuthContextFromContextPreservesInitializedEmptyGroups(t *testing.T) {
 		t.Fatal("second Groups copy was not preserved as an initialized empty slice")
 	}
 }
+
+func TestAuthContextFromContextPreservesMachinePrincipal(t *testing.T) {
+	original := core.AuthContext{
+		Subject:         "op_sa_beacon",
+		SubjectType:     "service_account",
+		AuthorizedParty: "beacon-server-machine",
+	}
+	ctx := core.ContextWithAuthContext(context.Background(), original)
+	got, ok := core.AuthContextFromContext(ctx)
+	if !ok || got.SubjectType != "service_account" || got.AuthorizedParty != "beacon-server-machine" {
+		t.Fatalf("machine principal = %#v, %v", got, ok)
+	}
+}

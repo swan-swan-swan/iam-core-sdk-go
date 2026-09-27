@@ -28,6 +28,23 @@ import (
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
 )
 
+func TestSamePrincipalContextIncludesSubjectTypeAndAuthorizedParty(t *testing.T) {
+	base := core.AuthContext{Subject: "op_usr_1", SubjectType: "user", AuthorizedParty: "portal"}
+	if !samePrincipalContext(base, base) {
+		t.Fatal("identical principal context rejected")
+	}
+	changedType := base
+	changedType.SubjectType = "service_account"
+	if samePrincipalContext(base, changedType) {
+		t.Fatal("principal type change accepted")
+	}
+	changedParty := base
+	changedParty.AuthorizedParty = "other-client"
+	if samePrincipalContext(base, changedParty) {
+		t.Fatal("authorized party change accepted")
+	}
+}
+
 var refreshTestNow = time.Unix(1_800_100_000, 0).UTC()
 
 type refreshIssuer struct {

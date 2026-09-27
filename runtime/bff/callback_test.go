@@ -10,7 +10,20 @@ import (
 	"time"
 
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/bff/session"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
 )
+
+func TestInteractivePrincipalRejectsMachineSubject(t *testing.T) {
+	if interactivePrincipal(core.AuthContext{Subject: "op_sa_beacon", SubjectType: "service_account", AuthorizedParty: "machine-client"}) {
+		t.Fatal("machine subject accepted for BFF login")
+	}
+	if !interactivePrincipal(core.AuthContext{Subject: "op_usr_1"}) {
+		t.Fatal("legacy user subject rejected")
+	}
+	if !interactivePrincipal(core.AuthContext{Subject: "op_usr_1", SubjectType: "user", AuthorizedParty: "portal"}) {
+		t.Fatal("declared user subject rejected")
+	}
+}
 
 func TestCallbackCreatesAuthenticatedServerSessionFromVerifiedAccessToken(t *testing.T) {
 	client, _, issuer := newBFFTestClient(t)

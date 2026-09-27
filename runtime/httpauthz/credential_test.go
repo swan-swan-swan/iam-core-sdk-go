@@ -24,6 +24,31 @@ func TestCloneMiddlewareAuthContextCopiesAuthenticationMethods(t *testing.T) {
 	}
 }
 
+func TestValidVerifiedAuthContextValidatesMachinePrincipal(t *testing.T) {
+	for name, auth := range map[string]core.AuthContext{
+		"legacy user":   {Subject: "op_usr_1"},
+		"declared user": {Subject: "op_usr_1", SubjectType: "user", AuthorizedParty: "portal"},
+		"machine":       {Subject: "op_sa_beacon", SubjectType: "service_account", AuthorizedParty: "beacon-server"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if !validVerifiedAuthContext(auth) {
+				t.Fatalf("valid auth rejected: %#v", auth)
+			}
+		})
+	}
+	for name, auth := range map[string]core.AuthContext{
+		"blank subject":         {SubjectType: "user"},
+		"unknown type":          {Subject: "op_usr_1", SubjectType: "robot"},
+		"machine without party": {Subject: "op_sa_beacon", SubjectType: "service_account"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if validVerifiedAuthContext(auth) {
+				t.Fatalf("invalid auth accepted: %#v", auth)
+			}
+		})
+	}
+}
+
 func TestCredentialHeaderDistinguishesMissingFromValidBearer(t *testing.T) {
 	missing := httptest.NewRequest(http.MethodGet, "/", nil)
 	if token, present, err := credentialHeader(missing); err != nil || present || token != "" {

@@ -44,6 +44,78 @@ func TestVerifyAccessTokenReturnsTypedGroupsAndActualScope(t *testing.T) {
 	}
 }
 
+func TestVerifyAccessTokenExposesMachinePrincipal(t *testing.T) {
+	runtime, signer := newCoreRuntime(t)
+	claims := signer.validClaims()
+	claims["sub"] = "op_sa_beacon"
+	claims["subject_type"] = "service_account"
+	claims["azp"] = "beacon-server-machine"
+
+	got, err := runtime.VerifyAccessToken(t.Context(), signer.AccessToken(t, claims))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.SubjectType != "service_account" || got.AuthorizedParty != "beacon-server-machine" {
+		t.Fatalf("machine principal = %#v", got)
+	}
+}
+
+func TestVerifyAccessTokenValidatesPrincipalTypeAndAuthorizedParty(t *testing.T) {
+	for name, mutate := range map[string]func(map[string]any){
+		"legacy user": func(claims map[string]any) {},
+		"declared user": func(claims map[string]any) {
+			claims["subject_type"] = "user"
+			claims["azp"] = "portal"
+		},
+		"machine": func(claims map[string]any) {
+			claims["subject_type"] = "service_account"
+			claims["azp"] = "beacon-server-machine"
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runtime, signer := newCoreRuntime(t)
+			claims := signer.validClaims()
+			mutate(claims)
+			if _, err := runtime.VerifyAccessToken(t.Context(), signer.AccessToken(t, claims)); err != nil {
+				t.Fatalf("valid principal rejected: %v", err)
+			}
+		})
+	}
+
+	for name, mutate := range map[string]func(map[string]any){
+		"unknown type": func(claims map[string]any) { claims["subject_type"] = "robot" },
+		"blank type":   func(claims map[string]any) { claims["subject_type"] = " " },
+		"machine without azp": func(claims map[string]any) {
+			claims["subject_type"] = "service_account"
+			delete(claims, "azp")
+		},
+		"machine blank azp": func(claims map[string]any) {
+			claims["subject_type"] = "service_account"
+			claims["azp"] = " "
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runtime, signer := newCoreRuntime(t)
+			claims := signer.validClaims()
+			mutate(claims)
+			if _, err := runtime.VerifyAccessToken(t.Context(), signer.AccessToken(t, claims)); err == nil {
+				t.Fatal("invalid principal accepted")
+			}
+		})
+	}
+}
+
+func TestVerifyIDTokenRejectsMachinePrincipal(t *testing.T) {
+	runtime, signer := newCoreRuntime(t)
+	claims := signer.validClaims()
+	claims["nonce"] = "nonce-1"
+	claims["subject_type"] = "service_account"
+	claims["azp"] = "beacon-server-machine"
+	if _, err := runtime.VerifyIDToken(t.Context(), signer.AccessToken(t, claims), "nonce-1"); err == nil {
+		t.Fatal("machine principal accepted as interactive ID token")
+	}
+}
+
 func TestVerifyIDTokenReturnsNormalizedAuthenticationContext(t *testing.T) {
 	runtime, signer := newCoreRuntime(t)
 	claims := signer.validClaims()

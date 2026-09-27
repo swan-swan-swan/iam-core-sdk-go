@@ -61,7 +61,7 @@ verification:
 - Produces: `core.AuthContext.SubjectType`、`core.AuthContext.AuthorizedParty`。
 - Consumes: JWT `subject_type` 与 `azp`。
 
-- [ ] **Step 1: 写机器声明解析、未知类型和防御性复制测试**
+- [x] **Step 1: 写机器声明解析、未知类型和防御性复制测试**
 
 ```go
 func TestVerifyAccessTokenExposesMachinePrincipal(t *testing.T) {
@@ -74,23 +74,23 @@ func TestVerifyAccessTokenExposesMachinePrincipal(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run: `go test ./runtime/core ./runtime/bff ./runtime/httpauthz -run 'SubjectType|AuthorizedParty|AuthContext' -count=1`
 
 Expected: FAIL，`tokenClaims` 与 `AuthContext` 尚未暴露两个字段。
 
-- [ ] **Step 3: 实现严格声明解析和上下文传播**
+- [x] **Step 3: 实现严格声明解析和上下文传播**
 
 访问令牌允许现有用户主体与 `service_account`；机器主体必须同时具有非空 `sub`、`subject_type=service_account` 和 `azp`。ID Token/BFF 会话继续使用用户合同，不将机器主体引入交互式登录。
 
-- [ ] **Step 4: 验证 Runtime 与 BFF 回归**
+- [x] **Step 4: 验证 Runtime 与 BFF 回归**
 
 Run: `go test ./runtime/core ./runtime/bff ./runtime/httpauthz -count=1`
 
 Expected: PASS；现有用户 Token 行为不变。
 
-- [ ] **Step 5: 提交任务**
+- [x] **Step 5: 提交任务**
 
 ```bash
 git add runtime/core runtime/bff runtime/httpauthz

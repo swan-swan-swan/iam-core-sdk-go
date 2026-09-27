@@ -327,8 +327,8 @@ func (c *Client) rebuildRefreshedSession(
 	if err != nil {
 		return nil, err
 	}
-	if !slices.Contains(accessAuth.Audience, c.clientID) ||
-		!constantTimeEqual(current.Auth.Subject, accessAuth.Subject) {
+	if !interactivePrincipal(accessAuth) || !slices.Contains(accessAuth.Audience, c.clientID) ||
+		!samePrincipalContext(current.Auth, accessAuth) {
 		return nil, bffError(core.KindUnauthenticated, operation, 0, false)
 	}
 	accessScope, accessGroups, err := verifiedClaimSources(tokens.accessToken, accessAuth)
@@ -342,7 +342,8 @@ func (c *Client) rebuildRefreshedSession(
 		if err != nil {
 			return nil, err
 		}
-		if !slices.Contains(idAuth.Audience, c.clientID) || !constantTimeEqual(accessAuth.Subject, idAuth.Subject) {
+		if !interactivePrincipal(idAuth) || !slices.Contains(idAuth.Audience, c.clientID) ||
+			!samePrincipalContext(accessAuth, idAuth) {
 			return nil, bffError(core.KindUnauthenticated, operation, 0, false)
 		}
 		if !sameAuthenticationContext(current.Auth, idAuth) {
@@ -432,6 +433,21 @@ func (c *Client) rebuildRefreshedSession(
 func sameAuthenticationContext(left, right core.AuthContext) bool {
 	return left.AuthTime.Equal(right.AuthTime) &&
 		slices.Equal(left.AuthenticationMethods, right.AuthenticationMethods)
+}
+
+func samePrincipalContext(left, right core.AuthContext) bool {
+	if !constantTimeEqual(left.Subject, right.Subject) || principalType(left) != principalType(right) {
+		return false
+	}
+	return left.AuthorizedParty == "" || right.AuthorizedParty == "" ||
+		constantTimeEqual(left.AuthorizedParty, right.AuthorizedParty)
+}
+
+func principalType(auth core.AuthContext) string {
+	if auth.SubjectType == "" {
+		return "user"
+	}
+	return auth.SubjectType
 }
 
 func cloneSessionState(item *session.Session) *session.Session {

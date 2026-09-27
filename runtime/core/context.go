@@ -7,13 +7,17 @@ import (
 )
 
 type AuthContext struct {
-	Subject   string
-	Issuer    string
-	Audience  []string
-	TokenID   string
-	IssuedAt  time.Time
-	NotBefore time.Time
-	ExpiresAt time.Time
+	Subject string
+	// SubjectType 是已验证令牌声明的主体类型；空值仅表示兼容旧用户令牌。
+	SubjectType string
+	// AuthorizedParty 是已验证令牌中的授权客户端标识。
+	AuthorizedParty string
+	Issuer          string
+	Audience        []string
+	TokenID         string
+	IssuedAt        time.Time
+	NotBefore       time.Time
+	ExpiresAt       time.Time
 	// AuthTime 是当前认证上下文最初建立的时间。
 	AuthTime time.Time
 	// AuthenticationMethods 是已验证令牌声明的认证方式，调用方不得据此推断未声明的方法。

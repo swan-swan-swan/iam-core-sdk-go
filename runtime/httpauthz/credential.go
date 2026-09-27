@@ -75,7 +75,7 @@ func (s *Service) selectCredential(request *http.Request) (core.Credential, erro
 		if err != nil {
 			return core.Credential{}, err
 		}
-		if strings.TrimSpace(auth.Subject) == "" {
+		if !validVerifiedAuthContext(auth) {
 			return core.Credential{}, credentialError(core.KindUnauthenticated)
 		}
 		capturedToken := token
@@ -95,11 +95,25 @@ func (s *Service) selectCredential(request *http.Request) (core.Credential, erro
 		return core.Credential{}, err
 	}
 	if !present || credential.Source != core.CredentialSession || !validSessionBinding(credential.SessionID) ||
-		strings.TrimSpace(credential.Auth.Subject) == "" || nilcheck.IsNil(credential.Tokens) {
+		!validVerifiedAuthContext(credential.Auth) || nilcheck.IsNil(credential.Tokens) {
 		return core.Credential{}, credentialError(core.KindUnauthenticated)
 	}
 	credential.Auth = cloneMiddlewareAuthContext(credential.Auth)
 	return credential, nil
+}
+
+func validVerifiedAuthContext(auth core.AuthContext) bool {
+	if strings.TrimSpace(auth.Subject) == "" {
+		return false
+	}
+	switch auth.SubjectType {
+	case "", "user":
+		return true
+	case "service_account":
+		return strings.TrimSpace(auth.AuthorizedParty) != ""
+	default:
+		return false
+	}
 }
 
 func cloneMiddlewareAuthContext(auth core.AuthContext) core.AuthContext {

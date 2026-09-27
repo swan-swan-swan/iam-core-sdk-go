@@ -86,6 +86,9 @@ func (c *Client) completeCallback(w http.ResponseWriter, request *http.Request) 
 	if err != nil {
 		return err
 	}
+	if !interactivePrincipal(idAuth) || !interactivePrincipal(accessAuth) {
+		return bffError(core.KindUnauthenticated, operation, 0, false)
+	}
 	if !slices.Contains(accessAuth.Audience, c.clientID) || !slices.Contains(idAuth.Audience, c.clientID) ||
 		!constantTimeEqual(accessAuth.Subject, idAuth.Subject) {
 		return bffError(core.KindUnauthenticated, operation, 0, false)
@@ -233,4 +236,8 @@ func cloneAuthContext(auth core.AuthContext) core.AuthContext {
 	auth.Scopes = slices.Clone(auth.Scopes)
 	auth.Groups = slices.Clone(auth.Groups)
 	return auth
+}
+
+func interactivePrincipal(auth core.AuthContext) bool {
+	return strings.TrimSpace(auth.Subject) != "" && (auth.SubjectType == "" || auth.SubjectType == "user")
 }

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
-	"strings"
 	"time"
 
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
@@ -36,7 +35,7 @@ func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 		return Result{}, errCatalogRegistration
 	}
 	token, err := r.config.Tokens.AccessToken(ctx)
-	if err != nil || strings.TrimSpace(token) == "" {
+	if err != nil || !validBearerToken(token) {
 		return Result{}, errCatalogRegistration
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, r.endpoint, bytes.NewReader(payload))
@@ -64,4 +63,30 @@ func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 		return Result{}, errCatalogRegistration
 	}
 	return envelope.Data, nil
+}
+
+func validBearerToken(token string) bool {
+	bodySeen := false
+	paddingSeen := false
+	for index := 0; index < len(token); index++ {
+		character := token[index]
+		if character == '=' {
+			if !bodySeen {
+				return false
+			}
+			paddingSeen = true
+			continue
+		}
+		if paddingSeen || !validBearerBodyCharacter(character) {
+			return false
+		}
+		bodySeen = true
+	}
+	return bodySeen
+}
+
+func validBearerBodyCharacter(character byte) bool {
+	return (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') ||
+		(character >= '0' && character <= '9') || character == '-' || character == '.' || character == '_' ||
+		character == '~' || character == '+' || character == '/'
 }

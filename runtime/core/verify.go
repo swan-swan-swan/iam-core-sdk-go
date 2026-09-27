@@ -16,7 +16,7 @@ import (
 
 type tokenClaims struct {
 	Subject         string          `json:"sub"`
-	SubjectType     string          `json:"subject_type"`
+	SubjectType     json.RawMessage `json:"subject_type"`
 	AuthorizedParty string          `json:"azp"`
 	Issuer          string          `json:"iss"`
 	Audience        json.RawMessage `json:"aud"`
@@ -167,7 +167,8 @@ func (r *Runtime) verifyToken(
 		(notBefore != nil && notBefore.value.Cmp(now) > 0) {
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
 	}
-	if !validPrincipalClaims(claims, parseAuthenticationContext) {
+	subjectType, principalValid := validatedPrincipalType(claims, parseAuthenticationContext)
+	if !principalValid {
 		return AuthContext{}, coreError(KindUnauthenticated, operation, 0, false)
 	}
 	if requireNonce && (strings.TrimSpace(claims.Nonce) == "" ||
@@ -188,7 +189,7 @@ func (r *Runtime) verifyToken(
 	}
 	scopes := normalizeValues(strings.Fields(claims.Scope))
 	auth = AuthContext{
-		Subject: claims.Subject, SubjectType: claims.SubjectType, AuthorizedParty: claims.AuthorizedParty,
+		Subject: claims.Subject, SubjectType: subjectType, AuthorizedParty: claims.AuthorizedParty,
 		Issuer: claims.Issuer, Audience: append([]string(nil), audience...),
 		TokenID: claims.TokenID, IssuedAt: issuedAt.asTime(), ExpiresAt: expiresAt.asTime(),
 		AuthenticationMethods: authenticationMethods,
@@ -212,16 +213,24 @@ func (r *Runtime) verifyToken(
 	return auth, nil
 }
 
-func validPrincipalClaims(claims tokenClaims, interactive bool) bool {
-	switch claims.SubjectType {
-	case "":
-		return true
+func validatedPrincipalType(claims tokenClaims, interactive bool) (string, bool) {
+	if len(claims.SubjectType) == 0 {
+		return "", !strings.HasPrefix(claims.Subject, "op_sa_")
+	}
+	if bytes.Equal(bytes.TrimSpace(claims.SubjectType), []byte("null")) {
+		return "", false
+	}
+	var subjectType string
+	if json.Unmarshal(claims.SubjectType, &subjectType) != nil || subjectType == "" {
+		return "", false
+	}
+	switch subjectType {
 	case "user":
-		return true
+		return subjectType, true
 	case "service_account":
-		return !interactive && strings.TrimSpace(claims.AuthorizedParty) != ""
+		return subjectType, !interactive && strings.TrimSpace(claims.AuthorizedParty) != ""
 	default:
-		return false
+		return "", false
 	}
 }
 

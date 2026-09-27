@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
@@ -108,6 +109,41 @@ func TestRegistryBearerFailuresDoNotLeakSensitiveValues(t *testing.T) {
 			}
 			testkit.AssertNoLeak(t, err.Error(), token, providerSecret, responseSecret)
 		})
+	}
+}
+
+func TestRegistryRejectsInvalidBearerBeforeNetwork(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		requests.Add(1)
+	}))
+	defer server.Close()
+
+	for name, token := range map[string]string{
+		"leading space":  " machine-token",
+		"embedded space": "machine token",
+		"control":        "machine-token\n",
+		"padding body":   "machine=token",
+		"non ascii":      "machine-tokén",
+	} {
+		t.Run(name, func(t *testing.T) {
+			registry, err := httpcatalog.NewRegistry(httpcatalog.Config{
+				BaseURL: server.URL, Application: "beacon", Service: "notify-server", Release: "test",
+				Tokens: core.TokenSourceFunc(func(context.Context) (string, error) { return token, nil }),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := registry.Register(catalogSpec(t, "/api/v1/notifications", "notify.task.select", "beacon:notify:select")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := registry.Sync(t.Context()); err == nil {
+				t.Fatal("invalid bearer accepted")
+			}
+		})
+	}
+	if got := requests.Load(); got != 0 {
+		t.Fatalf("invalid bearer triggered %d requests", got)
 	}
 }
 

@@ -239,5 +239,6 @@ func cloneAuthContext(auth core.AuthContext) core.AuthContext {
 }
 
 func interactivePrincipal(auth core.AuthContext) bool {
-	return strings.TrimSpace(auth.Subject) != "" && (auth.SubjectType == "" || auth.SubjectType == "user")
+	return strings.TrimSpace(auth.Subject) != "" && !strings.HasPrefix(auth.Subject, "op_sa_") &&
+		(auth.SubjectType == "" || auth.SubjectType == "user")
 }

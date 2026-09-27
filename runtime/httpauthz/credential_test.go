@@ -40,6 +40,7 @@ func TestValidVerifiedAuthContextValidatesMachinePrincipal(t *testing.T) {
 		"blank subject":         {SubjectType: "user"},
 		"unknown type":          {Subject: "op_usr_1", SubjectType: "robot"},
 		"machine without party": {Subject: "op_sa_beacon", SubjectType: "service_account"},
+		"machine without type":  {Subject: "op_sa_beacon", AuthorizedParty: "machine-client"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			if validVerifiedAuthContext(auth) {

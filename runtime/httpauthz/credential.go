@@ -107,7 +107,9 @@ func validVerifiedAuthContext(auth core.AuthContext) bool {
 		return false
 	}
 	switch auth.SubjectType {
-	case "", "user":
+	case "":
+		return !strings.HasPrefix(auth.Subject, "op_sa_")
+	case "user":
 		return true
 	case "service_account":
 		return strings.TrimSpace(auth.AuthorizedParty) != ""

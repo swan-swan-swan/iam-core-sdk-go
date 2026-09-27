@@ -83,6 +83,12 @@ func TestVerifyAccessTokenValidatesPrincipalTypeAndAuthorizedParty(t *testing.T)
 	}
 
 	for name, mutate := range map[string]func(map[string]any){
+		"machine subject without type": func(claims map[string]any) {
+			claims["sub"] = "op_sa_beacon"
+			claims["azp"] = "beacon-server-machine"
+		},
+		"null type":    func(claims map[string]any) { claims["subject_type"] = nil },
+		"empty type":   func(claims map[string]any) { claims["subject_type"] = "" },
 		"unknown type": func(claims map[string]any) { claims["subject_type"] = "robot" },
 		"blank type":   func(claims map[string]any) { claims["subject_type"] = " " },
 		"machine without azp": func(claims map[string]any) {

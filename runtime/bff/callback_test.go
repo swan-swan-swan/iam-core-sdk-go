@@ -23,6 +23,9 @@ func TestInteractivePrincipalRejectsMachineSubject(t *testing.T) {
 	if !interactivePrincipal(core.AuthContext{Subject: "op_usr_1", SubjectType: "user", AuthorizedParty: "portal"}) {
 		t.Fatal("declared user subject rejected")
 	}
+	if interactivePrincipal(core.AuthContext{Subject: "op_sa_beacon", AuthorizedParty: "machine-client"}) {
+		t.Fatal("machine subject without type accepted through legacy-user compatibility")
+	}
 }
 
 func TestCallbackCreatesAuthenticatedServerSessionFromVerifiedAccessToken(t *testing.T) {

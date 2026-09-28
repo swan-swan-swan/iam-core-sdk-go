@@ -4,6 +4,19 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v3.1.0
+
+### Machine identity and Catalog registration
+
+- Exposed verified machine principal type and authorized party claims, with fail-closed checks for
+  unknown or contradictory identity fields.
+- Replaced Catalog Basic credentials with an injected `core.TokenSource`; the SDK sends the current
+  machine Access Token as Bearer and leaves acquisition, caching, and refresh to the caller.
+- Preserved validated MFA authentication context across BFF callback and refresh, while keeping
+  legacy user tokens without those claims compatible for their remaining lifetime.
+- Existing `v3.0.0` Catalog callers must migrate from `ClientID`/`ClientSecret` to `Tokens` and run
+  against IAM Core Service Account and service-scoped Catalog support.
+
 ## v3.0.0
 
 ### Business authorization contract v3

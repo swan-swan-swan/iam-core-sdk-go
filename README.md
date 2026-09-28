@@ -1,6 +1,6 @@
 # IAM Core Go SDK
 
-本仓库提供面向 IAM Core v1.9.0 的 Go SDK。当前开发中的 `v3.0.0` 使用单一 Go Module
+本仓库提供面向 IAM Core v1.9.0 的 Go SDK。当前 `v3.1.0` 使用单一 Go Module
 `github.com/swan-swan-swan/iam-core-sdk-go/v3`，并在同一版本中明确划分两类能力：
 
 - `runtime/*`：业务请求链路中的 OIDC/BFF、HTTP Resource Server、Gin 与 Redis adapter。
@@ -15,20 +15,21 @@
 RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 
 最低 Go 版本为 1.24。协议边界见
+[SDK v3.1.0 机器身份契约](docs/iam-core-v3.1.0-contract.md)及
 [SDK v3.0.0 统一授权契约](docs/iam-core-v3.0.0-contract.md)，版本矩阵见
 [COMPATIBILITY.md](COMPATIBILITY.md)。
 
 ## 安装
 
-根 Module 同时包含 Runtime、Management、Gin Adapter 与 Redis Adapter。v3.0.0 正式发布后安装：
+根 Module 同时包含 Runtime、Management、Gin Adapter 与 Redis Adapter。安装当前版本：
 
 ```bash
-go get github.com/swan-swan-swan/iam-core-sdk-go/v3@v3.0.0
+go get github.com/swan-swan-swan/iam-core-sdk-go/v3@v3.1.0
 ```
 
 根 Module 的依赖图包含 Gin 和 go-redis，但未 import 对应 Adapter 的程序不会编译或链接这些
 package。Docker、Moby 和 Testcontainers 仍只属于仓库内既有 integration 测试 Module，不发布。
-SDK 每个版本只创建一个根标签，例如 `v3.0.0`；当前 VERSION 已准备为 3.0.0，本地不创建标签。
+SDK 每个版本只创建一个根标签，例如 `v3.1.0`；`dev` 推送触发仓库发布流程合并到 `main` 并创建标签。
 
 ## 能力边界
 

@@ -15,6 +15,7 @@
 | v1.x | `github.com/swan-swan-swan/iam-core-sdk-go` | IAM Core v1.9.0 stable Runtime/Management contract | 1.24+ | Stable single-Module Runtime、Management、Gin/Redis Adapter API |
 | v2.0.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v2` | IAM Core unified authorization / Manifest v2 extension | 1.24+ | 严格公共命名、完整 RouteSpec、Route Name 派生 Resource、一个 Action 多路由 |
 | v3.0.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core business authorization / Manifest v3 | 1.24+ | lower-kebab 业务权限、直接 Route Name Resource、四字段 RouteSpec、一个 Action 多 API |
+| v3.1.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core Service Account、机器 Bearer Catalog 与 Manifest v3 | 1.24+ | 验证机器主体 `subject_type`/`azp`；Catalog 由调用方注入 `core.TokenSource`；BFF 保留已验证 MFA 上下文 |
 
 `v0.3.x` 不与 `v0.2.x` 源码兼容，也没有 deprecated wrapper；消费项目必须按迁移指南更换
 Module 和 import。Runtime 延续 PKCE S256、Client groups、真实 granted scopes、Manifest、
@@ -63,6 +64,13 @@ lower-snake 内部 domain，业务 server 仅接受 lower-kebab domain；业务 
 
 Go semantic import versioning 要求 v3 根 module 为 `github.com/swan-swan-swan/iam-core-sdk-go/v3`。
 消费方必须在 IAM Core 支持 Manifest v3 后协调升级；v2 与 v3 不提供永久双轨或兼容 replace。
+
+`v3.1.0` 的 `httpcatalog.Config` 使用 `Tokens core.TokenSource`，移除了 `ClientID` 和 `ClientSecret`；
+旧调用方需要在自己的服务中获取并缓存 `client_credentials` Access Token，再注入 `Tokens`。
+Catalog 登记改用机器 Bearer，要求 IAM Core 已启用 Service Account 和按 service 隔离的目录登记。
+这是 `v3.0.0` Catalog 调用点需要迁移的源码与运行时变化；不能只升级依赖而保留 Basic 凭据配置。
+机器 Access Token 必须显式包含 `subject_type=service_account` 和稳定 `op_sa_` 主体 ID；
+旧用户 Token 缺少 `subject_type` 时只在剩余有效期内按用户身份兼容。未知或矛盾的主体声明失败关闭。
 
 v3 的 `core.AuthContext` 以新增字段方式提供 `AuthTime` 与 `AuthenticationMethods`。字段访问和使用
 字段名的 keyed struct literal 保持源码兼容；未写字段名的 unkeyed struct literal 会因字段数量变化而

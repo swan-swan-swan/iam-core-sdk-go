@@ -79,7 +79,7 @@ git commit -m "feat(management): query minimal user directory"
 **Interfaces:**
 - Produces: `New(transport)`、`BatchResolve(ctx, input)`、`Channel`、`SubjectResult`、`Destination`。
 
-- [ ] **Step 1: 写输入校验和响应模型 RED 测试**
+- [x] **Step 1: 写输入校验和响应模型 RED 测试**
 
 ```go
 func TestBatchResolveRejectsMoreThanOneHundredSubjects(t *testing.T) {
@@ -91,15 +91,15 @@ func TestBatchResolveRejectsMoreThanOneHundredSubjects(t *testing.T) {
 
 覆盖空主体、重复主体、未知渠道、响应顺序、active/inactive/not_found、可用/缺失目的地和调用方输入不被修改。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run: `go test ./management/notificationcontacts -count=1`
 
-- [ ] **Step 3: 复用 management transport 实现 BatchResolve**
+- [x] **Step 3: 复用 management transport 实现 BatchResolve**
 
 客户端向 `POST /api/v1/notification-contacts:batch-resolve` 发送请求；去重保留首次出现顺序。方法返回现有 `management.Metadata`，不在 SDK 内做业务重试。
 
-- [ ] **Step 4: 验证并提交**
+- [x] **Step 4: 验证并提交**
 
 Run: `go test ./management/notificationcontacts -count=1 && git diff --check`
 

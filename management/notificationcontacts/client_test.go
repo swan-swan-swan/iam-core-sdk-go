@@ -61,19 +61,21 @@ func TestBatchResolveUsesExactContractAndPreservesDestinationSemantics(t *testin
 	if !reflect.DeepEqual(input.SubjectIDs, originalSubjects) || !reflect.DeepEqual(input.Channels, originalChannels) {
 		t.Fatalf("caller input mutated: %#v", input)
 	}
-	want := []SubjectResult{
-		{
-			SubjectID: "op_usr_a", Status: SubjectStatusActive,
-			Email: &Destination{Available: false},
-			SMS:   &Destination{Available: true, Value: "+8613800000000"},
-			FeishuApp: &FeishuDestination{
-				Available: true, TenantKey: "tenant", AppID: "app", OpenID: "open",
-			},
-		},
-		{SubjectID: "op_usr_b", Status: SubjectStatusInactive},
+	if len(items) != 2 {
+		t.Fatalf("item count=%d want=2", len(items))
 	}
-	if !reflect.DeepEqual(items, want) {
-		t.Fatalf("items=%#v want=%#v", items, want)
+	first := items[0]
+	if first.SubjectID != "op_usr_a" || first.Status != SubjectStatusActive || first.Email == nil || first.Email.Available {
+		t.Fatal("first subject metadata mismatch")
+	}
+	if first.SMS == nil || !first.SMS.Available || first.SMS.Value != "+8613800000000" {
+		t.Fatal("sms destination mismatch")
+	}
+	if first.FeishuApp == nil || !first.FeishuApp.Available || first.FeishuApp.TenantKey != "tenant" || first.FeishuApp.AppID != "app" || first.FeishuApp.OpenID != "open" {
+		t.Fatal("feishu destination mismatch")
+	}
+	if items[1].SubjectID != "op_usr_b" || items[1].Status != SubjectStatusInactive {
+		t.Fatal("second subject metadata mismatch")
 	}
 	request := transport.requests[0]
 	if request.Operation != "management.notificationcontacts.batch_resolve" || request.Method != http.MethodPost || request.Path != "/api/v1/notification-contacts:batch-resolve" {

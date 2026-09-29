@@ -48,19 +48,19 @@ verification:
 **Interfaces:**
 - Produces: `New(transport)`、`Search(ctx, query, limit)`、`BatchGet(ctx, subjectIDs)`、`UserStatus`。
 
-- [ ] **Step 1: 写搜索、批量校验和非敏感模型 RED 测试**
+- [x] **Step 1: 写搜索、批量校验和非敏感模型 RED 测试**
 
 覆盖空白/超长 query、limit 1..50、最多 100 个 subject、输入去重与首次顺序、active/inactive/not_found；公开模型不得包含 email、mobile、roles、department 或 Service Account 字段。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run: `go test ./management/userdirectory -count=1`
 
-- [ ] **Step 3: 复用 management transport 实现目录 Client**
+- [x] **Step 3: 复用 management transport 实现目录 Client**
 
 `Search` 调用 `GET /api/v1/user-directory/users`，`BatchGet` 调用 `POST /api/v1/user-directory/users:batch-get`；方法返回现有 `management.Metadata`，不做业务重试或本地缓存。
 
-- [ ] **Step 4: 验证并提交**
+- [x] **Step 4: 验证并提交**
 
 Run: `go test ./management/userdirectory -count=1 && git diff --check`
 

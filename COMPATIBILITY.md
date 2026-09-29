@@ -16,6 +16,7 @@
 | v2.0.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v2` | IAM Core unified authorization / Manifest v2 extension | 1.24+ | 严格公共命名、完整 RouteSpec、Route Name 派生 Resource、一个 Action 多路由 |
 | v3.0.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core business authorization / Manifest v3 | 1.24+ | lower-kebab 业务权限、直接 Route Name Resource、四字段 RouteSpec、一个 Action 多 API |
 | v3.1.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core Service Account、机器 Bearer Catalog 与 Manifest v3 | 1.24+ | 验证机器主体 `subject_type`/`azp`；Catalog 由调用方注入 `core.TokenSource`；BFF 保留已验证 MFA 上下文 |
+| v3.2.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core 最小用户目录与通知资料解析 | 1.24+ | 批量校验明确用户 subject；按所选渠道解析邮箱、短信及应用范围飞书 `open_id`；不解析组织、角色或 Service Account |
 
 `v0.3.x` 不与 `v0.2.x` 源码兼容，也没有 deprecated wrapper；消费项目必须按迁移指南更换
 Module 和 import。Runtime 延续 PKCE S256、Client groups、真实 granted scopes、Manifest、
@@ -71,6 +72,12 @@ Catalog 登记改用机器 Bearer，要求 IAM Core 已启用 Service Account �
 这是 `v3.0.0` Catalog 调用点需要迁移的源码与运行时变化；不能只升级依赖而保留 Basic 凭据配置。
 机器 Access Token 必须显式包含 `subject_type=service_account` 和稳定 `op_sa_` 主体 ID；
 旧用户 Token 缺少 `subject_type` 时只在剩余有效期内按用户身份兼容。未知或矛盾的主体声明失败关闭。
+
+`v3.2.0` 新增 `management/userdirectory` 与 `management/notificationcontacts`。前者只返回活动
+IAM 用户的最小目录身份并批量校验明确 subject；后者只按请求的 `email|sms|feishu_app` 渠道返回
+目的地。已停用或不存在的 subject 与活动用户缺少某一渠道被明确区分。飞书结果限定租户及应用范围
+`open_id`，SDK 不按显示名称或手机号推断身份，不查询部门、角色、标签或用户组。两个 Client 继续
+使用调用方注入的机器 `TokenSource`，不获取或缓存 Access Token，也不缓存联系人。
 
 v3 的 `core.AuthContext` 以新增字段方式提供 `AuthTime` 与 `AuthenticationMethods`。字段访问和使用
 字段名的 keyed struct literal 保持源码兼容；未写字段名的 unkeyed struct literal 会因字段数量变化而

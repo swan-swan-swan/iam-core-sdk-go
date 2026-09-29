@@ -4,6 +4,18 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v3.2.0
+
+### Notification contact directory
+
+- Added `management/userdirectory` for minimal active-user search and explicit subject validation
+  without exposing contact details, organization data, roles, or Service Accounts.
+- Added `management/notificationcontacts` to resolve only the requested `email|sms|feishu_app`
+  destinations for explicit IAM subjects while preserving per-channel unavailability.
+- Kept token acquisition and refresh in the consuming service through the existing injected
+  Management `TokenSource`; directory clients neither cache contacts nor infer Feishu identity.
+- Hardened notification contact tests so assertion failures redact destination values.
+
 ## v3.1.0
 
 ### Machine identity and Catalog registration

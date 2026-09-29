@@ -121,23 +121,23 @@ git commit -m "feat(management): resolve notification contacts"
 **Interfaces:**
 - Produces: 新领域 `userdirectory`、`notificationcontacts` 和三个获批准的管理端点；文档说明调用方注入 `TokenSource`，并区分目录与通知资料权限。
 
-- [ ] **Step 1: 写合同清单、依赖方向和敏感错误 RED 测试**
+- [x] **Step 1: 写合同清单、依赖方向和敏感错误 RED 测试**
 
 断言两个包只依赖公共 management transport；合同文件包含且只包含冻结路径；401、403、5xx、无效 JSON 和取消请求不回显 Authorization、查询结果或目的地值。
 
-- [ ] **Step 2: 运行 RED**
+- [x] **Step 2: 运行 RED**
 
 Run: `go test ./management/... -run 'Contract|UserDirectory|NotificationContact|Sensitive|Dependency' -count=1`
 
-- [ ] **Step 3: 更新合同 fixture 与使用文档**
+- [x] **Step 3: 更新合同 fixture 与使用文档**
 
 不自行发布新 SDK 版本号；沿用仓库当前合同 fixture 命名并按现有门禁更新端点数。示例使用假用户 ID 和假目的地。
 
-- [ ] **Step 4: 全仓验证**
+- [x] **Step 4: 全仓验证**
 
 Run: `go test ./... -race -count=1 && go vet ./... && git diff --check`
 
-- [ ] **Step 5: 提交任务**
+- [x] **Step 5: 提交任务**
 
 ```bash
 git add management/contract_test.go management/testdata/contract-v1.8.1.json management/security_test.go management/dependency_test.go README.md SPEC.md

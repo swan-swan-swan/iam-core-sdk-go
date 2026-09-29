@@ -45,5 +45,9 @@
   {"domain":"policies","method":"PUT","path":"/api/v1/policy-documents/{policy_document_open_id}"},
   {"domain":"policies","method":"POST","path":"/api/v1/policy-documents/preview"},
   {"domain":"policies","method":"PUT","path":"/api/v1/policy-documents/{policy_document_open_id}/bindings"},
-  {"domain":"policies","method":"GET","path":"/api/v1/policy-compiled-rules"}
+  {"domain":"policies","method":"GET","path":"/api/v1/policy-compiled-rules"},
+
+  {"domain":"userdirectory","method":"GET","path":"/api/v1/user-directory/users"},
+  {"domain":"userdirectory","method":"POST","path":"/api/v1/user-directory/users:batch-get"},
+  {"domain":"notificationcontacts","method":"POST","path":"/api/v1/notification-contacts:batch-resolve"}
 ]

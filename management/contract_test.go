@@ -8,15 +8,17 @@ import (
 	"testing"
 )
 
-const approvedManagementEndpointCount = 42
+const approvedManagementEndpointCount = 45
 
 var approvedManagementDomains = map[string]struct{}{
-	"applications":  {},
-	"oidcclients":   {},
-	"admission":     {},
-	"groupmappings": {},
-	"catalog":       {},
-	"policies":      {},
+	"applications":         {},
+	"oidcclients":          {},
+	"admission":            {},
+	"groupmappings":        {},
+	"catalog":              {},
+	"policies":             {},
+	"userdirectory":        {},
+	"notificationcontacts": {},
 }
 
 var approvedManagementEndpointKeys = map[string]struct{}{
@@ -62,6 +64,9 @@ var approvedManagementEndpointKeys = map[string]struct{}{
 	"policies POST /api/v1/policy-documents/preview":                                                                            {},
 	"policies PUT /api/v1/policy-documents/{policy_document_open_id}/bindings":                                                  {},
 	"policies GET /api/v1/policy-compiled-rules":                                                                                {},
+	"userdirectory GET /api/v1/user-directory/users":                                                                            {},
+	"userdirectory POST /api/v1/user-directory/users:batch-get":                                                                 {},
+	"notificationcontacts POST /api/v1/notification-contacts:batch-resolve":                                                     {},
 }
 
 type contractEndpoint struct {
@@ -125,6 +130,10 @@ var implementedManagementOperations = []operationRegistration{
 	{"policies", "POST", "/api/v1/policy-documents/preview", "management.policies.preview"},
 	{"policies", "PUT", "/api/v1/policy-documents/{policy_document_open_id}/bindings", "management.policies.set_bindings"},
 	{"policies", "GET", "/api/v1/policy-compiled-rules", "management.policies.list_compiled_rules"},
+
+	{"userdirectory", "GET", "/api/v1/user-directory/users", "management.userdirectory.search"},
+	{"userdirectory", "POST", "/api/v1/user-directory/users:batch-get", "management.userdirectory.batch_get"},
+	{"notificationcontacts", "POST", "/api/v1/notification-contacts:batch-resolve", "management.notificationcontacts.batch_resolve"},
 }
 
 func TestApprovedManagementContract(t *testing.T) {
@@ -207,7 +216,7 @@ func TestValidateApprovedManagementContractRejectsInvalidFixture(t *testing.T) {
 		{
 			name:      "wrong entry count",
 			endpoints: valid[:approvedManagementEndpointCount-1],
-			want:      "expected 42 endpoints",
+			want:      "expected 45 endpoints",
 		},
 		{
 			name: "duplicate method path pair",

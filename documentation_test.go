@@ -57,7 +57,7 @@ func TestDocumentationContract(t *testing.T) {
 		"一次 PDP",
 		"TokenSource",
 		"不自动重试",
-		"42",
+		"45",
 		"可选的 BFF Session 存储",
 		"Client、FailoverClient 或 ClusterClient",
 		"Redis 6.2+",

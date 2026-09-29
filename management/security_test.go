@@ -14,6 +14,8 @@ import (
 	"testing"
 
 	managementclient "github.com/swan-swan-swan/iam-core-sdk-go/v3/management/client"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/management/notificationcontacts"
+	"github.com/swan-swan-swan/iam-core-sdk-go/v3/management/userdirectory"
 )
 
 const (
@@ -31,6 +33,65 @@ func (markerTokenSource) AccessToken(context.Context) (string, error) { return t
 type eventCollector struct {
 	mu     sync.Mutex
 	events []managementclient.Event
+}
+
+func TestDirectoryClientErrorsDoNotExposeDestinationsOrResponseBodies(t *testing.T) {
+	responses := []struct {
+		name   string
+		status int
+		body   string
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, body: `{"code":401,"message":"` + bodyMarker + `","data":{"destination":"` + secretMarker + `"}}`},
+		{name: "forbidden", status: http.StatusForbidden, body: `{"code":403,"message":"` + bodyMarker + `","data":{"destination":"` + secretMarker + `"}}`},
+		{name: "unavailable", status: http.StatusServiceUnavailable, body: `{"code":503,"message":"` + bodyMarker + `","data":{"destination":"` + secretMarker + `"}}`},
+		{name: "invalid json", status: http.StatusOK, body: bodyMarker + secretMarker},
+	}
+	for _, response := range responses {
+		t.Run(response.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				writer.WriteHeader(response.status)
+				_, _ = writer.Write([]byte(response.body))
+			}))
+			defer server.Close()
+
+			transport, err := managementclient.New(managementclient.Config{
+				BaseURL: server.URL, TokenSource: markerTokenSource{},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			directory, err := userdirectory.New(transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			contacts, err := notificationcontacts.New(transport)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, _, directoryErr := directory.Search(context.Background(), "user", 10)
+			_, _, contactsErr := contacts.BatchResolve(context.Background(), notificationcontacts.BatchResolveInput{
+				SubjectIDs: []string{"op_usr_safe"}, Channels: []notificationcontacts.Channel{notificationcontacts.ChannelEmail},
+			})
+			if directoryErr == nil || contactsErr == nil {
+				t.Fatalf("directory error=%v contacts error=%v", directoryErr, contactsErr)
+			}
+			assertNoMarkers(t, "directory error", fmt.Sprintf("%v %#v", directoryErr, directoryErr))
+			assertNoMarkers(t, "notification contact error", fmt.Sprintf("%v %#v", contactsErr, contactsErr))
+		})
+	}
+
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	transport, err := managementclient.New(managementclient.Config{BaseURL: "http://127.0.0.1:1", TokenSource: markerTokenSource{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory, _ := userdirectory.New(transport)
+	_, _, err = directory.Search(cancelled, "user", 10)
+	if err == nil {
+		t.Fatal("cancelled directory search returned nil error")
+	}
+	assertNoMarkers(t, "cancelled directory error", fmt.Sprintf("%v %#v", err, err))
 }
 
 func (collector *eventCollector) Observe(_ context.Context, event managementclient.Event) {

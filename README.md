@@ -177,7 +177,7 @@ import redisadapter "github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/adapte
 
 ## Management
 
-Management 由共享 Transport 和六个互不依赖的领域 Client 组成：
+Management 由共享 Transport 和八个互不依赖的领域 Client 组成：
 
 - `management/applications`
 - `management/oidcclients`
@@ -185,8 +185,10 @@ Management 由共享 Transport 和六个互不依赖的领域 Client 组成：
 - `management/groupmappings`
 - `management/catalog`
 - `management/policies`
+- `management/userdirectory`
+- `management/notificationcontacts`
 
-当前冻结 IAM Core v1.8.1 的 42 个管理端点。共享 Client 位于
+当前冻结 IAM Core v1.8.1 的 45 个管理端点。共享 Client 位于
 `github.com/swan-swan-swan/iam-core-sdk-go/v3/management/client`，只接受调用方注入的
 `TokenSource`：
 
@@ -199,6 +201,12 @@ type TokenSource interface {
 Management Client 不取得、刷新或持久化 Token，不接收用户名密码。每次调用只取一次 Token，
 最多发送一次 HTTP 请求，不自动重试；调用方必须根据 revision、hash、幂等键和最新资源状态
 显式决定是否再次提交。
+
+`management/userdirectory` 只搜索活动 IAM 用户并批量校验明确 subject，不返回账号邮箱、手机号、
+角色、部门或 Service Account。`management/notificationcontacts` 只按调用方请求的
+`email|sms|feishu_app` 渠道解析明确 subject；活动用户缺少某一目的地时，该渠道返回
+`available=false`，不会阻断同一用户的其他渠道。两个 Client 都要求调用方注入机器 Token，
+不缓存联系人、不调用飞书通讯录，也不按显示名或手机号推断飞书身份。
 
 可运行示例位于 [`examples/management`](examples/management)。它先读取 Application 列表，
 只有 `IAMCORE_EXAMPLE_APPLY_ADMISSION_UPDATE=true` 时才执行带

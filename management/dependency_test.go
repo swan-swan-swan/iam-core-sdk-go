@@ -73,3 +73,36 @@ func TestManagementProductionImportsStayLightweight(t *testing.T) {
 		t.Fatalf("inspect Management imports: %v", err)
 	}
 }
+
+func TestDirectoryClientsOnlyDependOnSharedManagementTransport(t *testing.T) {
+	allowed := map[string]struct{}{
+		"context": {}, "net/http": {}, "net/url": {}, "reflect": {}, "strconv": {},
+		"strings": {}, "unicode/utf8": {},
+		"github.com/swan-swan-swan/iam-core-sdk-go/v3/management/client": {},
+	}
+	for _, directory := range []string{"userdirectory", "notificationcontacts"} {
+		entries, err := os.ReadDir(directory)
+		if err != nil {
+			t.Fatalf("read %s: %v", directory, err)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".go") || strings.HasSuffix(entry.Name(), "_test.go") {
+				continue
+			}
+			path := filepath.Join(directory, entry.Name())
+			file, err := parser.ParseFile(token.NewFileSet(), path, nil, parser.ImportsOnly)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, imported := range file.Imports {
+				value, err := strconv.Unquote(imported.Path.Value)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, ok := allowed[value]; !ok {
+					t.Errorf("%s imports unapproved dependency %q", path, value)
+				}
+			}
+		}
+	}
+}

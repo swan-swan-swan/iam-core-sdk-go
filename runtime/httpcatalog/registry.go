@@ -71,14 +71,15 @@ type Result struct {
 
 // Registry 收集代码路由并维护最近一次同步健康状态。
 type Registry struct {
-	mu          sync.RWMutex
-	config      Config
-	endpoint    string
-	client      *http.Client
-	routes      map[string]Route
-	synced      bool
-	lastErr     error
-	catalogHash string
+	mu            sync.RWMutex
+	config        Config
+	endpoint      string
+	client        *http.Client
+	routes        map[string]Route
+	routesVersion uint64
+	synced        bool
+	lastErr       error
+	catalogHash   string
 }
 
 // NewRegistry 创建启动目录 Registry。
@@ -141,6 +142,7 @@ func (r *Registry) Register(spec httpauthz.RouteSpec) error {
 		return errCatalogRegistration
 	}
 	r.routes[route.Name] = route
+	r.routesVersion++
 	r.synced = false
 	r.lastErr = errCatalogRegistration
 	r.catalogHash = ""
@@ -154,43 +156,53 @@ func (r *Registry) Check(context.Context) error {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if !r.synced || r.lastErr != nil {
+	if !r.synced || r.lastErr != nil || r.catalogHash == "" {
 		return errCatalogRegistration
 	}
 	return nil
 }
 
 // manifestSnapshot 返回按路由名稳定排序的不可变 Manifest。
-func (r *Registry) manifestSnapshot() (Manifest, error) {
+func (r *Registry) manifestSnapshot() (Manifest, uint64, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if len(r.routes) == 0 {
-		return Manifest{}, errCatalogRegistration
+		return Manifest{}, 0, errCatalogRegistration
 	}
 	routes := make([]Route, 0, len(r.routes))
 	for _, route := range r.routes {
 		routes = append(routes, route)
 	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Name < routes[j].Name })
-	return Manifest{SchemaVersion: ManifestSchemaVersion, Application: r.config.Application, Service: r.config.Service, Release: r.config.Release, Routes: routes}, nil
+	return Manifest{SchemaVersion: ManifestSchemaVersion, Application: r.config.Application, Service: r.config.Service, Release: r.config.Release, Routes: routes}, r.routesVersion, nil
 }
 
 // recordSync 保存不包含远端正文或凭据的同步终态。
-func (r *Registry) recordSync(err error) {
+func (r *Registry) recordSync(version uint64, hash string, err error) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if version != r.routesVersion {
+		return false
+	}
 	r.lastErr = err
 	r.synced = err == nil
-	if err != nil {
+	if err == nil {
+		r.catalogHash = hash
+	} else {
 		r.catalogHash = ""
 	}
+	return true
 }
 
-func (r *Registry) recordHeartbeat(err error) {
+func (r *Registry) recordHeartbeat(hash string, err error) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if hash != r.catalogHash {
+		return false
+	}
 	r.lastErr = err
 	r.synced = err == nil
+	return true
 }
 
 // isLoopbackHTTP 判断测试与本地开发 HTTP 地址是否仅绑定回环主机。

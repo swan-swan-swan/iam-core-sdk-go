@@ -54,6 +54,34 @@ func TestRegistryHeartbeatUsesCurrentHashAndFreshToken(t *testing.T) {
 	}
 }
 
+func TestRegistrySyncRejectsManifestChangedDuringRequest(t *testing.T) {
+	requestStarted := make(chan struct{})
+	releaseResponse := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
+		<-releaseResponse
+		_, _ = w.Write([]byte(`{"code":0,"data":{"application":"beacon","catalog_hash":"` + heartbeatHash + `"}}`))
+	}))
+	defer server.Close()
+	registry, err := httpcatalog.NewRegistry(httpcatalog.Config{BaseURL: server.URL, Application: "beacon", Service: "notify", Release: "test", Tokens: core.TokenSourceFunc(func(context.Context) (string, error) { return "machine-token", nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(catalogSpec(t, "/api/v1/notify", "notify.item.select", "beacon:notify:select")); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error, 1)
+	go func() { _, syncErr := registry.Sync(t.Context()); done <- syncErr }()
+	<-requestStarted
+	if err := registry.Register(catalogSpec(t, "/api/v1/new", "notify.item.create", "beacon:notify:create")); err != nil {
+		t.Fatal(err)
+	}
+	close(releaseResponse)
+	if err := <-done; err == nil || registry.Check(t.Context()) == nil {
+		t.Fatalf("stale Sync result must fail and keep registry unhealthy: err=%v health=%v", err, registry.Check(t.Context()))
+	}
+}
+
 func TestRegistryHeartbeatConflictResyncsCompleteManifest(t *testing.T) {
 	var syncs atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

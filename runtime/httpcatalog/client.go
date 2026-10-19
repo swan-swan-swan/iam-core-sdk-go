@@ -15,8 +15,13 @@ import (
 // Sync 将当前完整 Manifest 单次提交给 IAM Core；重试由业务启动生命周期负责。
 func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 	started := time.Now()
+	var snapshotVersion uint64
+	var successfulHash string
 	defer func() {
-		r.recordSync(resultErr)
+		if !r.recordSync(snapshotVersion, successfulHash, resultErr) {
+			result = Result{}
+			resultErr = errCatalogRegistration
+		}
 		observer := r.config.Observer
 		if observer == nil {
 			observer = core.NopObserver{}
@@ -27,7 +32,8 @@ func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 		}
 		observer.Observe(ctx, core.Event{Operation: registrationOperation, Outcome: outcome, CredentialSource: "bearer", Duration: time.Since(started)})
 	}()
-	manifest, err := r.manifestSnapshot()
+	manifest, version, err := r.manifestSnapshot()
+	snapshotVersion = version
 	if err != nil || ctx == nil || ctx.Err() != nil {
 		return Result{}, errCatalogRegistration
 	}
@@ -63,9 +69,7 @@ func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 	if err := decoder.Decode(&envelope); err != nil || envelope.Code != 0 || envelope.Data.Application != manifest.Application || envelope.Data.CatalogHash == "" {
 		return Result{}, errCatalogRegistration
 	}
-	r.mu.Lock()
-	r.catalogHash = envelope.Data.CatalogHash
-	r.mu.Unlock()
+	successfulHash = envelope.Data.CatalogHash
 	return envelope.Data, nil
 }
 
@@ -75,8 +79,11 @@ func (r *Registry) HeartbeatOnce(ctx context.Context) (resultErr error) {
 		return errCatalogRegistration
 	}
 	started := time.Now()
+	var hash string
 	defer func() {
-		r.recordHeartbeat(resultErr)
+		if !r.recordHeartbeat(hash, resultErr) && resultErr == nil {
+			resultErr = errCatalogRegistration
+		}
 		observer := r.config.Observer
 		if observer == nil {
 			observer = core.NopObserver{}
@@ -88,7 +95,7 @@ func (r *Registry) HeartbeatOnce(ctx context.Context) (resultErr error) {
 		observer.Observe(ctx, core.Event{Operation: "httpcatalog.heartbeat", Outcome: outcome, CredentialSource: "bearer", Duration: time.Since(started)})
 	}()
 	r.mu.RLock()
-	hash := r.catalogHash
+	hash = r.catalogHash
 	r.mu.RUnlock()
 	if !validCatalogHash(hash) {
 		return errCatalogRegistration

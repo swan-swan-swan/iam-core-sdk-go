@@ -80,8 +80,9 @@ func (r *Registry) HeartbeatOnce(ctx context.Context) (resultErr error) {
 	}
 	started := time.Now()
 	var hash string
+	resynced := false
 	defer func() {
-		if !r.recordHeartbeat(hash, resultErr) && resultErr == nil {
+		if !resynced && !r.recordHeartbeat(hash, resultErr) && resultErr == nil {
 			resultErr = errCatalogRegistration
 		}
 		observer := r.config.Observer
@@ -124,6 +125,7 @@ func (r *Registry) HeartbeatOnce(ctx context.Context) (resultErr error) {
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusConflict {
 		_, err := r.Sync(ctx)
+		resynced = err == nil
 		return err
 	}
 	if response.StatusCode != http.StatusOK {

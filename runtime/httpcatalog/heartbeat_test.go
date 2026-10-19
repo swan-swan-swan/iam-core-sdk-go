@@ -115,6 +115,39 @@ func TestRegistryHeartbeatConflictResyncsCompleteManifest(t *testing.T) {
 	}
 }
 
+func TestRegistryHeartbeatConflictAcceptsNewCatalogHash(t *testing.T) {
+	const newerHash = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+	var syncs atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut {
+			hash := heartbeatHash
+			if syncs.Add(1) == 2 {
+				hash = newerHash
+			}
+			_, _ = w.Write([]byte(`{"code":0,"data":{"application":"beacon","catalog_hash":"` + hash + `"}}`))
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+	}))
+	defer server.Close()
+	registry, err := httpcatalog.NewRegistry(httpcatalog.Config{BaseURL: server.URL, Application: "beacon", Service: "notify", Release: "test", Tokens: core.TokenSourceFunc(func(context.Context) (string, error) { return "machine-token", nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(catalogSpec(t, "/api/v1/notify", "notify.item.select", "beacon:notify:select")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.HeartbeatOnce(t.Context()); err != nil {
+		t.Fatalf("successful resync with a new hash was reported unhealthy: %v", err)
+	}
+	if err := registry.Check(t.Context()); err != nil {
+		t.Fatalf("successful resync did not retain health: %v", err)
+	}
+}
+
 func TestRegistryRunHeartbeatStopsWithContext(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"code":0,"data":{"application":"beacon","catalog_hash":"` + heartbeatHash + `"}}`))

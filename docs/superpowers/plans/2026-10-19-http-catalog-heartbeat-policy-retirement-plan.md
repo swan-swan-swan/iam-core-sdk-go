@@ -73,7 +73,7 @@ verification:
 
   VERIFY：运行 focused 测试并检查受影响行、事务隔离、快照/编译规则不变量；在迁移前后样本上核对历史 unknown 行数与 SDK 来源行数。
 
-- [ ] Task 4（client-sdk，AC1、AC2）：受生命周期控制的心跳
+- [x] Task 4（client-sdk，AC1、AC2）：受生命周期控制的心跳
 
   RED：在 `runtime/httpcatalog` 现有测试中用本地 HTTP server 验证 Sync 成功前不续约、默认 24 小时间隔、Bearer 按次获取、hash 携带、版本不符或失联冲突触发重新 Sync、取消 context 立即退出、失败有界退避和健康可观测；同一 RouteSpec 是 Sync 唯一清单来源。运行 `go test ./runtime/httpcatalog -count=1` 保存 RED。
 

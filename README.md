@@ -103,11 +103,23 @@ import ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/adapters
 SDK 不接收 Client Secret，也不负责 Client Credentials 的获取、缓存、刷新或重试。Registry 每次
 `Sync` 都重新读取 Token；在同步成功前保持 health down，重试调度由业务进程 lifecycle 负责。
 
+成功同步后，用同一宿主生命周期维持心跳。`RunHeartbeat` 默认每 24 小时续约一次，宿主取消
+`context` 时退出；续约请求仅发送当前目录 hash，并重新向 `TokenSource` 取 Token。若服务端返回
+版本冲突，SDK 自动重新提交完整 Manifest。其他续约失败最多重试 3 次（默认 1 分钟、2 分钟退避），
+仍失败则返回错误，宿主应记录并重启或重新同步。
+多副本滚动发布时，旧版本实例不能续约新版本 hash，应确保部署阶段的新旧目录切换可控。
+
 ```go
 registry, err := httpcatalog.NewRegistry(httpcatalog.Config{
     BaseURL: iamBaseURL, Application: "beacon", Service: "notify-server", Release: release,
     Tokens: machineTokenSource,
 })
+if err != nil { return err }
+// 注册所有 RouteSpec 后，先完成完整目录同步。
+if _, err := registry.Sync(ctx); err != nil { return err }
+// 在应用生命周期管理的 goroutine 中运行；退出时取消 ctx 并处理错误。
+heartbeatErrors := make(chan error, 1)
+go func() { heartbeatErrors <- registry.RunHeartbeat(ctx) }()
 ```
 
 ## 完整路由声明与 Manifest v3

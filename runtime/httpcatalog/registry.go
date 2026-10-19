@@ -21,6 +21,7 @@ const (
 	ManifestSchemaVersion = "3"
 
 	registrationPath      = "/api/v1/http-resource-catalog/registration"
+	heartbeatPath         = registrationPath + "/heartbeat"
 	registrationOperation = "httpcatalog.sync"
 )
 
@@ -36,6 +37,10 @@ type Config struct {
 	Tokens     core.TokenSource
 	HTTPClient *http.Client
 	Observer   core.Observer
+	// HeartbeatInterval 控制续约周期；零值为 24 小时。
+	HeartbeatInterval time.Duration
+	// HeartbeatRetryDelay 是心跳失败后的有界退避基础间隔，零值为一分钟。
+	HeartbeatRetryDelay time.Duration
 }
 
 // Route 定义注册协议中的单条路由。
@@ -66,13 +71,14 @@ type Result struct {
 
 // Registry 收集代码路由并维护最近一次同步健康状态。
 type Registry struct {
-	mu       sync.RWMutex
-	config   Config
-	endpoint string
-	client   *http.Client
-	routes   map[string]Route
-	synced   bool
-	lastErr  error
+	mu          sync.RWMutex
+	config      Config
+	endpoint    string
+	client      *http.Client
+	routes      map[string]Route
+	synced      bool
+	lastErr     error
+	catalogHash string
 }
 
 // NewRegistry 创建启动目录 Registry。
@@ -83,6 +89,15 @@ func NewRegistry(config Config) (*Registry, error) {
 	config.Release = strings.TrimSpace(config.Release)
 	if config.BaseURL == "" || config.Application == "" || config.Service == "" || config.Release == "" || nilcheck.IsNil(config.Tokens) || (config.Observer != nil && nilcheck.IsNil(config.Observer)) {
 		return nil, errCatalogRegistration
+	}
+	if config.HeartbeatInterval < 0 || config.HeartbeatRetryDelay < 0 {
+		return nil, errCatalogRegistration
+	}
+	if config.HeartbeatInterval == 0 {
+		config.HeartbeatInterval = 24 * time.Hour
+	}
+	if config.HeartbeatRetryDelay == 0 {
+		config.HeartbeatRetryDelay = time.Minute
 	}
 	parsed, err := url.Parse(config.BaseURL)
 	if err != nil || parsed.Host == "" || (parsed.Scheme != "https" && !isLoopbackHTTP(parsed)) {
@@ -128,6 +143,7 @@ func (r *Registry) Register(spec httpauthz.RouteSpec) error {
 	r.routes[route.Name] = route
 	r.synced = false
 	r.lastErr = errCatalogRegistration
+	r.catalogHash = ""
 	return nil
 }
 
@@ -161,6 +177,16 @@ func (r *Registry) manifestSnapshot() (Manifest, error) {
 
 // recordSync 保存不包含远端正文或凭据的同步终态。
 func (r *Registry) recordSync(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lastErr = err
+	r.synced = err == nil
+	if err != nil {
+		r.catalogHash = ""
+	}
+}
+
+func (r *Registry) recordHeartbeat(err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.lastErr = err

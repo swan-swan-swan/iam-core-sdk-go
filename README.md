@@ -1,6 +1,7 @@
 # IAM Core Go SDK
 
-本仓库提供面向 IAM Core 的 Go SDK。当前 `v3.3.0` 使用单一 Go Module
+本仓库提供面向 IAM Core 的 Go SDK。当前已发布的 `v3.3.0` 使用单一 Go Module；本仓正在准备的 `v3.4.0` 更新 HTTP Catalog 部署代次协议。
+Module 路径为
 `github.com/swan-swan-swan/iam-core-sdk-go/v3`，并在同一版本中明确划分两类能力：
 
 - `runtime/*`：业务请求链路中的 OIDC/BFF、HTTP Resource Server、Gin 与 Redis adapter。
@@ -14,7 +15,8 @@
 [v0.2 → v0.3 迁移指南](docs/migration-v0.2-to-v0.3.md)。
 RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 
-最低 Go 版本为 1.24。协议边界见
+最低 Go 版本为 1.24。当前开发分支的协议边界见
+[SDK v3.4.0 HTTP Catalog 部署代次契约](docs/iam-core-v3.4.0-contract.md)、
 [SDK v3.3.0 HTTP Catalog 心跳契约](docs/iam-core-v3.3.0-contract.md)、
 [SDK v3.2.0 通知资料契约](docs/iam-core-v3.2.0-contract.md)、
 [SDK v3.1.0 机器身份契约](docs/iam-core-v3.1.0-contract.md)及
@@ -105,14 +107,18 @@ SDK 不接收 Client Secret，也不负责 Client Credentials 的获取、缓存
 `Sync` 都重新读取 Token；在同步成功前保持 health down，重试调度由业务进程 lifecycle 负责。
 
 成功同步后，用同一宿主生命周期维持心跳。`RunHeartbeat` 默认每 24 小时续约一次，宿主取消
-`context` 时退出；续约请求仅发送当前目录 hash，并重新向 `TokenSource` 取 Token。若服务端返回
-版本冲突，SDK 自动重新提交完整 Manifest。其他续约失败最多重试 3 次（默认 1 分钟、2 分钟退避），
-仍失败则返回错误，宿主应记录并重启或重新同步。
-多副本滚动发布时，旧版本实例不能续约新版本 hash，应确保部署阶段的新旧目录切换可控。
+`context` 时退出；续约请求发送部署代次、当前完整 Manifest hash 和已发布 Catalog hash，
+并重新向 `TokenSource` 取 Token。`40901/catalog_generation_conflict` 立即停止续约，
+不自动完整注册；本地路由清单变化也使 Registry 不健康，并须以新的部署代次创建 Registry 后完整 Sync。
+其他续约失败最多重试 3 次（默认 1 分钟、2 分钟退避），仍失败则返回错误。
+宿主必须先完成 Sync 才启动心跳；没有已同步版本时 `RunHeartbeat` 返回错误，不代为注册。
+CI 或 Helm 应按每个 Application/Service 身份单调分配代次。回滚旧镜像仍使用新代次；
+混合副本中低代次实例收到冲突后停止续约，不得覆盖新目录。零值是显式代次，仅适用于首次受控部署。
 
 ```go
 registry, err := httpcatalog.NewRegistry(httpcatalog.Config{
     BaseURL: iamBaseURL, Application: "beacon", Service: "notify-server", Release: release,
+    DeploymentGeneration: deploymentGeneration,
     Tokens: machineTokenSource,
 })
 if err != nil { return err }
@@ -167,6 +173,7 @@ Catalog 始终发送按 Name 排序的完整 Manifest：
   "application": "opsgw",
   "service": "ops-gateway",
   "release": "dev",
+  "deployment_generation": 42,
   "routes": [{
     "name": "portal.app.iam-core.open",
     "method": "GET",

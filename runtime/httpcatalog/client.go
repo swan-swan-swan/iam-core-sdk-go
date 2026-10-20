@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"strings"
@@ -14,28 +15,43 @@ import (
 
 // Sync 将当前完整 Manifest 单次提交给 IAM Core；重试由业务启动生命周期负责。
 func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
+	if r == nil || ctx == nil || ctx.Err() != nil {
+		return Result{}, errCatalogRegistration
+	}
 	started := time.Now()
 	var snapshotVersion uint64
-	var successfulHash string
+	var successfulCatalogHash, successfulManifestHash string
 	defer func() {
-		if !r.recordSync(snapshotVersion, successfulHash, resultErr) {
+		if !r.recordSync(snapshotVersion, successfulCatalogHash, successfulManifestHash, resultErr) {
 			result = Result{}
-			resultErr = errCatalogRegistration
-		}
-		observer := r.config.Observer
-		if observer == nil {
-			observer = core.NopObserver{}
+			if resultErr == nil {
+				resultErr = errCatalogRegistration
+			}
 		}
 		outcome := "success"
 		if resultErr != nil {
 			outcome = "error"
 		}
-		observer.Observe(ctx, core.Event{Operation: registrationOperation, Outcome: outcome, CredentialSource: "bearer", Duration: time.Since(started)})
+		r.observe(ctx, core.Event{Operation: registrationOperation, Outcome: outcome, CredentialSource: "bearer", Duration: time.Since(started)})
 	}()
 	manifest, version, err := r.manifestSnapshot()
 	snapshotVersion = version
-	if err != nil || ctx == nil || ctx.Err() != nil {
+	if err != nil {
 		return Result{}, errCatalogRegistration
+	}
+	manifestHash, err := manifest.ManifestDigest()
+	if err != nil {
+		return Result{}, errCatalogRegistration
+	}
+	r.mu.RLock()
+	fenced := r.fenced
+	previousManifestHash := r.manifestHash
+	r.mu.RUnlock()
+	if fenced {
+		return Result{}, ErrGenerationConflict
+	}
+	if previousManifestHash != "" && previousManifestHash != manifestHash {
+		return Result{}, ErrManifestChanged
 	}
 	payload, err := json.Marshal(manifest)
 	if err != nil {
@@ -57,53 +73,79 @@ func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 		return Result{}, errCatalogRegistration
 	}
 	defer response.Body.Close()
+	if response.StatusCode == http.StatusConflict {
+		r.fence()
+		return Result{}, ErrGenerationConflict
+	}
 	if response.StatusCode != http.StatusOK {
 		return Result{}, errCatalogRegistration
 	}
 	var envelope struct {
 		Code    int    `json:"code"`
 		Message string `json:"message"`
-		Data    Result `json:"data"`
+		Data    struct {
+			Application          string  `json:"application"`
+			CatalogHash          string  `json:"catalog_hash"`
+			DeploymentGeneration *uint64 `json:"deployment_generation"`
+			ManifestHash         string  `json:"manifest_hash"`
+			Changed              bool    `json:"changed"`
+		} `json:"data"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
-	if err := decoder.Decode(&envelope); err != nil || envelope.Code != 0 || envelope.Data.Application != manifest.Application || envelope.Data.CatalogHash == "" {
+	if err := decoder.Decode(&envelope); err != nil || envelope.Code != 0 || envelope.Data.Application != manifest.Application || !validCatalogHash(envelope.Data.CatalogHash) || envelope.Data.DeploymentGeneration == nil || *envelope.Data.DeploymentGeneration != manifest.DeploymentGeneration || envelope.Data.ManifestHash != manifestHash {
 		return Result{}, errCatalogRegistration
 	}
-	successfulHash = envelope.Data.CatalogHash
-	return envelope.Data, nil
+	successfulCatalogHash = envelope.Data.CatalogHash
+	successfulManifestHash = manifestHash
+	return Result{Application: envelope.Data.Application, CatalogHash: envelope.Data.CatalogHash, DeploymentGeneration: *envelope.Data.DeploymentGeneration, ManifestHash: manifestHash, Changed: envelope.Data.Changed}, nil
 }
 
-// HeartbeatOnce 使用当前注册版本续约；版本冲突时重新提交完整 Manifest。
+// HeartbeatOnce 使用当前注册版本续约；部署代次冲突时停止续约。
 func (r *Registry) HeartbeatOnce(ctx context.Context) (resultErr error) {
 	if r == nil || ctx == nil || ctx.Err() != nil {
 		return errCatalogRegistration
 	}
 	started := time.Now()
-	var hash string
-	resynced := false
+	var catalogHash, manifestHash string
+	var snapshotVersion uint64
 	defer func() {
-		if !resynced && !r.recordHeartbeat(hash, resultErr) && resultErr == nil {
+		if !r.recordHeartbeat(snapshotVersion, catalogHash, manifestHash, resultErr) && resultErr == nil {
 			resultErr = errCatalogRegistration
-		}
-		observer := r.config.Observer
-		if observer == nil {
-			observer = core.NopObserver{}
 		}
 		outcome := "success"
 		if resultErr != nil {
 			outcome = "error"
 		}
-		observer.Observe(ctx, core.Event{Operation: "httpcatalog.heartbeat", Outcome: outcome, CredentialSource: "bearer", Duration: time.Since(started)})
+		r.observe(ctx, core.Event{Operation: "httpcatalog.heartbeat", Outcome: outcome, CredentialSource: "bearer", Duration: time.Since(started)})
 	}()
 	r.mu.RLock()
-	hash = r.catalogHash
+	catalogHash = r.catalogHash
+	manifestHash = r.manifestHash
+	fenced := r.fenced
 	r.mu.RUnlock()
-	if !validCatalogHash(hash) {
+	if fenced {
+		return ErrGenerationConflict
+	}
+	if !validCatalogHash(catalogHash) || !validCatalogHash(manifestHash) {
 		return errCatalogRegistration
 	}
+	manifest, version, err := r.manifestSnapshot()
+	snapshotVersion = version
+	if err != nil {
+		return errCatalogRegistration
+	}
+	currentHash, err := manifest.ManifestDigest()
+	if err != nil {
+		return errCatalogRegistration
+	}
+	if currentHash != manifestHash {
+		return ErrManifestChanged
+	}
 	payload, err := json.Marshal(struct {
-		CatalogHash string `json:"catalog_hash"`
-	}{CatalogHash: hash})
+		CatalogHash          string `json:"catalog_hash"`
+		DeploymentGeneration uint64 `json:"deployment_generation"`
+		ManifestHash         string `json:"manifest_hash"`
+	}{CatalogHash: catalogHash, DeploymentGeneration: manifest.DeploymentGeneration, ManifestHash: manifestHash})
 	if err != nil {
 		return errCatalogRegistration
 	}
@@ -124,26 +166,48 @@ func (r *Registry) HeartbeatOnce(ctx context.Context) (resultErr error) {
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusConflict {
-		_, err := r.Sync(ctx)
-		resynced = err == nil
-		return err
+		r.fence()
+		return ErrGenerationConflict
 	}
 	if response.StatusCode != http.StatusOK {
 		return errCatalogRegistration
 	}
 	var envelope struct {
-		Code int    `json:"code"`
-		Data Result `json:"data"`
+		Code int `json:"code"`
+		Data struct {
+			Application          string  `json:"application"`
+			CatalogHash          string  `json:"catalog_hash"`
+			DeploymentGeneration *uint64 `json:"deployment_generation"`
+			ManifestHash         string  `json:"manifest_hash"`
+		} `json:"data"`
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&envelope); err != nil || envelope.Code != 0 || envelope.Data.Application != r.config.Application || envelope.Data.CatalogHash != hash {
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&envelope); err != nil || envelope.Code != 0 || envelope.Data.Application != r.config.Application || envelope.Data.CatalogHash != catalogHash || envelope.Data.DeploymentGeneration == nil || *envelope.Data.DeploymentGeneration != manifest.DeploymentGeneration || envelope.Data.ManifestHash != manifestHash {
 		return errCatalogRegistration
 	}
 	return nil
 }
 
+func (r *Registry) observe(ctx context.Context, event core.Event) {
+	if r.config.Observer == nil {
+		return
+	}
+	defer func() { _ = recover() }()
+	r.config.Observer.Observe(ctx, event)
+}
+
 // RunHeartbeat 在宿主 context 生命周期内按周期续约，失败时返回让宿主处理。
 func (r *Registry) RunHeartbeat(ctx context.Context) error {
 	if r == nil || ctx == nil {
+		return errCatalogRegistration
+	}
+	r.mu.RLock()
+	hasVersion := r.catalogHash != ""
+	fenced := r.fenced
+	r.mu.RUnlock()
+	if fenced {
+		return ErrGenerationConflict
+	}
+	if !hasVersion {
 		return errCatalogRegistration
 	}
 	ticker := time.NewTicker(r.config.HeartbeatInterval)
@@ -155,16 +219,12 @@ func (r *Registry) RunHeartbeat(ctx context.Context) error {
 		case <-ticker.C:
 			var err error
 			for attempt := 0; attempt < 3; attempt++ {
-				r.mu.RLock()
-				hasVersion := r.catalogHash != ""
-				r.mu.RUnlock()
-				if hasVersion {
-					err = r.HeartbeatOnce(ctx)
-				} else {
-					_, err = r.Sync(ctx)
-				}
+				err = r.HeartbeatOnce(ctx)
 				if err == nil {
 					break
+				}
+				if errors.Is(err, ErrGenerationConflict) || errors.Is(err, ErrManifestChanged) {
+					return err
 				}
 				if attempt == 2 {
 					return err

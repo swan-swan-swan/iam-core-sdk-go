@@ -3,8 +3,10 @@ package httpcatalog_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core"
@@ -26,7 +28,7 @@ func TestRegistrySyncSendsDeterministicV3Manifest(t *testing.T) {
 			t.Fatalf("decode manifest: %v", err)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"application":"opsgw","catalog_hash":"sha256:abc","changed":true}}`))
+		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"application":"opsgw","catalog_hash":"` + heartbeatHash + `","deployment_generation":0,"manifest_hash":"sha256:22bd4ae18cb284b9b4ebcf6dc434ce5f69974b3c2e9193263fc96da0e20f1e39","changed":true}}`))
 	}))
 	defer server.Close()
 
@@ -50,8 +52,11 @@ func TestRegistrySyncSendsDeterministicV3Manifest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sync() error = %v", err)
 	}
-	if result.CatalogHash != "sha256:abc" || !result.Changed || len(got.Routes) != 2 || got.Routes[0].Name != "admin.application.list" || got.Routes[1].Name != "portal.application.list" {
+	if result.CatalogHash != heartbeatHash || !result.Changed || len(got.Routes) != 2 || got.Routes[0].Name != "admin.application.list" || got.Routes[1].Name != "portal.application.list" {
 		t.Fatalf("Sync() = %#v, manifest = %#v", result, got)
+	}
+	if got.DeploymentGeneration != 0 || result.DeploymentGeneration != 0 || result.ManifestHash != "sha256:22bd4ae18cb284b9b4ebcf6dc434ce5f69974b3c2e9193263fc96da0e20f1e39" {
+		t.Fatalf("generation/digest = %#v, result=%#v", got, result)
 	}
 	if got.SchemaVersion != "3" || got.Routes[1].RouteTemplate != "/api/v1/apps" || got.Routes[1].Action != "opsgw:portal:discover" {
 		t.Fatalf("Manifest v3 facts = %#v", got)
@@ -138,5 +143,99 @@ func TestRegistryRejectsMalformedDeclarationsWithoutNormalization(t *testing.T) 
 		if err := registry.Register(spec); err == nil {
 			t.Fatal("accepted malformed declaration")
 		}
+	}
+}
+
+func TestManifestDigestIgnoresReleaseGenerationAndRouteOrder(t *testing.T) {
+	routes := []httpcatalog.Route{
+		{Name: "portal.application.list", Method: "GET", RouteTemplate: "/api/v1/apps", Action: "opsgw:portal:discover"},
+		{Name: "admin.application.list", Method: "GET", RouteTemplate: "/api/v1/admin", Action: "opsgw:admin:select"},
+	}
+	first := httpcatalog.Manifest{SchemaVersion: "3", Application: "opsgw", Service: "ops-gateway", Release: "blue", DeploymentGeneration: 0, Routes: routes}
+	second := first
+	second.Release = "rollback"
+	second.DeploymentGeneration = 42
+	second.Routes = []httpcatalog.Route{routes[1], routes[0]}
+	const want = "sha256:22bd4ae18cb284b9b4ebcf6dc434ce5f69974b3c2e9193263fc96da0e20f1e39"
+	for _, manifest := range []httpcatalog.Manifest{first, second} {
+		got, err := manifest.ManifestDigest()
+		if err != nil || got != want {
+			t.Fatalf("digest=%q err=%v", got, err)
+		}
+	}
+}
+
+func TestManifestDigestUsesServerEmptyRoutesEncoding(t *testing.T) {
+	manifest := httpcatalog.Manifest{SchemaVersion: "3", Application: "beacon", Service: "notify"}
+	got, err := manifest.ManifestDigest()
+	if err != nil || got != "sha256:3b077a97afcdc338cacf4081939fcc940f3255e2bd7ffcd86fc57d3459b47eb8" {
+		t.Fatalf("digest=%q err=%v", got, err)
+	}
+}
+
+func TestRegistrySyncSendsNonzeroGeneration(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var wire map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&wire); err != nil {
+			t.Error(err)
+			return
+		}
+		if wire["deployment_generation"] != float64(42) {
+			t.Errorf("generation=%v", wire["deployment_generation"])
+		}
+		if r.Method == http.MethodPost {
+			if len(wire) != 3 || wire["manifest_hash"] != "sha256:233a04ffba56c47dacae4e196e8f062837da6e97dbbf508bdb15d06def97ddad" || wire["catalog_hash"] != heartbeatHash {
+				t.Errorf("heartbeat fields=%#v", wire)
+			}
+			_, _ = fmt.Fprintf(w, `{"code":0,"data":{"application":"beacon","catalog_hash":%q,"deployment_generation":42,"manifest_hash":%q,"changed":false,"heartbeat_at":"2026-10-20T00:00:00Z"}}`, heartbeatHash, "sha256:233a04ffba56c47dacae4e196e8f062837da6e97dbbf508bdb15d06def97ddad")
+			return
+		}
+		_, _ = fmt.Fprintf(w, `{"code":0,"data":{"application":"beacon","catalog_hash":%q,"deployment_generation":42,"manifest_hash":%q,"changed":true}}`, heartbeatHash, "sha256:233a04ffba56c47dacae4e196e8f062837da6e97dbbf508bdb15d06def97ddad")
+	}))
+	defer server.Close()
+	registry, err := httpcatalog.NewRegistry(httpcatalog.Config{BaseURL: server.URL, Application: "beacon", Service: "notify", Release: "test", DeploymentGeneration: 42, Tokens: core.TokenSourceFunc(func(context.Context) (string, error) { return "machine-token", nil })})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(catalogSpec(t, "/api/v1/notify", "notify.item.select", "beacon:notify:select")); err != nil {
+		t.Fatal(err)
+	}
+	result, err := registry.Sync(t.Context())
+	if err != nil || result.DeploymentGeneration != 42 {
+		t.Fatalf("result=%#v err=%v", result, err)
+	}
+	if err := registry.HeartbeatOnce(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRegistrySyncRejectsMissingOrMismatchedPublishedFacts(t *testing.T) {
+	for _, data := range []string{
+		`{"application":"beacon","catalog_hash":"` + heartbeatHash + `","manifest_hash":"PLACEHOLDER"}`,
+		`{"application":"beacon","catalog_hash":"` + heartbeatHash + `","deployment_generation":1,"manifest_hash":"PLACEHOLDER"}`,
+		`{"application":"beacon","catalog_hash":"` + heartbeatHash + `","deployment_generation":0,"manifest_hash":"` + heartbeatHash + `"}`,
+	} {
+		t.Run(data, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var manifest httpcatalog.Manifest
+				if err := json.NewDecoder(r.Body).Decode(&manifest); err != nil {
+					t.Error(err)
+					return
+				}
+				actual := serverManifestHash(t, manifest)
+				_, _ = fmt.Fprintf(w, `{"code":0,"data":%s}`, strings.ReplaceAll(data, "PLACEHOLDER", actual))
+			}))
+			defer server.Close()
+			registry, err := httpcatalog.NewRegistry(httpcatalog.Config{BaseURL: server.URL, Application: "beacon", Service: "notify", Release: "test", Tokens: core.TokenSourceFunc(func(context.Context) (string, error) { return "machine-token", nil })})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := registry.Register(catalogSpec(t, "/api/v1/notify", "notify.item.select", "beacon:notify:select")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := registry.Sync(t.Context()); err == nil || registry.Check(t.Context()) == nil {
+				t.Fatalf("invalid response accepted: err=%v health=%v", err, registry.Check(t.Context()))
+			}
+		})
 	}
 }

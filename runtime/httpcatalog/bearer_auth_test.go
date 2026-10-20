@@ -30,7 +30,7 @@ func TestRegistryUsesFreshInjectedBearerToken(t *testing.T) {
 			t.Fatal("request used Basic authentication")
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{"code":0,"message":"success","data":{"application":"beacon","catalog_hash":"sha256:abc","changed":true}}`))
+		writeSyncSuccess(t, w, request, heartbeatHash)
 	}))
 	defer server.Close()
 
@@ -164,5 +164,27 @@ func TestRegistryObserverReportsBearerWithoutCredentials(t *testing.T) {
 	_, _ = registry.Sync(t.Context())
 	if event.CredentialSource != "bearer" || event.Operation != "httpcatalog.sync" || strings.Contains(event.Operation, token) {
 		t.Fatalf("observer event = %#v", event)
+	}
+}
+
+func TestRegistryObserverPanicDoesNotMaskSuccessfulSync(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { writeSyncSuccess(t, w, r, heartbeatHash) }))
+	defer server.Close()
+	registry, err := httpcatalog.NewRegistry(httpcatalog.Config{
+		BaseURL: server.URL, Application: "beacon", Service: "notify", Release: "test",
+		Tokens:   core.TokenSourceFunc(func(context.Context) (string, error) { return "machine-token", nil }),
+		Observer: core.ObserverFunc(func(context.Context, core.Event) { panic("observer failure") }),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.Register(catalogSpec(t, "/api/v1/notify", "notify.item.select", "beacon:notify:select")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := registry.Sync(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if registry.Check(t.Context()) != nil {
+		t.Fatalf("observer changed health: %v", registry.Check(t.Context()))
 	}
 }

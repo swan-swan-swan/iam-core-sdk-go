@@ -2,6 +2,9 @@ package httpcatalog
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -27,12 +30,21 @@ const (
 
 var errCatalogRegistration = errors.New("http catalog registration failed")
 
+var (
+	// ErrGenerationConflict 表示服务端拒绝当前部署代次，实例必须停止续约。
+	ErrGenerationConflict = errors.New("http catalog generation conflict")
+	// ErrManifestChanged 表示已发布的当前代次与本地路由清单不再一致。
+	ErrManifestChanged = errors.New("http catalog manifest changed")
+)
+
 // Config 定义启动目录 Registry 与注册客户端配置。
 type Config struct {
 	BaseURL     string
 	Application string
 	Service     string
 	Release     string
+	// DeploymentGeneration 由宿主部署流程为每个 application/service 分配，零值也是显式代次。
+	DeploymentGeneration uint64
 	// Tokens 为每次 Catalog 同步提供当前机器 Access Token；Registry 不缓存令牌。
 	Tokens     core.TokenSource
 	HTTPClient *http.Client
@@ -55,18 +67,44 @@ type Route struct {
 // Manifest 定义发送给 IAM Core 的完整代码路由清单。
 type Manifest struct {
 	// SchemaVersion 必须等于 ManifestSchemaVersion。
-	SchemaVersion string  `json:"schema_version"`
-	Application   string  `json:"application"`
-	Service       string  `json:"service"`
-	Release       string  `json:"release"`
-	Routes        []Route `json:"routes"`
+	SchemaVersion        string  `json:"schema_version"`
+	Application          string  `json:"application"`
+	Service              string  `json:"service"`
+	Release              string  `json:"release"`
+	DeploymentGeneration uint64  `json:"deployment_generation"`
+	Routes               []Route `json:"routes"`
+}
+
+// ManifestDigest 按服务端固定字段顺序计算完整路由清单摘要，不包含 release 或部署代次。
+func (manifest Manifest) ManifestDigest() (string, error) {
+	routes := append(make([]Route, 0, len(manifest.Routes)), manifest.Routes...)
+	sort.Slice(routes, func(i, j int) bool {
+		if routes[i].Name != routes[j].Name {
+			return routes[i].Name < routes[j].Name
+		}
+		return routes[i].Method < routes[j].Method
+	})
+	input := struct {
+		SchemaVersion string  `json:"schema_version"`
+		Application   string  `json:"application"`
+		Service       string  `json:"service"`
+		Routes        []Route `json:"routes"`
+	}{manifest.SchemaVersion, manifest.Application, manifest.Service, routes}
+	encoded, err := json.Marshal(input)
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(encoded)
+	return "sha256:" + hex.EncodeToString(hash[:]), nil
 }
 
 // Result 定义一次启动同步的非敏感结果。
 type Result struct {
-	Application string `json:"application"`
-	CatalogHash string `json:"catalog_hash"`
-	Changed     bool   `json:"changed"`
+	Application          string `json:"application"`
+	CatalogHash          string `json:"catalog_hash"`
+	DeploymentGeneration uint64 `json:"deployment_generation"`
+	ManifestHash         string `json:"manifest_hash"`
+	Changed              bool   `json:"changed"`
 }
 
 // Registry 收集代码路由并维护最近一次同步健康状态。
@@ -80,6 +118,8 @@ type Registry struct {
 	synced        bool
 	lastErr       error
 	catalogHash   string
+	manifestHash  string
+	fenced        bool
 }
 
 // NewRegistry 创建启动目录 Registry。
@@ -145,7 +185,6 @@ func (r *Registry) Register(spec httpauthz.RouteSpec) error {
 	r.routesVersion++
 	r.synced = false
 	r.lastErr = errCatalogRegistration
-	r.catalogHash = ""
 	return nil
 }
 
@@ -156,7 +195,7 @@ func (r *Registry) Check(context.Context) error {
 	}
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	if !r.synced || r.lastErr != nil || r.catalogHash == "" {
+	if !r.synced || r.lastErr != nil || r.catalogHash == "" || r.manifestHash == "" || r.fenced {
 		return errCatalogRegistration
 	}
 	return nil
@@ -174,11 +213,11 @@ func (r *Registry) manifestSnapshot() (Manifest, uint64, error) {
 		routes = append(routes, route)
 	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Name < routes[j].Name })
-	return Manifest{SchemaVersion: ManifestSchemaVersion, Application: r.config.Application, Service: r.config.Service, Release: r.config.Release, Routes: routes}, r.routesVersion, nil
+	return Manifest{SchemaVersion: ManifestSchemaVersion, Application: r.config.Application, Service: r.config.Service, Release: r.config.Release, DeploymentGeneration: r.config.DeploymentGeneration, Routes: routes}, r.routesVersion, nil
 }
 
 // recordSync 保存不包含远端正文或凭据的同步终态。
-func (r *Registry) recordSync(version uint64, hash string, err error) bool {
+func (r *Registry) recordSync(version uint64, catalogHash, manifestHash string, err error) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if version != r.routesVersion {
@@ -187,22 +226,31 @@ func (r *Registry) recordSync(version uint64, hash string, err error) bool {
 	r.lastErr = err
 	r.synced = err == nil
 	if err == nil {
-		r.catalogHash = hash
+		r.catalogHash = catalogHash
+		r.manifestHash = manifestHash
 	} else {
 		r.catalogHash = ""
 	}
 	return true
 }
 
-func (r *Registry) recordHeartbeat(hash string, err error) bool {
+func (r *Registry) recordHeartbeat(version uint64, catalogHash, manifestHash string, err error) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if hash != r.catalogHash {
+	if version != r.routesVersion || catalogHash != r.catalogHash || manifestHash != r.manifestHash {
 		return false
 	}
 	r.lastErr = err
 	r.synced = err == nil
 	return true
+}
+
+func (r *Registry) fence() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.fenced = true
+	r.synced = false
+	r.lastErr = ErrGenerationConflict
 }
 
 // isLoopbackHTTP 判断测试与本地开发 HTTP 地址是否仅绑定回环主机。

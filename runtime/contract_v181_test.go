@@ -25,7 +25,7 @@ func TestContractManifestV3JSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := `{"schema_version":"3","application":"iam","service":"iam-core","release":"dev","routes":[{"name":"iam.oidcclient.list","method":"GET","route_template":"/api/v1/oidc-clients","action":"iam:oidc_client:select"}]}`
+	want := `{"schema_version":"3","application":"iam","service":"iam-core","release":"dev","deployment_generation":0,"routes":[{"name":"iam.oidcclient.list","method":"GET","route_template":"/api/v1/oidc-clients","action":"iam:oidc_client:select"}]}`
 	if string(raw) != want {
 		t.Fatalf("wire manifest = %s", raw)
 	}

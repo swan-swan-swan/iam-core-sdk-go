@@ -31,8 +31,8 @@ func TestDocumentationContract(t *testing.T) {
 			}
 		}
 	}
-	if version := read("VERSION"); version != "3.3.0\n" {
-		t.Errorf("VERSION = %q, want %q", version, "3.3.0\\n")
+	if version := read("VERSION"); version != "3.4.0\n" {
+		t.Errorf("VERSION = %q, want %q", version, "3.4.0\\n")
 	}
 
 	readme := read("README.md")
@@ -43,6 +43,7 @@ func TestDocumentationContract(t *testing.T) {
 		"v3.1.0",
 		"v3.2.0",
 		"v3.3.0",
+		"v3.4.0",
 		"单一 Go Module",
 		"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/core",
 		"github.com/swan-swan-swan/iam-core-sdk-go/v3/management/client",
@@ -115,6 +116,7 @@ func TestDocumentationContract(t *testing.T) {
 		"v3.1.0",
 		"v3.2.0",
 		"v3.3.0",
+		"v3.4.0",
 		"github.com/swan-swan-swan/iam-core-sdk-go",
 		"Runtime + approved platform-integration Management",
 		"IAM Core v1.8.1",
@@ -129,6 +131,7 @@ func TestDocumentationContract(t *testing.T) {
 		"v3.1.0",
 		"v3.2.0",
 		"v3.3.0",
+		"v3.4.0",
 		"v1.0.0",
 		"Browser global logout",
 		"operationally breaking",

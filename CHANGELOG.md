@@ -4,6 +4,14 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v3.4.0
+
+### HTTP Catalog deployment generation
+
+- Added a monotonic deployment generation and canonical Manifest hash to full Catalog sync and heartbeat requests.
+- Rejects stale or conflicting generations without automatic re-registration, preventing old replicas from replacing a newer published Catalog.
+- Requires consumers to provide a new generation for each deployment and rollback after IAM Core Server supports the v3.4.0 protocol.
+
 ## v3.3.0
 
 ### HTTP Catalog registration heartbeat

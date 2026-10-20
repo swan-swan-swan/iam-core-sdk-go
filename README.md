@@ -1,6 +1,6 @@
 # IAM Core Go SDK
 
-本仓库提供面向 IAM Core 的 Go SDK。当前已发布的 `v3.3.0` 使用单一 Go Module；本仓正在准备的 `v3.4.0` 更新 HTTP Catalog 部署代次协议。
+本仓库提供面向 IAM Core 的 Go SDK。当前版本 `v3.4.0` 使用单一 Go Module，支持 HTTP Catalog 部署代次协议。
 Module 路径为
 `github.com/swan-swan-swan/iam-core-sdk-go/v3`，并在同一版本中明确划分两类能力：
 
@@ -15,7 +15,7 @@ Module 路径为
 [v0.2 → v0.3 迁移指南](docs/migration-v0.2-to-v0.3.md)。
 RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 
-最低 Go 版本为 1.24。当前开发分支的协议边界见
+最低 Go 版本为 1.24。协议边界见
 [SDK v3.4.0 HTTP Catalog 部署代次契约](docs/iam-core-v3.4.0-contract.md)、
 [SDK v3.3.0 HTTP Catalog 心跳契约](docs/iam-core-v3.3.0-contract.md)、
 [SDK v3.2.0 通知资料契约](docs/iam-core-v3.2.0-contract.md)、
@@ -28,7 +28,7 @@ RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 根 Module 同时包含 Runtime、Management、Gin Adapter 与 Redis Adapter。安装当前版本：
 
 ```bash
-go get github.com/swan-swan-swan/iam-core-sdk-go/v3@v3.3.0
+go get github.com/swan-swan-swan/iam-core-sdk-go/v3@v3.4.0
 ```
 
 根 Module 的依赖图包含 Gin 和 go-redis，但未 import 对应 Adapter 的程序不会编译或链接这些

@@ -18,7 +18,7 @@
 | v3.1.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core Service Account、机器 Bearer Catalog 与 Manifest v3 | 1.24+ | 验证机器主体 `subject_type`/`azp`；Catalog 由调用方注入 `core.TokenSource`；BFF 保留已验证 MFA 上下文 |
 | v3.2.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core 最小用户目录与通知资料解析 | 1.24+ | 批量校验明确用户 subject；按所选渠道解析邮箱、短信及应用范围飞书 `open_id`；不解析组织、角色或 Service Account |
 | v3.3.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core HTTP Catalog 服务心跳接口 | 1.24+ | 成功完整注册后按宿主生命周期续约；hash 冲突时完整重注册；失败有界重试并暴露健康状态 |
-| v3.4.0（待发布） | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core HTTP Catalog 部署代次与 Manifest hash | 1.24+ | 宿主注入单调 `deployment_generation`；Sync 验证代次和双 hash；冲突停止续约且不自动重注册 |
+| v3.4.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core HTTP Catalog 部署代次与 Manifest hash | 1.24+ | 宿主注入单调 `deployment_generation`；Sync 验证代次和双 hash；冲突停止续约且不自动重注册 |
 
 `v0.3.x` 不与 `v0.2.x` 源码兼容，也没有 deprecated wrapper；消费项目必须按迁移指南更换
 Module 和 import。Runtime 延续 PKCE S256、Client groups、真实 granted scopes、Manifest、
@@ -94,7 +94,7 @@ ID Token 建立并在 Session/refresh 中保留认证上下文。
 旧服务端不支持心跳时 SDK 会报告失败。完整协议见
 [SDK v3.3.0 HTTP Catalog 心跳契约](docs/iam-core-v3.3.0-contract.md)。
 
-待发布的 `v3.4.0` 要求宿主为每个 Application/Service 身份显式提供单调部署代次，
+`v3.4.0` 要求宿主为每个 Application/Service 身份显式提供单调部署代次，
 完整 Sync 和心跳使用同一 Manifest 摘要并校验服务端已接受版本。`v3.3.0` 的冲突自动重注册行为
 不适用于新版服务端；混合副本中的旧代次实例应停止续约，回滚也必须获取新代次。完整协议见
 [SDK v3.4.0 HTTP Catalog 部署代次契约](docs/iam-core-v3.4.0-contract.md)。

@@ -1,4 +1,4 @@
-# IAM Core SDK v3.4.0 HTTP Catalog 部署代次契约（待发布）
+# IAM Core SDK v3.4.0 HTTP Catalog 部署代次契约
 
 `runtime/httpcatalog.Config.DeploymentGeneration` 是宿主为每个 `(application, service)` 身份
 分配的 `uint64` 代次。零值也会作为 `deployment_generation: 0` 显式发送。CI 或 Helm 必须使

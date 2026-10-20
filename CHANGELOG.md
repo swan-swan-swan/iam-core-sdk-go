@@ -4,6 +4,17 @@ All notable changes follow [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+## v3.3.0
+
+### HTTP Catalog registration heartbeat
+
+- Added host-managed Catalog registration heartbeats after a successful full sync, using the
+  existing injected `TokenSource` and a cancellable context.
+- Re-registers the full Manifest when the server reports a Catalog hash conflict, and retries
+  other transient heartbeat failures with bounded backoff.
+- Exposes heartbeat health so consumers can detect failed renewal. Requires an IAM Core Server
+  with the registration heartbeat endpoint; consumers start `RunHeartbeat(ctx)` after `Sync`.
+
 ## v3.2.0
 
 ### Notification contact directory

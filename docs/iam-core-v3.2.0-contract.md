@@ -1,15 +1,34 @@
-# IAM Core SDK v3.2.0 HTTP Catalog 心跳契约
+# IAM Core SDK v3.2.0 通知资料契约
 
-`runtime/httpcatalog.Registry` 在完整 `Sync` 成功后保存服务端返回的当前目录 hash。
-调用方须在宿主生命周期内运行 `RunHeartbeat(ctx)`；默认间隔 24 小时，可通过
-`Config.HeartbeatInterval` 配置。`HeartbeatOnce(ctx)` 可供受控调度或检测使用。
+本版本延续 [v3.1.0 机器身份契约](iam-core-v3.1.0-contract.md)和
+[v3.0.0 业务授权契约](iam-core-v3.0.0-contract.md)，新增只供受控服务调用的最小用户目录与通知资料
+Management Client。
 
-续约调用 `POST /api/v1/http-resource-catalog/registration/heartbeat`，仅发送
-`catalog_hash`，每次从 `core.TokenSource` 获取当前机器令牌。SDK 不缓存令牌，也不将其写入
-日志或 Observer。服务端返回 409 时，SDK 以完整 Manifest 再次 `Sync`，让服务端重新确认
-该服务的目录和自动策略。其他失败按 `HeartbeatRetryDelay` 进行最多三次有界退避尝试，
-仍失败则返回通用错误，宿主负责后续重启与告警；失败的心跳不代表
-目录已成功续约。旧实例的 hash 不得覆盖新版本目录。
+## 最小用户目录
 
-`RunHeartbeat` 在 `ctx` 取消后退出。业务宿主应在启动完成注册后运行它，并在停机时取消
-同一个生命周期 context。`Sync` 仍是完整覆盖，不提供逐条资源追加或策略覆盖入口。
+`management/userdirectory` 支持搜索活动 IAM 用户和批量校验明确的用户 subject。响应只包含稳定
+subject、用户名、显示名称和活动状态，不返回邮箱、手机号、部门、角色、标签、用户组或 Service
+Account。调用方不得用显示名称推断稳定身份。
+
+## 通知资料解析
+
+`management/notificationcontacts.BatchResolve` 接收一至一百个明确 IAM subject，以及实际通知任务
+选择的 `email|sms|feishu_app` 渠道。结果逐 subject 区分：
+
+- `active`：活动用户；所选渠道分别返回 `available=true|false`；
+- `inactive`：用户存在但已停用；
+- `not_found`：subject 不存在。
+
+活动用户缺少某个渠道的资料不会阻断其他渠道。邮箱和手机号只在请求对应渠道时返回。飞书结果必须
+同时包含租户、应用和该应用范围的 `open_id`；SDK 不调用飞书通讯录，不按显示名称或手机号临时解析
+`open_id`。
+
+## 凭据和安全边界
+
+两个 Client 复用 `management/client.Transport`，由调用方注入机器 `TokenSource`。SDK 不接收 Client
+Secret，不获取、刷新或缓存 Access Token，不缓存联系人，也不自动重试。生产 Base URL 必须使用
+HTTPS；仅 loopback 测试允许 HTTP。Token、Secret、完整响应正文以及邮箱、手机号、飞书标识不得进入
+错误、Observer 或失败断言输出。
+
+通知资料不是第二套用户主数据。SDK 不提供部门、角色、标签或用户组接收人解析，也不承担业务系统的
+通知对象选择。

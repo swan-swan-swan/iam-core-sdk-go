@@ -17,6 +17,7 @@
 | v3.0.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core business authorization / Manifest v3 | 1.24+ | lower-kebab 业务权限、直接 Route Name Resource、四字段 RouteSpec、一个 Action 多 API |
 | v3.1.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core Service Account、机器 Bearer Catalog 与 Manifest v3 | 1.24+ | 验证机器主体 `subject_type`/`azp`；Catalog 由调用方注入 `core.TokenSource`；BFF 保留已验证 MFA 上下文 |
 | v3.2.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core 最小用户目录与通知资料解析 | 1.24+ | 批量校验明确用户 subject；按所选渠道解析邮箱、短信及应用范围飞书 `open_id`；不解析组织、角色或 Service Account |
+| v3.3.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core HTTP Catalog 服务心跳接口 | 1.24+ | 成功完整注册后按宿主生命周期续约；hash 冲突时完整重注册；失败有界重试并暴露健康状态 |
 
 `v0.3.x` 不与 `v0.2.x` 源码兼容，也没有 deprecated wrapper；消费项目必须按迁移指南更换
 Module 和 import。Runtime 延续 PKCE S256、Client groups、真实 granted scopes、Manifest、
@@ -85,3 +86,9 @@ v3 的 `core.AuthContext` 以新增字段方式提供 `AuthTime` 与 `Authentica
 `auth_time`/`amr` 时仍可验证，字段分别为零值和空切片；该状态仅表示认证方式未知，不能证明 MFA。
 新字段不改变 Access Token、PDP、Management 或 Manifest 的既有失败关闭边界，BFF 只从已验证
 ID Token 建立并在 Session/refresh 中保留认证上下文。
+
+`v3.3.0` 为 `runtime/httpcatalog.Registry` 增加受宿主 `context` 控制的服务心跳。
+消费方应在完整 `Sync` 成功后运行 `RunHeartbeat(ctx)`；默认每 24 小时续约，
+每次从现有 `TokenSource` 获取机器令牌。IAM Core Server 需先提供对应心跳入口和目录版本确认，
+旧服务端不支持心跳时 SDK 会报告失败。完整协议见
+[SDK v3.3.0 HTTP Catalog 心跳契约](docs/iam-core-v3.3.0-contract.md)。

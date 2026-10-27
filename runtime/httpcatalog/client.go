@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -32,7 +33,7 @@ func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 		if resultErr != nil {
 			outcome = "error"
 		}
-		r.observe(ctx, core.Event{Operation: registrationOperation, Outcome: outcome, CredentialSource: "bearer", Duration: time.Since(started)})
+		r.observe(ctx, core.Event{Operation: registrationOperation, Outcome: outcome, CredentialSource: r.credentialSource(), Duration: time.Since(started)})
 	}()
 	manifest, version, err := r.manifestSnapshot()
 	snapshotVersion = version
@@ -57,17 +58,15 @@ func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 	if err != nil {
 		return Result{}, errCatalogRegistration
 	}
-	token, err := r.config.Tokens.AccessToken(ctx)
-	if err != nil || !validBearerToken(token) {
-		return Result{}, errCatalogRegistration
-	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPut, r.endpoint, bytes.NewReader(payload))
 	if err != nil {
 		return Result{}, errCatalogRegistration
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+token)
+	if err := r.authenticateRequest(ctx, request); err != nil {
+		return Result{}, err
+	}
 	response, err := r.client.Do(request)
 	if err != nil {
 		return Result{}, errCatalogRegistration
@@ -78,7 +77,7 @@ func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 		return Result{}, ErrGenerationConflict
 	}
 	if response.StatusCode != http.StatusOK {
-		return Result{}, errCatalogRegistration
+		return Result{}, fmt.Errorf("%w: HTTP %d", errCatalogRegistration, response.StatusCode)
 	}
 	var envelope struct {
 		Code    int    `json:"code"`
@@ -116,7 +115,7 @@ func (r *Registry) HeartbeatOnce(ctx context.Context) (resultErr error) {
 		if resultErr != nil {
 			outcome = "error"
 		}
-		r.observe(ctx, core.Event{Operation: "httpcatalog.heartbeat", Outcome: outcome, CredentialSource: "bearer", Duration: time.Since(started)})
+		r.observe(ctx, core.Event{Operation: "httpcatalog.heartbeat", Outcome: outcome, CredentialSource: r.credentialSource(), Duration: time.Since(started)})
 	}()
 	r.mu.RLock()
 	catalogHash = r.catalogHash
@@ -149,17 +148,15 @@ func (r *Registry) HeartbeatOnce(ctx context.Context) (resultErr error) {
 	if err != nil {
 		return errCatalogRegistration
 	}
-	token, err := r.config.Tokens.AccessToken(ctx)
-	if err != nil || !validBearerToken(token) {
-		return errCatalogRegistration
-	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.config.BaseURL+heartbeatPath, bytes.NewReader(payload))
 	if err != nil {
 		return errCatalogRegistration
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+token)
+	if err := r.authenticateRequest(ctx, request); err != nil {
+		return err
+	}
 	response, err := r.client.Do(request)
 	if err != nil {
 		return errCatalogRegistration
@@ -170,7 +167,7 @@ func (r *Registry) HeartbeatOnce(ctx context.Context) (resultErr error) {
 		return ErrGenerationConflict
 	}
 	if response.StatusCode != http.StatusOK {
-		return errCatalogRegistration
+		return fmt.Errorf("%w: HTTP %d", errCatalogRegistration, response.StatusCode)
 	}
 	var envelope struct {
 		Code int `json:"code"`

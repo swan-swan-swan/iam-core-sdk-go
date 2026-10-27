@@ -2,6 +2,13 @@
 
 All notable changes follow [Semantic Versioning](https://semver.org/).
 
+## v3.5.0
+
+- Add injected Registrar credentials for HTTPS Basic Catalog registration and heartbeat, independent of Service Accounts and OAuth token issuance.
+- Keep Manifest v3, deployment-generation fencing and hash validation unchanged.
+- Reject mixed credentials; retain safe HTTP status diagnostics without response bodies or secrets.
+- Deprecate Config.Tokens for Catalog (remove in next major); explicit old-server compatibility only, never automatic fallback. Coordinate IAM Core and consumers before switching authentication.
+
 ## Unreleased
 
 ## v3.4.0

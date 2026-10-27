@@ -45,7 +45,10 @@ type Config struct {
 	Release     string
 	// DeploymentGeneration 由宿主部署流程为每个 application/service 分配，零值也是显式代次。
 	DeploymentGeneration uint64
-	// Tokens 为每次 Catalog 同步提供当前机器 Access Token；Registry 不缓存令牌。
+	// Credentials 为注册和续约提供同一 Registrar 凭据源。
+	Credentials RegistrarCredentialSource
+	// Tokens 为旧服务端提供机器 Access Token。
+	// Deprecated: 新接入使用 Credentials；仅保留旧服务端显式兼容，不自动回退，下一主版本移除。
 	Tokens     core.TokenSource
 	HTTPClient *http.Client
 	Observer   core.Observer
@@ -128,7 +131,12 @@ func NewRegistry(config Config) (*Registry, error) {
 	config.Application = strings.TrimSpace(config.Application)
 	config.Service = strings.TrimSpace(config.Service)
 	config.Release = strings.TrimSpace(config.Release)
-	if config.BaseURL == "" || config.Application == "" || config.Service == "" || config.Release == "" || nilcheck.IsNil(config.Tokens) || (config.Observer != nil && nilcheck.IsNil(config.Observer)) {
+	hasCredentials := !nilcheck.IsNil(config.Credentials)
+	hasTokens := !nilcheck.IsNil(config.Tokens)
+	if (config.Credentials != nil && !hasCredentials) || (config.Tokens != nil && !hasTokens) {
+		return nil, errCatalogRegistration
+	}
+	if config.BaseURL == "" || config.Application == "" || config.Service == "" || config.Release == "" || hasCredentials == hasTokens || (config.Observer != nil && nilcheck.IsNil(config.Observer)) {
 		return nil, errCatalogRegistration
 	}
 	if config.HeartbeatInterval < 0 || config.HeartbeatRetryDelay < 0 {

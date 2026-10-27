@@ -19,6 +19,7 @@
 | v3.2.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core 最小用户目录与通知资料解析 | 1.24+ | 批量校验明确用户 subject；按所选渠道解析邮箱、短信及应用范围飞书 `open_id`；不解析组织、角色或 Service Account |
 | v3.3.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core HTTP Catalog 服务心跳接口 | 1.24+ | 成功完整注册后按宿主生命周期续约；hash 冲突时完整重注册；失败有界重试并暴露健康状态 |
 | v3.4.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core HTTP Catalog 部署代次与 Manifest hash | 1.24+ | 宿主注入单调 `deployment_generation`；Sync 验证代次和双 hash；冲突停止续约且不自动重注册 |
+| v3.5.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | IAM Core Registrar Secret Catalog 认证 | 1.24+ | 注入 Registrar 凭据源，注册和续约统一 HTTPS Basic；保持 Manifest v3/部署代次；旧 Tokens 显式兼容已弃用 |
 
 `v0.3.x` 不与 `v0.2.x` 源码兼容，也没有 deprecated wrapper；消费项目必须按迁移指南更换
 Module 和 import。Runtime 延续 PKCE S256、Client groups、真实 granted scopes、Manifest、
@@ -98,3 +99,9 @@ ID Token 建立并在 Session/refresh 中保留认证上下文。
 完整 Sync 和心跳使用同一 Manifest 摘要并校验服务端已接受版本。`v3.3.0` 的冲突自动重注册行为
 不适用于新版服务端；混合副本中的旧代次实例应停止续约，回滚也必须获取新代次。完整协议见
 [SDK v3.4.0 HTTP Catalog 部署代次契约](docs/iam-core-v3.4.0-contract.md)。
+
+## v3.5.0 — Registrar Secret Catalog
+
+Catalog Credentials 认证需要 IAM Core Server 的 Registrar Basic 协议修复版本；注册、更新和续约均使用绑定 Application/service 的 registrar Client Secret，不要求 Service Account。Manifest 固定 schema_version=3，部署代次语义延续 v3.4.0。
+
+旧 Config.Tokens 仅与旧 Bearer Catalog 服务端显式配对，已弃用且下一主版本移除。Credentials 与 Tokens 互斥；不做自动协议降级。新服务端不承诺接受旧 Bearer Catalog 调用，需协调升级。业务 Runtime/BFF/PDP 的 TokenSource 契约保持不变。

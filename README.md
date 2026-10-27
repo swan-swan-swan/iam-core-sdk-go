@@ -1,6 +1,6 @@
 # IAM Core Go SDK
 
-本仓库提供面向 IAM Core 的 Go SDK。当前版本 `v3.4.0` 使用单一 Go Module，支持 HTTP Catalog 部署代次协议。
+本仓库提供面向 IAM Core 的 Go SDK。当前版本 `v3.5.0` 使用单一 Go Module，支持 HTTP Catalog 部署代次协议。
 Module 路径为
 `github.com/swan-swan-swan/iam-core-sdk-go/v3`，并在同一版本中明确划分两类能力：
 
@@ -16,6 +16,7 @@ Module 路径为
 RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 
 最低 Go 版本为 1.24。协议边界见
+[SDK v3.5.0 Registrar Secret 契约](docs/iam-core-v3.5.0-contract.md)、
 [SDK v3.4.0 HTTP Catalog 部署代次契约](docs/iam-core-v3.4.0-contract.md)、
 [SDK v3.3.0 HTTP Catalog 心跳契约](docs/iam-core-v3.3.0-contract.md)、
 [SDK v3.2.0 通知资料契约](docs/iam-core-v3.2.0-contract.md)、
@@ -28,7 +29,7 @@ RPC 暂不支持，也没有 RPC package、adapter 或兼容承诺。
 根 Module 同时包含 Runtime、Management、Gin Adapter 与 Redis Adapter。安装当前版本：
 
 ```bash
-go get github.com/swan-swan-swan/iam-core-sdk-go/v3@v3.4.0
+go get github.com/swan-swan-swan/iam-core-sdk-go/v3@v3.5.0
 ```
 
 根 Module 的依赖图包含 Gin 和 go-redis，但未 import 对应 Adapter 的程序不会编译或链接这些
@@ -102,13 +103,14 @@ import ginadapter "github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/adapters
 
 `runtime/httpcatalog` 收集代码拥有的完整 `RouteSpec`。调用方只声明 Name、Method、RouteTemplate
 和 Action；Resource Server、PDP Resource 与 Canonical Resource 由 SDK 确定性派生。独立的
-业务服务通过 `core.TokenSource` 注入当前机器 Access Token，并使用 Bearer 认证执行单次启动同步。
-SDK 不接收 Client Secret，也不负责 Client Credentials 的获取、缓存、刷新或重试。Registry 每次
-`Sync` 都重新读取 Token；在同步成功前保持 health down，重试调度由业务进程 lifecycle 负责。
-
+业务服务通过 `httpcatalog.RegistrarCredentialSource` 注入当前 `*-catalog-registrar`
+Client ID/Secret；注册和续约统一使用 HTTPS Basic，不要求 Service Account、已有 Catalog 或业务策略。
+Registrar 固定绑定 Application/service，启停独立于应用业务入口。凭据源由宿主管理轮换，Registry 不换取或缓存 Token。
+`Config.Tokens` 已弃用，仅保留旧服务端的显式兼容入口，下一主版本移除；两种凭据不能同时配置，不自动回退。
+需要配套支持 Registrar 协议的 IAM Core，新服务端不接受旧 Bearer Catalog 认证。
 成功同步后，用同一宿主生命周期维持心跳。`RunHeartbeat` 默认每 24 小时续约一次，宿主取消
 `context` 时退出；续约请求发送部署代次、当前完整 Manifest hash 和已发布 Catalog hash，
-并重新向 `TokenSource` 取 Token。`40901/catalog_generation_conflict` 立即停止续约，
+并重新向 `RegistrarCredentialSource` 读取当前凭据。`40901/catalog_generation_conflict` 立即停止续约，
 不自动完整注册；本地路由清单变化也使 Registry 不健康，并须以新的部署代次创建 Registry 后完整 Sync。
 其他续约失败最多重试 3 次（默认 1 分钟、2 分钟退避），仍失败则返回错误。
 宿主必须先完成 Sync 才启动心跳；没有已同步版本时 `RunHeartbeat` 返回错误，不代为注册。
@@ -119,7 +121,9 @@ CI 或 Helm 应按每个 Application/Service 身份单调分配代次。回滚�
 registry, err := httpcatalog.NewRegistry(httpcatalog.Config{
     BaseURL: iamBaseURL, Application: "beacon", Service: "notify-server", Release: release,
     DeploymentGeneration: deploymentGeneration,
-    Tokens: machineTokenSource,
+    Credentials: httpcatalog.RegistrarCredentialSourceFunc(func(ctx context.Context) (httpcatalog.RegistrarCredentials, error) {
+        return httpcatalog.RegistrarCredentials{ClientID: registrarClientID, ClientSecret: registrarClientSecret}, nil
+    }),
 })
 if err != nil { return err }
 // 注册所有 RouteSpec 后，先完成完整目录同步。

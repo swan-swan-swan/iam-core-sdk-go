@@ -91,6 +91,11 @@ var dataDecisionFields = map[string]struct{}{
 }
 
 func walkObject(decoder *json.Decoder, canonical map[string]struct{}, root bool) error {
+	return walkObjectWithData(decoder, canonical, dataDecisionFields, root)
+}
+
+// walkObjectWithData 复用重复键检查并显式限定不同端点的 data 规范字段。
+func walkObjectWithData(decoder *json.Decoder, canonical, dataFields map[string]struct{}, root bool) error {
 	seen := make(map[string]struct{})
 	for decoder.More() {
 		keyToken, err := decoder.Token()
@@ -107,7 +112,7 @@ func walkObject(decoder *json.Decoder, canonical map[string]struct{}, root bool)
 		seen[key] = struct{}{}
 		if root && key == "data" {
 			opening, err := decoder.Token()
-			if err != nil || opening != json.Delim('{') || walkObject(decoder, dataDecisionFields, false) != nil {
+			if err != nil || opening != json.Delim('{') || walkObjectWithData(decoder, dataFields, dataFields, false) != nil {
 				return errInvalidDecisionResponse
 			}
 			continue

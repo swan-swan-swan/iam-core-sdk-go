@@ -105,3 +105,11 @@ ID Token 建立并在 Session/refresh 中保留认证上下文。
 Catalog Credentials 认证需要 IAM Core Server 的 Registrar Basic 协议修复版本；注册、更新和续约均使用绑定 Application/service 的 registrar Client Secret，不要求 Service Account。Manifest 固定 schema_version=3，部署代次语义延续 v3.4.0。
 
 旧 Config.Tokens 仅与旧 Bearer Catalog 服务端显式配对，已弃用且下一主版本移除。Credentials 与 Tokens 互斥；不做自动协议降级。新服务端不承诺接受旧 Bearer Catalog 调用，需协调升级。业务 Runtime/BFF/PDP 的 TokenSource 契约保持不变。
+
+## v3.6.0 — Service Account API Key
+
+| SDK | Module | IAM Core contract | Go | 能力 |
+| --- | --- | --- | --- | --- |
+| v3.6.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | 服务账号 API Key resolve/PDP 协调升级 | 1.24+ | Runtime 在线身份解析和逐请求 PDP；Management APIKeySource 直接调用；保留人员交互和 Registrar 边界 |
+
+新增接口为 opt-in，既有 Bearer 人员和 Registrar 调用保持源码兼容。对应新 IAM Server 退役机器 client_credentials，需要维护窗口协调升级；SDK 发布不代表旧服务已支持。完整协议见 [v3.6.0 契约](docs/iam-core-v3.6.0-contract.md)。

@@ -7,7 +7,13 @@ import (
 )
 
 type AuthContext struct {
-	Subject string
+	// AuthenticationMethod 区分在线确认的 API Key 与 JWT 身份。
+	AuthenticationMethod string
+	// CredentialOpenID 是 API Key 公开标识，不是 OIDC ClientID。
+	CredentialOpenID string
+	// ApplicationOpenID 是在线解析确认的程序身份归属。
+	ApplicationOpenID string
+	Subject           string
 	// SubjectType 是已验证令牌声明的主体类型；空值仅表示兼容旧用户令牌。
 	SubjectType string
 	// AuthorizedParty 是已验证令牌中的授权客户端标识。
@@ -37,6 +43,8 @@ type CredentialSource string
 const (
 	CredentialBearer  CredentialSource = "bearer"
 	CredentialSession CredentialSource = "session"
+	// CredentialAPIKey 表示直接服务账号凭据。
+	CredentialAPIKey CredentialSource = "api_key"
 )
 
 type TokenSource interface {
@@ -50,6 +58,8 @@ func (f TokenSourceFunc) AccessToken(ctx context.Context) (string, error) {
 }
 
 type Credential struct {
+	// APIKeys 仅用于直接程序凭据，不复用 Tokens。
+	APIKeys   APIKeySource
 	Source    CredentialSource
 	SessionID string
 	Auth      AuthContext

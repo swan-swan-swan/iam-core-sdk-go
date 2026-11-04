@@ -100,6 +100,11 @@ func (c *PDPClient) Decide(ctx context.Context, tokens core.TokenSource, route R
 		return Decision{}, newPDPError(core.KindUnauthenticated, decideOperation, 0, false)
 	}
 
+	return c.sendDecision(ctx, requestCtx, "Bearer "+accessToken, route)
+}
+
+// sendDecision 复用统一 PDP 协议，不根据密钥类型建立第二份路由映射。
+func (c *PDPClient) sendDecision(ctx, requestCtx context.Context, authorization string, route Route) (decision Decision, resultErr error) {
 	payload, err := json.Marshal(decisionRequest{
 		ResourceServer: route.resourceServer,
 		Resource:       route.resource,
@@ -115,7 +120,7 @@ func (c *PDPClient) Decide(ctx context.Context, tokens core.TokenSource, route R
 	}
 	request.Header.Set("Accept", "application/json")
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+accessToken)
+	request.Header.Set("Authorization", authorization)
 
 	response, err := c.httpClient.Do(request)
 	if err != nil {

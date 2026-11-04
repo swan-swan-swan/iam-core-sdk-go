@@ -46,7 +46,16 @@ func (s *Service) requireHandler(route Route, next http.Handler) http.Handler {
 			return
 		}
 		request = requestWithCredential(request, credential)
-		decision, err := s.pdp.Decide(request.Context(), credential.Tokens, route)
+		var decision Decision
+		if credential.Source == core.CredentialAPIKey {
+			if s.apiKeyAuthorizer == nil {
+				err = credentialError(core.KindUnauthenticated)
+			} else {
+				decision, err = s.apiKeyAuthorizer.DecideAPIKey(request.Context(), credential.APIKeys, route)
+			}
+		} else {
+			decision, err = s.pdp.Decide(request.Context(), credential.Tokens, route)
+		}
 		if err != nil {
 			s.record(request.Context(), serviceRequireOperation, serviceOutcome(err), credential.Source, started)
 			s.responder.Respond(w, request, err)

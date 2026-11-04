@@ -17,15 +17,17 @@ const (
 
 // Config configures a strict management API transport.
 type Config struct {
-	BaseURL     string
-	TokenSource TokenSource
-	HTTPClient  *http.Client
-	Timeout     time.Duration
-	Observer    Observer
+	APIKeySource APIKeySource
+	BaseURL      string
+	TokenSource  TokenSource
+	HTTPClient   *http.Client
+	Timeout      time.Duration
+	Observer     Observer
 }
 
 // Client executes authenticated management API requests.
 type Client struct {
+	apiKeys    APIKeySource
 	baseURL    *url.URL
 	tokens     TokenSource
 	httpClient *http.Client
@@ -37,7 +39,7 @@ type Client struct {
 // stores cookies.
 func New(cfg Config) (*Client, error) {
 	baseURL, ok := validBaseURL(cfg.BaseURL)
-	if !ok || isNilInterface(cfg.TokenSource) || cfg.Timeout < 0 {
+	if !ok || cfg.APIKeySource != nil && isNilInterface(cfg.APIKeySource) || isNilInterface(cfg.TokenSource) == isNilInterface(cfg.APIKeySource) || cfg.Timeout < 0 {
 		return nil, &Error{Kind: KindInvalidConfig}
 	}
 
@@ -57,6 +59,7 @@ func New(cfg Config) (*Client, error) {
 	}
 
 	return &Client{
+		apiKeys:    cfg.APIKeySource,
 		baseURL:    baseURL,
 		tokens:     cfg.TokenSource,
 		httpClient: &httpClient,

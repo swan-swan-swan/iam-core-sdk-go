@@ -2,6 +2,13 @@
 
 All notable changes follow [Semantic Versioning](https://semver.org/).
 
+## v3.6.0
+
+- Add direct APIKeySource business authentication with online identity resolution and per-request PDP.
+- Add Management API Key transport without OAuth token exchange; preserve user and Registrar boundaries.
+- Coordinate Server and consumer rollout; expired/revoked keys and malformed/redirected responses fail closed.
+- Validate six affected packages with focused tests/race/vet plus example builds; no live integration or deployment.
+
 ## v3.5.0
 
 - Add injected Registrar credentials for HTTPS Basic Catalog registration and heartbeat, independent of Service Accounts and OAuth token issuance.

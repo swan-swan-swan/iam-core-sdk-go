@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	wirecredential "github.com/swan-swan-swan/iam-core-sdk-go/v3/internal/credential"
 	"io"
 	"net/http"
 	"net/url"
@@ -46,9 +47,21 @@ func (c *Client) Do(ctx context.Context, request Request, out any) (metadata Met
 
 	callContext, cancel := context.WithTimeout(ctx, c.timeout)
 	defer cancel()
-	token, err := c.tokens.AccessToken(callContext)
-	if err != nil || !validAccessToken(token) {
-		return Metadata{}, &Error{Kind: KindUnauthenticated, Operation: operation}
+	authorization := ""
+	var err error
+	if c.apiKeys != nil {
+		key, keyErr := c.apiKeys.APIKey(callContext)
+		_, valid := wirecredential.APIKeyID(key)
+		if keyErr != nil || !valid {
+			return Metadata{}, &Error{Kind: KindUnauthenticated, Operation: operation}
+		}
+		authorization = "ApiKey " + key
+	} else {
+		token, tokenErr := c.tokens.AccessToken(callContext)
+		if tokenErr != nil || !validAccessToken(token) {
+			return Metadata{}, &Error{Kind: KindUnauthenticated, Operation: operation}
+		}
+		authorization = "Bearer " + token
 	}
 
 	var body []byte
@@ -64,7 +77,7 @@ func (c *Client) Do(ctx context.Context, request Request, out any) (metadata Met
 	if err != nil {
 		return Metadata{}, invalidArgumentError(operation)
 	}
-	httpRequest.Header.Set("Authorization", "Bearer "+token)
+	httpRequest.Header.Set("Authorization", authorization)
 	httpRequest.Header.Set("Accept", "application/json")
 	if request.Body != nil {
 		httpRequest.Header.Set("Content-Type", "application/json")

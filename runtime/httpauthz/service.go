@@ -32,30 +32,47 @@ type Authorizer interface {
 	Decide(context.Context, core.TokenSource, Route) (Decision, error)
 }
 
+// APIKeyAuthenticator 在线校验服务账号凭据并返回最小身份。
+type APIKeyAuthenticator interface {
+	AuthenticateAPIKey(context.Context, core.APIKeySource) (core.AuthContext, error)
+}
+
+// APIKeyAuthorizer 为直接 API Key 请求获取一次路由授权决定。
+type APIKeyAuthorizer interface {
+	DecideAPIKey(context.Context, core.APIKeySource, Route) (Decision, error)
+}
+
 // Config supplies the mandatory verifier and PDP plus optional Session and
 // response extensions.
 type Config struct {
-	Verifier  core.AccessTokenVerifier
-	PDP       Authorizer
-	Sessions  SessionResolver
-	Responder ErrorResponder
-	Observer  core.Observer
-	Logger    *slog.Logger
+	APIKeyAuthenticator APIKeyAuthenticator
+	APIKeyAuthorizer    APIKeyAuthorizer
+	Verifier            core.AccessTokenVerifier
+	PDP                 Authorizer
+	Sessions            SessionResolver
+	Responder           ErrorResponder
+	Observer            core.Observer
+	Logger              *slog.Logger
 }
 
 // Service constructs fail-closed net/http authentication and authorization
 // handlers.
 type Service struct {
-	verifier  core.AccessTokenVerifier
-	pdp       Authorizer
-	sessions  SessionResolver
-	responder ErrorResponder
-	observer  core.Observer
-	logger    *slog.Logger
+	apiKeyAuthenticator APIKeyAuthenticator
+	apiKeyAuthorizer    APIKeyAuthorizer
+	verifier            core.AccessTokenVerifier
+	pdp                 Authorizer
+	sessions            SessionResolver
+	responder           ErrorResponder
+	observer            core.Observer
+	logger              *slog.Logger
 }
 
 // New validates all collaborators before returning a middleware service.
 func New(cfg Config) (*Service, error) {
+	if nilcheck.IsNil(cfg.APIKeyAuthenticator) != nilcheck.IsNil(cfg.APIKeyAuthorizer) || (cfg.APIKeyAuthenticator != nil && nilcheck.IsNil(cfg.APIKeyAuthenticator)) || (cfg.APIKeyAuthorizer != nil && nilcheck.IsNil(cfg.APIKeyAuthorizer)) {
+		return nil, middlewareConfigurationError()
+	}
 	if nilcheck.IsNil(cfg.Verifier) || nilcheck.IsNil(cfg.PDP) ||
 		(cfg.Sessions != nil && nilcheck.IsNil(cfg.Sessions)) ||
 		(cfg.Responder != nil && nilcheck.IsNil(cfg.Responder)) ||
@@ -75,6 +92,7 @@ func New(cfg Config) (*Service, error) {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	return &Service{
+		apiKeyAuthenticator: cfg.APIKeyAuthenticator, apiKeyAuthorizer: cfg.APIKeyAuthorizer,
 		verifier: cfg.Verifier, pdp: cfg.PDP, sessions: cfg.Sessions,
 		responder: responder, observer: observer, logger: logger,
 	}, nil

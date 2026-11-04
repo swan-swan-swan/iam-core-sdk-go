@@ -2,6 +2,7 @@ package httpauthz
 
 import (
 	"context"
+	wirecredential "github.com/swan-swan-swan/iam-core-sdk-go/v3/internal/credential"
 	"net/http"
 	"slices"
 	"strings"
@@ -67,6 +68,22 @@ func (s *Service) selectCredential(request *http.Request) (core.Credential, erro
 		return core.Credential{}, credentialError(core.KindCredentialConflict)
 	}
 	if headerPresent {
+		values, _ := authorizationHeaderValues(request.Header)
+		if len(values) == 1 && strings.HasPrefix(values[0], "ApiKey ") {
+			key := strings.TrimPrefix(values[0], "ApiKey ")
+			if _, valid := wirecredential.APIKeyID(key); !valid || s.apiKeyAuthenticator == nil {
+				return core.Credential{}, credentialError(core.KindUnauthenticated)
+			}
+			source := core.APIKeySourceFunc(func(context.Context) (string, error) { return key, nil })
+			auth, err := s.apiKeyAuthenticator.AuthenticateAPIKey(request.Context(), source)
+			if err != nil {
+				return core.Credential{}, err
+			}
+			if auth.SubjectType != "service_account" || !strings.HasPrefix(auth.Subject, "op_sa_") || auth.AuthenticationMethod != "api_key" || auth.CredentialOpenID == "" || auth.ApplicationOpenID == "" {
+				return core.Credential{}, credentialError(core.KindUnauthenticated)
+			}
+			return core.Credential{Source: core.CredentialAPIKey, Auth: cloneMiddlewareAuthContext(auth), APIKeys: source}, nil
+		}
 		token, _, err := credentialHeader(request)
 		if err != nil {
 			return core.Credential{}, err

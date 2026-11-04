@@ -24,6 +24,8 @@ type AuthContext struct {
 	IssuedAt        time.Time
 	NotBefore       time.Time
 	ExpiresAt       time.Time
+	// NeverExpires 仅表示在线确认的无限期 API Key，不适用于人员 Token 或 Session。
+	NeverExpires bool
 	// AuthTime 是当前认证上下文最初建立的时间。
 	AuthTime time.Time
 	// AuthenticationMethods 是已验证令牌声明的认证方式，调用方不得据此推断未声明的方法。

@@ -113,3 +113,7 @@ Catalog Credentials 认证需要 IAM Core Server 的 Registrar Basic 协议修�
 | v3.6.0 | `github.com/swan-swan-swan/iam-core-sdk-go/v3` | 服务账号 API Key resolve/PDP 协调升级 | 1.24+ | Runtime 在线身份解析和逐请求 PDP；Management APIKeySource 直接调用；保留人员交互和 Registrar 边界 |
 
 新增接口为 opt-in，既有 Bearer 人员和 Registrar 调用保持源码兼容。对应新 IAM Server 退役机器 client_credentials，需要维护窗口协调升级；SDK 发布不代表旧服务已支持。完整协议见 [v3.6.0 契约](docs/iam-core-v3.6.0-contract.md)。
+
+## v3.7.0：无限期 API Key
+
+支持 IAM 的显式 never_expires=true / expires_at=null，未声明或矛盾的到期元数据不能成为无限期身份。有限期旧响应保持兼容；旧 SDK 拒绝无限期 Key，因此需升级所有目标消费仓再使用此类 Key。详见 docs/iam-core-v3.7.0-contract.md。

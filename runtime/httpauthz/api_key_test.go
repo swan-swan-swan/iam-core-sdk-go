@@ -13,75 +13,127 @@ import (
 	"time"
 )
 
+// TestAPIKeyNeverExpiresContract 验证无限期必须显式声明，缺失或矛盾的到期信息失败关闭。
+func TestAPIKeyNeverExpiresContract(t *testing.T) {
+	key := "iak_01ARZ3NDEKTSV4RRFFQ69G5FAV." + strings.Repeat("A", 43)
+	future := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	for _, test := range []struct {
+		name, expiry string
+		allowed      bool
+	}{
+		{"legacy finite", `"expires_at":"` + future + `"`, true},
+		{"explicit finite", `"never_expires":false,"expires_at":"` + future + `"`, true},
+		{"unlimited", `"never_expires":true,"expires_at":null`, true},
+		{"null without flag", `"expires_at":null`, false},
+		{"missing both", `"other":null`, false},
+		{"missing expiry", `"never_expires":true`, false},
+		{"null finite", `"never_expires":false,"expires_at":null`, false},
+		{"conflicting date", `"never_expires":true,"expires_at":"` + future + `"`, false},
+		{"null flag", `"never_expires":null,"expires_at":null`, false},
+		{"wrong flag type", `"never_expires":"true","expires_at":null`, false},
+		{"zero date", `"expires_at":"0001-01-01T00:00:00Z"`, false},
+		{"expired", `"never_expires":false,"expires_at":"2020-01-01T00:00:00Z"`, false},
+		{"duplicate flag", `"never_expires":false,"never_expires":true,"expires_at":null`, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				fmt.Fprintf(w, `{"code":0,"message":"success","data":{"subject_type":"service_account","subject_open_id":"op_sa_beacon","credential_open_id":"op_sak_01ARZ3NDEKTSV4RRFFQ69G5FAV","application_open_id":"op_app_orders",%s}}`, test.expiry)
+			}))
+			defer upstream.Close()
+			pdp, err := httpauthz.NewPDPClient(httpauthz.PDPConfig{IssuerURL: upstream.URL, HTTPClient: upstream.Client()})
+			if err != nil {
+				t.Fatal(err)
+			}
+			auth, err := pdp.AuthenticateAPIKey(t.Context(), core.APIKeySourceFunc(func(context.Context) (string, error) { return key, nil }))
+			if (err == nil) != test.allowed {
+				t.Fatalf("allowed=%v error=%v", test.allowed, err)
+			}
+			if test.allowed && (auth.Subject != "op_sa_beacon" || (test.name == "unlimited") != auth.ExpiresAt.IsZero() || auth.NeverExpires != (test.name == "unlimited")) {
+				t.Fatal("expiry metadata mismatch")
+			}
+		})
+	}
+}
+
 // TestAPIKeyRequireAuthenticatesOnlineAndEnforcesPolicy 验证真实 SDK 请求链路，无 JWT 或 Token 换取。
 func TestAPIKeyRequireAuthenticatesOnlineAndEnforcesPolicy(t *testing.T) {
-	key := "iak_01ARZ3NDEKTSV4RRFFQ69G5FAV." + strings.Repeat("A", 43)
-	resolves, decisions, calls := 0, 0, 0
-	revoked, allowed := false, true
-	iam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "ApiKey "+key || r.Header.Get("Cookie") != "" {
-			t.Error("incorrect credential forwarding")
-		}
-		w.Header().Set("Content-Type", "application/json")
-		switch r.URL.Path {
-		case "/authorization/v1/credentials/resolve":
-			resolves++
-			if revoked {
-				w.WriteHeader(401)
-				_, _ = w.Write([]byte(`{"code":40101,"message":"invalid_api_key","data":null}`))
-				return
+	for _, unlimited := range []bool{false, true} {
+		t.Run(fmt.Sprint(unlimited), func(t *testing.T) {
+			key := "iak_01ARZ3NDEKTSV4RRFFQ69G5FAV." + strings.Repeat("A", 43)
+			resolves, decisions, calls := 0, 0, 0
+			revoked, allowed := false, true
+			iam := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Header.Get("Authorization") != "ApiKey "+key || r.Header.Get("Cookie") != "" {
+					t.Error("incorrect credential forwarding")
+				}
+				w.Header().Set("Content-Type", "application/json")
+				switch r.URL.Path {
+				case "/authorization/v1/credentials/resolve":
+					resolves++
+					if revoked {
+						w.WriteHeader(401)
+						_, _ = w.Write([]byte(`{"code":40101,"message":"invalid_api_key","data":null}`))
+						return
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "message": "success", "data": map[string]any{"subject_type": "service_account", "subject_open_id": "op_sa_beacon", "credential_open_id": "op_sak_01ARZ3NDEKTSV4RRFFQ69G5FAV", "application_open_id": "op_app_orders", "expires_at": func() any {
+						if unlimited {
+							return nil
+						}
+						return time.Now().Add(time.Hour).UTC()
+					}(), "never_expires": unlimited}})
+				case "/authorization/v1/decisions":
+					decisions++
+					var input map[string]any
+					if json.NewDecoder(r.Body).Decode(&input) != nil || len(input) != 4 || input["resource"] != "orders.item.list" {
+						t.Error("PDP request not bound to compiled route")
+					}
+					_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "message": "success", "data": map[string]any{"decision_id": "dec-key", "allowed": allowed, "reason_code": "policy", "action": "orders:orders:select"}})
+				default:
+					t.Error("unexpected authentication endpoint")
+					w.WriteHeader(500)
+				}
+			}))
+			defer iam.Close()
+			pdp, err := httpauthz.NewPDPClient(httpauthz.PDPConfig{IssuerURL: iam.URL, HTTPClient: iam.Client()})
+			if err != nil {
+				t.Fatal(err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "message": "success", "data": map[string]any{"subject_type": "service_account", "subject_open_id": "op_sa_beacon", "credential_open_id": "op_sak_01ARZ3NDEKTSV4RRFFQ69G5FAV", "application_open_id": "op_app_orders", "expires_at": time.Now().Add(time.Hour).UTC()}})
-		case "/authorization/v1/decisions":
-			decisions++
-			var input map[string]any
-			if json.NewDecoder(r.Body).Decode(&input) != nil || len(input) != 4 || input["resource"] != "orders.item.list" {
-				t.Error("PDP request not bound to compiled route")
+			verifier := &fakeVerifier{}
+			s, err := httpauthz.New(httpauthz.Config{Verifier: verifier, PDP: pdp, APIKeyAuthenticator: pdp, APIKeyAuthorizer: pdp})
+			if err != nil {
+				t.Fatal(err)
 			}
-			_ = json.NewEncoder(w).Encode(map[string]any{"code": 0, "message": "success", "data": map[string]any{"decision_id": "dec-key", "allowed": allowed, "reason_code": "policy", "action": "orders:orders:select"}})
-		default:
-			t.Error("unexpected authentication endpoint")
-			w.WriteHeader(500)
-		}
-	}))
-	defer iam.Close()
-	pdp, err := httpauthz.NewPDPClient(httpauthz.PDPConfig{IssuerURL: iam.URL, HTTPClient: iam.Client()})
-	if err != nil {
-		t.Fatal(err)
-	}
-	verifier := &fakeVerifier{}
-	s, err := httpauthz.New(httpauthz.Config{Verifier: verifier, PDP: pdp, APIKeyAuthenticator: pdp, APIKeyAuthorizer: pdp})
-	if err != nil {
-		t.Fatal(err)
-	}
-	h, err := s.Require(boundRoute(t), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		calls++
-		auth, ok := core.AuthContextFromContext(r.Context())
-		if !ok || auth.Subject != "op_sa_beacon" || auth.CredentialOpenID == "" || auth.AuthorizedParty != "" {
-			t.Error("identity was lost or masqueraded as client")
-		}
-		w.WriteHeader(200)
-	}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	call := func() int {
-		req := httptest.NewRequest("GET", "/orders", nil)
-		req.Header.Set("Authorization", "ApiKey "+key)
-		w := httptest.NewRecorder()
-		h.ServeHTTP(w, req)
-		return w.Code
-	}
-	if status := call(); status != 200 || resolves != 1 || decisions != 1 || calls != 1 || verifier.calls != 0 {
-		t.Fatalf("initial status=%d resolve=%d decide=%d handler=%d JWT=%d", status, resolves, decisions, calls, verifier.calls)
-	}
-	allowed = false
-	if status := call(); status != 403 || calls != 1 {
-		t.Fatalf("missing permission status=%d handler=%d", status, calls)
-	}
-	revoked = true
-	if status := call(); status != 401 || decisions != 2 || calls != 1 {
-		t.Fatalf("revoked status=%d decide=%d handler=%d", status, decisions, calls)
+			h, err := s.Require(boundRoute(t), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				auth, ok := core.AuthContextFromContext(r.Context())
+				if !ok || auth.Subject != "op_sa_beacon" || auth.CredentialOpenID == "" || auth.AuthorizedParty != "" || auth.NeverExpires != unlimited {
+					t.Error("identity was lost or masqueraded as client")
+				}
+				w.WriteHeader(200)
+			}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			call := func() int {
+				req := httptest.NewRequest("GET", "/orders", nil)
+				req.Header.Set("Authorization", "ApiKey "+key)
+				w := httptest.NewRecorder()
+				h.ServeHTTP(w, req)
+				return w.Code
+			}
+			if status := call(); status != 200 || resolves != 1 || decisions != 1 || calls != 1 || verifier.calls != 0 {
+				t.Fatalf("initial status=%d resolve=%d decide=%d handler=%d JWT=%d", status, resolves, decisions, calls, verifier.calls)
+			}
+			allowed = false
+			if status := call(); status != 403 || calls != 1 {
+				t.Fatalf("missing permission status=%d handler=%d", status, calls)
+			}
+			revoked = true
+			if status := call(); status != 401 || decisions != 2 || calls != 1 {
+				t.Fatalf("revoked status=%d decide=%d handler=%d", status, decisions, calls)
+			}
+		})
 	}
 }
 

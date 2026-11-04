@@ -15,7 +15,7 @@ import (
 )
 
 // apiKeyIdentityFields 限定身份解析响应的精确规范字段名。
-var apiKeyIdentityFields = map[string]struct{}{"subject_type": {}, "subject_open_id": {}, "credential_open_id": {}, "application_open_id": {}, "expires_at": {}}
+var apiKeyIdentityFields = map[string]struct{}{"subject_type": {}, "subject_open_id": {}, "credential_open_id": {}, "application_open_id": {}, "expires_at": {}, "never_expires": {}}
 
 // AuthenticateAPIKey 每次向可信 IAM 在线确认服务账号身份，不签发或缓存 Token。
 func (c *PDPClient) AuthenticateAPIKey(ctx context.Context, source core.APIKeySource) (auth core.AuthContext, resultErr error) {
@@ -77,24 +77,45 @@ func (c *PDPClient) AuthenticateAPIKey(ctx context.Context, source core.APIKeySo
 		Code    *int   `json:"code"`
 		Message string `json:"message"`
 		Data    *struct {
-			SubjectType   string    `json:"subject_type"`
-			Subject       string    `json:"subject_open_id"`
-			CredentialID  string    `json:"credential_open_id"`
-			ApplicationID string    `json:"application_open_id"`
-			ExpiresAt     time.Time `json:"expires_at"`
+			SubjectType   string          `json:"subject_type"`
+			Subject       string          `json:"subject_open_id"`
+			CredentialID  string          `json:"credential_open_id"`
+			ApplicationID string          `json:"application_open_id"`
+			ExpiresAt     json.RawMessage `json:"expires_at"`
+			NeverExpires  json.RawMessage `json:"never_expires"`
 		} `json:"data"`
 	}
 	if json.Unmarshal(body, &envelope) != nil || envelope.Code == nil || *envelope.Code != 0 || !safeDecisionMetadata(envelope.Message, true) || envelope.Data == nil {
 		return auth, newPDPError(core.KindProtocol, credentialOperation, 200, false)
 	}
 	identity := envelope.Data
-	if identity.SubjectType != "service_account" || !validIdentityID(identity.Subject, "op_sa_") || identity.CredentialID != id || !validIdentityID(identity.ApplicationID, "op_app_") || identity.ExpiresAt.IsZero() {
+	if identity.SubjectType != "service_account" || !validIdentityID(identity.Subject, "op_sa_") || identity.CredentialID != id || !validIdentityID(identity.ApplicationID, "op_app_") {
 		return auth, newPDPError(core.KindProtocol, credentialOperation, 200, false)
 	}
-	if !identity.ExpiresAt.After(time.Now()) {
-		return auth, newPDPError(core.KindUnauthenticated, credentialOperation, 401, false)
+	neverExpires := false
+	if len(identity.NeverExpires) > 0 {
+		switch string(identity.NeverExpires) {
+		case "true":
+			neverExpires = true
+		case "false":
+		default:
+			return auth, newPDPError(core.KindProtocol, credentialOperation, 200, false)
+		}
 	}
-	return core.AuthContext{Subject: identity.Subject, SubjectType: "service_account", CredentialOpenID: identity.CredentialID, ApplicationOpenID: identity.ApplicationID, AuthenticationMethod: "api_key", Issuer: strings.TrimSuffix(c.endpoint, "/authorization/v1/decisions"), ExpiresAt: identity.ExpiresAt}, nil
+	var expires time.Time
+	if neverExpires {
+		if string(identity.ExpiresAt) != "null" {
+			return auth, newPDPError(core.KindProtocol, credentialOperation, 200, false)
+		}
+	} else {
+		if json.Unmarshal(identity.ExpiresAt, &expires) != nil || expires.IsZero() {
+			return auth, newPDPError(core.KindProtocol, credentialOperation, 200, false)
+		}
+		if !expires.After(time.Now()) {
+			return auth, newPDPError(core.KindUnauthenticated, credentialOperation, 401, false)
+		}
+	}
+	return core.AuthContext{Subject: identity.Subject, SubjectType: "service_account", CredentialOpenID: identity.CredentialID, ApplicationOpenID: identity.ApplicationID, AuthenticationMethod: "api_key", Issuer: strings.TrimSuffix(c.endpoint, "/authorization/v1/decisions"), ExpiresAt: expires, NeverExpires: neverExpires}, nil
 }
 
 // DecideAPIKey 直接携带同一凭据向 IAM 请求一次路由策略判定。

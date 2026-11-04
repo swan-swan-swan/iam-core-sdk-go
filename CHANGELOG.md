@@ -2,6 +2,12 @@
 
 All notable changes follow [Semantic Versioning](https://semver.org/).
 
+## v3.7.0
+
+- Support explicitly non-expiring Service Account API Keys with never_expires=true and expires_at=null.
+- Keep finite-key responses from older IAM versions compatible; reject missing or contradictory expiry metadata.
+- Expose verified NeverExpires in AuthContext without changing user Token/Session expiry or per-request online authorization.
+
 ## v3.6.0
 
 - Add direct APIKeySource business authentication with online identity resolution and per-request PDP.

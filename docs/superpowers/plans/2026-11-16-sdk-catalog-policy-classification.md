@@ -1,5 +1,6 @@
-> SDK working Plan：此文件为冻结计划的执行副本；唯一正式来源位于 IAM Server，commit `9f05a79f23435a2b79f9106d1ddac40484cc1b0a`，原计划 SHA-256 `f1c962cad8cc33cfec2b9f30d12b327df7823c2bf6563949954417e97c2155d3`。
-> 仅记录 client-sdk 已完成的适用义务；跨仓 T7/T8 的完整链路和展示验收由主 Goal 继续，保持未勾选。
+> client-sdk working Plan。唯一冻结语义源为 IAM Server `9f05a79f23435a2b79f9106d1ddac40484cc1b0a` 的[正式规格](https://github.com/swan-swan-swan/iam-core-server/blob/9f05a79f23435a2b79f9106d1ddac40484cc1b0a/docs/superpowers/specs/2026-11-16-sdk-catalog-policy-classification-design.md)和[实施计划](https://github.com/swan-swan-swan/iam-core-server/blob/9f05a79f23435a2b79f9106d1ddac40484cc1b0a/docs/superpowers/plans/2026-11-16-sdk-catalog-policy-classification.md)；source handle `c8dadabf6aaaa2e2d20d17cd6286bd415bed8b84a1f8b4ef90b233e48a5acaa3`，用户实施批准已绑定 `GOAL-20261116-001`。
+> 本仓适用任务：T1/T2/T7/T8。顶层状态记录本仓实现及本地跨仓验收；正文步骤保留冻结模板。T7/T8 的真实 SDK/IAM/MySQL、Gateway 多节点/维护闭环和本地页面证据由同一 Goal 汇总；Goal 评审、治理、验收和代码完成记录由父级门禁继续执行。
+> 历史“仅文档批准”段落对应冻结前阶段；SDK 发布、生产 DDL、部署、生产迁移/合同交接及真实账号权限操作均未执行。
 
 # SDK Catalog Policy Classification Implementation Plan
 
@@ -81,8 +82,8 @@ verification:
 - [ ] T4：IAM分类生成、名称词汇及v4注册发布。
 - [ ] T5：完整Application预检、授权等价原位迁移与CLI。
 - [ ] T6：Ops Gateway全链显式分类、旧payload兼容与新快照发布。
-- [ ] T7：真实SDK到IAM的跨仓协议/迁移/恢复验证。
-- [ ] T8：仓库完成验证、UI验收证据及独立上线runbook。
+- [x] T7：真实SDK到IAM的跨仓协议/迁移/恢复验证。
+- [x] T8：仓库完成验证、UI验收证据及独立上线runbook。
 
 ## T1：分类合同和golden fixture（client-sdk、server）
 

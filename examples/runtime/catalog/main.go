@@ -13,12 +13,15 @@ import (
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpcatalog"
 )
 
+// main 导出示例清单，并在声明校验失败时以非零状态退出。
 func main() {
 	if err := run(); err != nil {
 		_, _ = os.Stderr.WriteString("catalog export failed\n")
 		os.Exit(1)
 	}
 }
+
+// run 用同一分类声明校验 PDP 事实并离线输出 v4 清单。
 func run() error {
 	declared, err := httpauthz.NewClassifiedRouteSpec(http.MethodGet, "/api/v1/portal/apps/:applicationOpenId/open", "portal.app.jenkins.open", "opsgw:jenkins:access", authzcontract.PolicyClassCardAccess)
 	if err != nil {

@@ -213,6 +213,7 @@ func (r *Registry) Check(context.Context) error {
 	return nil
 }
 
+// manifestDigest 统一读取 v3 和 v4 清单的各自规范摘要。
 type manifestDigest interface {
 	ManifestDigest() (string, error)
 }

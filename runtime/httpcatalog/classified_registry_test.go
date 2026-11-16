@@ -16,8 +16,10 @@ import (
 	"github.com/swan-swan-swan/iam-core-sdk-go/v3/runtime/httpcatalog"
 )
 
+// classifiedGoldenDigest 固定 SDK 与 IAM 共用清单的规范摘要。
 const classifiedGoldenDigest = "sha256:dcbe88742790dfa490d74f88444874892dfb17b1d1aff5888f169c2b58ada700"
 
+// classifiedFixture 读取跨组件共用的五字段清单。
 func classifiedFixture(t *testing.T) httpcatalog.ClassifiedManifest {
 	t.Helper()
 	b, err := os.ReadFile("testdata/classified-manifest-v4.json")
@@ -30,11 +32,15 @@ func classifiedFixture(t *testing.T) httpcatalog.ClassifiedManifest {
 	}
 	return m
 }
+
+// classifiedConfig 提供分类注册测试的固定身份和注入凭据。
 func classifiedConfig(url string) httpcatalog.Config {
 	return httpcatalog.Config{BaseURL: url, Application: "opsgw", Service: "ops-gateway-server", Release: "policy-classification-cutover", DeploymentGeneration: 101, Credentials: httpcatalog.RegistrarCredentialSourceFunc(func(context.Context) (httpcatalog.RegistrarCredentials, error) {
 		return httpcatalog.RegistrarCredentials{ClientID: "opsgw-catalog-registrar", ClientSecret: "injected-secret"}, nil
 	})}
 }
+
+// classifiedRegistry 将固定清单逐条登记到 v4 Registry。
 func classifiedRegistry(t *testing.T, url string) *httpcatalog.Registry {
 	t.Helper()
 	r, err := httpcatalog.NewClassifiedRegistry(classifiedConfig(url))

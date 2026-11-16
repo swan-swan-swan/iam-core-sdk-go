@@ -91,7 +91,7 @@ func (r *Registry) Sync(ctx context.Context) (result Result, resultErr error) {
 		} `json:"data"`
 	}
 	decoder := json.NewDecoder(io.LimitReader(response.Body, 1<<20))
-	if err := decoder.Decode(&envelope); err != nil || envelope.Code != 0 || envelope.Data.Application != manifest.Application || !validCatalogHash(envelope.Data.CatalogHash) || envelope.Data.DeploymentGeneration == nil || *envelope.Data.DeploymentGeneration != manifest.DeploymentGeneration || envelope.Data.ManifestHash != manifestHash {
+	if err := decoder.Decode(&envelope); err != nil || envelope.Code != 0 || envelope.Data.Application != r.config.Application || !validCatalogHash(envelope.Data.CatalogHash) || envelope.Data.DeploymentGeneration == nil || *envelope.Data.DeploymentGeneration != r.config.DeploymentGeneration || envelope.Data.ManifestHash != manifestHash {
 		return Result{}, errCatalogRegistration
 	}
 	successfulCatalogHash = envelope.Data.CatalogHash
@@ -144,7 +144,7 @@ func (r *Registry) HeartbeatOnce(ctx context.Context) (resultErr error) {
 		CatalogHash          string `json:"catalog_hash"`
 		DeploymentGeneration uint64 `json:"deployment_generation"`
 		ManifestHash         string `json:"manifest_hash"`
-	}{CatalogHash: catalogHash, DeploymentGeneration: manifest.DeploymentGeneration, ManifestHash: manifestHash})
+	}{CatalogHash: catalogHash, DeploymentGeneration: r.config.DeploymentGeneration, ManifestHash: manifestHash})
 	if err != nil {
 		return errCatalogRegistration
 	}
@@ -178,7 +178,7 @@ func (r *Registry) HeartbeatOnce(ctx context.Context) (resultErr error) {
 			ManifestHash         string  `json:"manifest_hash"`
 		} `json:"data"`
 	}
-	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&envelope); err != nil || envelope.Code != 0 || envelope.Data.Application != r.config.Application || envelope.Data.CatalogHash != catalogHash || envelope.Data.DeploymentGeneration == nil || *envelope.Data.DeploymentGeneration != manifest.DeploymentGeneration || envelope.Data.ManifestHash != manifestHash {
+	if err := json.NewDecoder(io.LimitReader(response.Body, 1<<20)).Decode(&envelope); err != nil || envelope.Code != 0 || envelope.Data.Application != r.config.Application || envelope.Data.CatalogHash != catalogHash || envelope.Data.DeploymentGeneration == nil || *envelope.Data.DeploymentGeneration != r.config.DeploymentGeneration || envelope.Data.ManifestHash != manifestHash {
 		return errCatalogRegistration
 	}
 	return nil

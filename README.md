@@ -302,3 +302,11 @@ integration 是不发布的测试 Module；其 Redis 6.2/7.4 conformance 依赖 
 BFF Session 默认绝对有效期为七天、空闲有效期为十二小时。调用方可通过
 `SessionAbsoluteTTL` 和 `SessionIdleTTL` 配置正数时长；空闲有效期不得超过绝对有效期，
 活跃续期也不会突破绝对截止时间。
+
+## 显式分类的 Manifest v4（待发布）
+
+新增 `NewClassifiedRouteSpec` 与 `NewClassifiedRegistry`，显式传输 FullAccess、ReadOnlyAccess、CardAccess。
+PDP 消费同一声明的 `Spec`，Catalog 消费完整 wrapper；导出完整清单不发网络请求。
+旧 `NewRegistry`、四字段公共类型及 v3 JSON/hash 保持兼容，v4 失败不自动回退。Go module 保持 `/v3`。
+详见 [v4 分类协议与迁移边界](docs/iam-core-catalog-v4-policy-classification-contract.md)及
+[离线导出示例](examples/runtime/catalog/main.go)，示例仅输出非敏感 Manifest，不执行注册或迁移。

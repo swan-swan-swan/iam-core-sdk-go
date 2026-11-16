@@ -31,8 +31,8 @@ func TestDocumentationContract(t *testing.T) {
 			}
 		}
 	}
-	if version := read("VERSION"); version != "3.4.0\n" {
-		t.Errorf("VERSION = %q, want %q", version, "3.4.0\\n")
+	if version := read("VERSION"); version != "3.7.0\n" {
+		t.Errorf("VERSION = %q, want %q", version, "3.7.0\\n")
 	}
 
 	readme := read("README.md")

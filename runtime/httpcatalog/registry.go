@@ -112,17 +112,18 @@ type Result struct {
 
 // Registry 收集代码路由并维护最近一次同步健康状态。
 type Registry struct {
-	mu            sync.RWMutex
-	config        Config
-	endpoint      string
-	client        *http.Client
-	routes        map[string]Route
-	routesVersion uint64
-	synced        bool
-	lastErr       error
-	catalogHash   string
-	manifestHash  string
-	fenced        bool
+	mu               sync.RWMutex
+	config           Config
+	endpoint         string
+	client           *http.Client
+	routes           map[string]Route
+	classifiedRoutes map[string]ClassifiedRoute
+	routesVersion    uint64
+	synced           bool
+	lastErr          error
+	catalogHash      string
+	manifestHash     string
+	fenced           bool
 }
 
 // NewRegistry 创建启动目录 Registry。
@@ -183,6 +184,9 @@ func (r *Registry) Register(spec httpauthz.RouteSpec) error {
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.classifiedRoutes != nil {
+		return errCatalogRegistration
+	}
 	if existing, exists := r.routes[route.Name]; exists {
 		if existing == route {
 			return nil
@@ -209,10 +213,18 @@ func (r *Registry) Check(context.Context) error {
 	return nil
 }
 
-// manifestSnapshot 返回按路由名稳定排序的不可变 Manifest。
-func (r *Registry) manifestSnapshot() (Manifest, uint64, error) {
+type manifestDigest interface {
+	ManifestDigest() (string, error)
+}
+
+// manifestSnapshot 返回当前模式下按路由名稳定排序的不可变清单。
+func (r *Registry) manifestSnapshot() (manifestDigest, uint64, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	if r.classifiedRoutes != nil {
+		manifest, err := r.classifiedManifestLocked()
+		return manifest, r.routesVersion, err
+	}
 	if len(r.routes) == 0 {
 		return Manifest{}, 0, errCatalogRegistration
 	}

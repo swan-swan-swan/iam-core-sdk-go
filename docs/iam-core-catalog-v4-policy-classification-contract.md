@@ -1,4 +1,4 @@
-# Catalog Manifest v4 分类契约（待发布的兼容 3.x 能力）
+# SDK v3.8.0 Catalog Manifest v4 分类契约
 
 此实现引用 IAM Server 中唯一正式规格与计划：source commit
 `9f05a79f23435a2b79f9106d1ddac40484cc1b0a`，
@@ -9,7 +9,7 @@
 本页说明 SDK 接口及兼容性，不构成独立产品规格或发布批准。
 
 Go module 保持 `github.com/swan-swan-swan/iam-core-sdk-go/v3`。Manifest v4 与 Go module 主版本独立；
-下一兼容 3.x 发布提供这些新增 API，本次代码交付不分配版本、不创建 tag。
+SDK v3.8.0 提供这些兼容新增 API；正式标签由独立批准的发布流程创建。
 
 ## 单一分类声明
 
@@ -65,6 +65,6 @@ Registrar HTTPS Basic 与已弃用的显式 Tokens 兼容入口保持互斥；�
 
 先升级 Server，再按维护 runbook 准备完整 Application bundle、预检和单独批准的原子切换，最后启用调用方 v4。
 活动 schema=4 后旧 SDK v3 注册或旧心跳不能用于恢复；恢复需服务端受控迁移和更高代次。
-真实 SDK 发布、生产 DDL、部署、plan/apply 和账号验收均留给独立批准流程。
+SDK 正式发布使用独立批准的发布流程；生产 DDL、部署、plan/apply 和账号验收仍须另行批准。
 
 参阅离线可运行示例 [`examples/runtime/catalog`](../examples/runtime/catalog/main.go)。

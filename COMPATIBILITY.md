@@ -118,11 +118,11 @@ Catalog Credentials 认证需要 IAM Core Server 的 Registrar Basic 协议修�
 
 支持 IAM 的显式 never_expires=true / expires_at=null，未声明或矛盾的到期元数据不能成为无限期身份。有限期旧响应保持兼容；旧 SDK 拒绝无限期 Key，因此需升级所有目标消费仓再使用此类 Key。详见 docs/iam-core-v3.7.0-contract.md。
 
-## 下一兼容 3.x — Manifest v4 显式策略分类（未发布）
+## v3.8.0 — Manifest v4 显式策略分类
 
 新增 API 提供 `ClassifiedRouteSpec`、`ClassifiedRoute`、`ClassifiedManifest`、
 `NewClassifiedRegistry`、`RegisterClassified` 与 `ExportClassifiedManifest`。
 module 仍为 `/v3`，原 RouteSpec/Route/Manifest 字段数量、顺序、签名和 v3 报文/摘要保持兼容。
 Registry 模式不可混用，不在旧 Server 上自动降级。需先部署支持分类及 Application 原子迁移的 IAM Server，
-再按维护窗口升级业务调用方；代码交付不包含 SDK tag、生产迁移或部署。
+再按维护窗口升级业务调用方；SDK 发布不代表生产迁移或部署已完成。
 协议、集合关系及共享 golden 摘要见 [分类契约](docs/iam-core-catalog-v4-policy-classification-contract.md)。

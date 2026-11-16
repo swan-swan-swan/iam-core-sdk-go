@@ -2,6 +2,13 @@
 
 All notable changes follow [Semantic Versioning](https://semver.org/).
 
+## v3.8.0
+
+- Add opt-in ClassifiedRouteSpec and ClassifiedRegistry APIs for explicit FullAccess, ReadOnlyAccess and CardAccess declarations.
+- Export and register Manifest v4 with deterministic five-field routes and policy-class validation, without automatic fallback.
+- Preserve existing four-field public types, constructors, Manifest v3 JSON/digests and Registrar authentication behavior.
+- Keep the Go module at /v3; using Manifest v4 requires compatible IAM support and a separately approved application migration.
+
 ## v3.7.0
 
 - Support explicitly non-expiring Service Account API Keys with never_expires=true and expires_at=null.

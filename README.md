@@ -285,8 +285,9 @@ go build ./examples/...
 
 Runtime、Management、Gin 和 Redis Adapter 都由根 Module 的普通测试、race 和 vet 覆盖。
 integration 是不发布的测试 Module；其 Redis 6.2/7.4 conformance 依赖 Docker-enabled runner。
-发布 workflow 在根 Module 和 integration 全部通过后，只为 release merge commit 创建并推送
-一个根标签；开发工作站不创建或推送发布标签。真实发布前 GitHub repository metadata 必须已是
+发布前必须完成上述根 Module 验证及真实 Docker integration，并保存验证结果。
+发布 workflow 只将已验证的 `dev` 提交快进到 `main`，并创建和推送一个根标签，不代替发布前测试；
+开发工作站不创建或推送发布标签。真实发布前 GitHub repository metadata 必须已是
 `swan-swan-swan/iam-core-sdk-go`。
 
 ## 浏览器全局退出与 Session 策略
@@ -303,7 +304,7 @@ BFF Session 默认绝对有效期为七天、空闲有效期为十二小时。�
 `SessionAbsoluteTTL` 和 `SessionIdleTTL` 配置正数时长；空闲有效期不得超过绝对有效期，
 活跃续期也不会突破绝对截止时间。
 
-## 显式分类的 Manifest v4（待发布）
+## v3.8.0：显式分类的 Manifest v4
 
 新增 `NewClassifiedRouteSpec` 与 `NewClassifiedRegistry`，显式传输 FullAccess、ReadOnlyAccess、CardAccess。
 PDP 消费同一声明的 `Spec`，Catalog 消费完整 wrapper；导出完整清单不发网络请求。
